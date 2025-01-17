@@ -1,6 +1,10 @@
 import React, {useEffect, useState} from 'react';
 import styled from 'styled-components/native';
 import {Picker} from '@react-native-picker/picker';
+import {StackScreenProps} from '@react-navigation/stack';
+
+// components
+import {PrimaryButton} from '../components';
 
 // hooks
 import {useQuery} from '@apollo/client';
@@ -8,18 +12,15 @@ import {useActivityIndicator} from '../hooks/useActivityIndicator';
 
 // gql
 import {CurrencyList} from '../graphql/queries';
-import {PrimaryButton} from '../components';
-import {useNavigation} from '@react-navigation/native';
-import {StackNavigationProp} from '@react-navigation/stack';
 
 // assets
 import Logo from '../assets/icons/blink-logo-icon.png';
 
-const Auth = () => {
+type Props = StackScreenProps<RootStackType, 'Auth'>;
+
+const Auth: React.FC<Props> = ({navigation}) => {
   const {loading, error, data} = useQuery<CurrencyList>(CurrencyList);
   const {toggleLoading} = useActivityIndicator();
-  const navigation =
-    useNavigation<StackNavigationProp<RootStackType, 'Main'>>();
 
   const [username, setUsername] = useState<string>('');
   const [currency, setCurrency] = useState('JMD');
@@ -122,6 +123,7 @@ const PickerWrapper = styled.View`
   border-radius: 10px;
   border: 1px solid #adadad;
 `;
+
 const Icon = styled.Image`
   width: 100px;
   height: 100px;
