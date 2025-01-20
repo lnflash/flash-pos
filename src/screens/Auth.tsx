@@ -1,17 +1,9 @@
-import React, {useEffect, useState} from 'react';
+import React, {useState} from 'react';
 import styled from 'styled-components/native';
-import {Picker} from '@react-native-picker/picker';
 import {StackScreenProps} from '@react-navigation/stack';
 
 // components
-import {PrimaryButton} from '../components';
-
-// hooks
-import {useQuery} from '@apollo/client';
-import {useActivityIndicator} from '../hooks/useActivityIndicator';
-
-// gql
-import {CurrencyList} from '../graphql/queries';
+import {CurrencyPicker, PrimaryButton} from '../components';
 
 // assets
 import Logo from '../assets/icons/blink-logo-icon.png';
@@ -19,19 +11,11 @@ import Logo from '../assets/icons/blink-logo-icon.png';
 type Props = StackScreenProps<RootStackType, 'Auth'>;
 
 const Auth: React.FC<Props> = ({navigation}) => {
-  const {loading, error, data} = useQuery<CurrencyList>(CurrencyList);
-  const {toggleLoading} = useActivityIndicator();
-
   const [username, setUsername] = useState<string>('');
-  const [currency, setCurrency] = useState('JMD');
-
-  useEffect(() => {
-    toggleLoading(loading);
-  }, [loading, data]);
 
   const onStart = () => {
-    if (username && currency) {
-      navigation.navigate('Main', {username, currency});
+    if (username) {
+      navigation.navigate('Main', {username});
     }
   };
 
@@ -52,19 +36,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
         </Container>
         <Container>
           <Label>Select your currency $</Label>
-          <PickerWrapper>
-            <Picker
-              selectedValue={currency}
-              onValueChange={itemValue => setCurrency(itemValue)}>
-              {data?.currencyList.map(currency => (
-                <Picker.Item
-                  key={currency.id}
-                  label={`${currency.id} - ${currency.name} ${currency.flag}`}
-                  value={currency.id}
-                />
-              ))}
-            </Picker>
-          </PickerWrapper>
+          <CurrencyPicker btnStyle={{paddingVertical: 10}} />
         </Container>
       </InnerWrapper>
       <PrimaryButton btnText="Start" onPress={onStart} />
@@ -113,15 +85,11 @@ const Label = styled.Text`
 
 const Input = styled.TextInput`
   font-size: 16px;
+  font-family: 'Outfit-SemiBold';
   border-radius: 10px;
   border: 1px solid #adadad;
   padding-horizontal: 8px;
-  padding-vertical: 15px;
-`;
-
-const PickerWrapper = styled.View`
-  border-radius: 10px;
-  border: 1px solid #adadad;
+  padding-vertical: 10px;
 `;
 
 const Icon = styled.Image`
