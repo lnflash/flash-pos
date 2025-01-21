@@ -18,7 +18,7 @@ import {ActivityIndicatorProvider} from './src/contexts/ActivityIndicator';
 function App(): React.JSX.Element {
   return (
     <Provider store={store}>
-      <StatusBar barStyle={'light-content'} backgroundColor={'#fff'} />
+      <StatusBar barStyle={'light-content'} backgroundColor={'#000'} />
       <ApolloProvider client={client}>
         <ActivityIndicatorProvider>
           <Layout />
