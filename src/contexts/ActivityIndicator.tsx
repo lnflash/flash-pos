@@ -26,7 +26,7 @@ export const ActivityIndicatorProvider = ({children}: Props) => {
       {children}
       {visible && (
         <Backdrop>
-          <ActivityIndicator color={'#60aa55'} size={'large'} />
+          <ActivityIndicator color={'#41ac48'} size={'large'} />
         </Backdrop>
       )}
     </ActivityIndicatorContext.Provider>
