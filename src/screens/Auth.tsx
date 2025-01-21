@@ -6,16 +6,52 @@ import {StackScreenProps} from '@react-navigation/stack';
 import {CurrencyPicker, PrimaryButton} from '../components';
 
 // assets
-import Logo from '../assets/icons/blink-logo-icon.png';
+import Logo from '../assets/icons/logo.png';
+
+// gql
+import client from '../graphql/ApolloClient';
+import {AccountDefaultWallets} from '../graphql/queries';
+
+// hooks
+import {useAppDispatch} from '../store/hooks';
+import {useActivityIndicator} from '../hooks';
+
+// store
+import {setUserData} from '../store/slices/userSlice';
 
 type Props = StackScreenProps<RootStackType, 'Auth'>;
 
 const Auth: React.FC<Props> = ({navigation}) => {
-  const [username, setUsername] = useState<string>('');
+  const dispatch = useAppDispatch();
+  const {toggleLoading} = useActivityIndicator();
+
+  const [value, setValue] = useState<string>('');
+  const [err, setErr] = useState<string>();
 
   const onStart = () => {
-    if (username) {
-      navigation.navigate('Main', {username});
+    if (value) {
+      toggleLoading(true);
+      client
+        .query({
+          query: AccountDefaultWallets,
+          variables: {username: value},
+        })
+        .then(res => {
+          dispatch(
+            setUserData({
+              username: value,
+              walletId: res.data.accountDefaultWallet.id,
+              walletCurrency: res.data.accountDefaultWallet.walletCurrency,
+            }),
+          );
+          navigation.navigate('Main');
+        })
+        .catch(err => {
+          setErr(err.message);
+        })
+        .finally(() => {
+          toggleLoading(false);
+        });
     }
   };
 
@@ -29,10 +65,11 @@ const Auth: React.FC<Props> = ({navigation}) => {
         <Container>
           <Label>Enter your Flash username</Label>
           <Input
-            value={username}
-            onChangeText={setUsername}
+            value={value}
+            onChangeText={setValue}
             placeholder="Enter your flash username"
           />
+          {!!err && <ErrText>{err}</ErrText>}
         </Container>
         <Container>
           <Label>Select your currency $</Label>
@@ -95,4 +132,11 @@ const Input = styled.TextInput`
 const Icon = styled.Image`
   width: 100px;
   height: 100px;
+`;
+
+const ErrText = styled.Text`
+  font-size: 15px;
+  font-family: 'Outfit-SemiBold';
+  color: #db254e;
+  margin-left: 5px;
 `;
