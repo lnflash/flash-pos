@@ -95,7 +95,7 @@ export default Amount;
 const Wrapper = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-bottom: 30px;
+  margin-bottom: 20px;
 `;
 
 const CurrencyPickerWrapper = styled.View`
@@ -112,11 +112,13 @@ const AmountWrapper = styled.View`
 const Primary = styled.Text<{fontSize?: number}>`
   font-size: ${({fontSize}) => fontSize || 26}px;
   font-family: 'Outfit-Bold';
+  color: #000;
 `;
 
 const Secondary = styled.Text<{fontSize?: number}>`
   font-size: ${({fontSize}) => fontSize || 18}px;
   font-family: 'Outfit-Regular';
+  color: #000;
 `;
 
 const IconWrapper = styled.View`

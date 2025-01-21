@@ -69,7 +69,7 @@ const NumPad = () => {
         </NumBtn>
         <NumBtn onPress={() => dispatch(updateAmount('deleteDigit'))}>
           <NumText>
-            <Icon name={'delete-left'} size={20} solid />
+            <Icon name={'delete-left'} size={20} solid color={'#db254e'} />
           </NumText>
         </NumBtn>
       </RowWrapper>
