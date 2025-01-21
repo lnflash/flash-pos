@@ -1,46 +1,30 @@
-import React, {useEffect, useState} from 'react';
+import React, {useState} from 'react';
 import {Modal, ViewStyle} from 'react-native';
 import styled from 'styled-components/native';
 import Icon from 'react-native-vector-icons/FontAwesome6';
 
-// gql
-import {CurrencyList} from '../../graphql/queries';
+// store
+import {PrimaryButton} from '../buttons';
+import {setMemo} from '../../store/slices/amountSlice';
 
 // hooks
-import {useQuery} from '@apollo/client';
-import {useAppDispatch, useAppSelector} from '../../store/hooks';
-import {useActivityIndicator} from '../../hooks';
-
-// store
-import {setCurrency} from '../../store/slices/amountSlice';
+import {useAppDispatch} from '../../store/hooks';
 
 type Props = {
   btnStyle?: ViewStyle;
-  showCompleteText?: boolean;
 };
 
-const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
-  const {loading, error, data} = useQuery<CurrencyList>(CurrencyList);
-
+const Note: React.FC<Props> = ({btnStyle}) => {
   const dispatch = useAppDispatch();
-  const {currency} = useAppSelector(state => state.amount);
-  const {toggleLoading} = useActivityIndicator();
 
+  const [note, setNote] = useState('');
   const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    toggleLoading(loading);
-  }, [loading]);
 
   return (
     <Wrapper>
       <Btn style={btnStyle} onPress={() => setVisible(true)}>
-        <BtnText>
-          {showCompleteText
-            ? `${currency.id} - ${currency.name} ${currency.flag}`
-            : currency?.id}
-        </BtnText>
-        <Icon name={visible ? 'caret-up' : 'caret-down'} size={15} solid />
+        <BtnText>Add note</BtnText>
+        <Icon name={'pencil'} size={15} solid />
       </Btn>
       <Modal
         animationType="slide"
@@ -51,23 +35,21 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
           <ModalView>
             <RowWrapper>
               <Close></Close>
-              <Title>Currency List</Title>
+              <Title>Note</Title>
               <Close onPress={() => setVisible(false)}>
                 <Icon name={'xmark'} size={30} solid />
               </Close>
             </RowWrapper>
-            <ScrollWrapper>
-              {data?.currencyList.map(currency => (
-                <ItemBtn
-                  key={currency.id}
-                  onPress={() => {
-                    setVisible(false);
-                    dispatch(setCurrency(currency));
-                  }}>
-                  <ItemText>{`${currency.id} - ${currency.name} ${currency.flag}`}</ItemText>
-                </ItemBtn>
-              ))}
-            </ScrollWrapper>
+            <Input
+              value={note}
+              onChangeText={setNote}
+              placeholder="Add note"
+              multiline
+            />
+            <PrimaryButton
+              btnText="Confirm"
+              onPress={() => dispatch(setMemo(note))}
+            />
           </ModalView>
         </Backdrop>
       </Modal>
@@ -75,15 +57,18 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
   );
 };
 
-export default CurrencyPicker;
+export default Note;
 
-const Wrapper = styled.View``;
+const Wrapper = styled.View`
+  align-items: center;
+  margin-bottom: 20px;
+`;
 
 const Btn = styled.TouchableOpacity`
   flex-direction: row;
   align-items: center;
-  justify-content: space-between;
-  border: 1px solid #adadad;
+  background-color: #f0f0f0;
+  border: 1px solid #000;
   border-radius: 10px;
   padding-vertical: 5px;
   padding-horizontal: 10px;
@@ -103,11 +88,12 @@ const Backdrop = styled.TouchableOpacity`
 `;
 
 const ModalView = styled.View`
-  height: 50%;
+  height: 40%;
   background-color: #fff;
   border-top-left-radius: 20px;
   border-top-right-radius: 20px;
   overflow: hidden;
+  padding-bottom: 20px;
   padding-horizontal: 10px;
 `;
 
@@ -127,17 +113,14 @@ const Close = styled.TouchableOpacity`
   padding: 10px;
 `;
 
-const ScrollWrapper = styled.ScrollView``;
-
-const ItemBtn = styled.TouchableOpacity`
-  border-bottom-width: 0.5px;
-  border-bottom-color: #adadad;
-  padding-vertical: 15px;
-  padding-horizontal: 10px;
-`;
-
-const ItemText = styled.Text`
+const Input = styled.TextInput`
   font-size: 16px;
   font-family: 'Outfit-SemiBold';
-  color: #000;
+  flex: 1;
+  margin-bottom: 20px;
+  border: 1px solid #000;
+  border-radius: 10px;
+  background-color: #f0f0f0;
+  text-align-vertical: top;
+  padding-horizontal: 5px;
 `;
