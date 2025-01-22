@@ -16,7 +16,12 @@ import {
   setSatAmount,
 } from '../../store/slices/amountSlice';
 
-const Amount = () => {
+type Props = {
+  hideCurrency?: boolean;
+  hideToggle?: boolean;
+};
+
+const Amount: React.FC<Props> = ({hideCurrency, hideToggle}) => {
   const {currencyToSats, satsToCurrency, loading} = useRealtimePrice();
   const dispatch = useAppDispatch();
   const {currency, isPrimaryAmountSats, displayAmount, satAmount} =
@@ -61,14 +66,16 @@ const Amount = () => {
 
   return (
     <Wrapper>
-      <CurrencyPickerWrapper>
-        <CurrencyPicker />
-      </CurrencyPickerWrapper>
+      {!hideCurrency && (
+        <CurrencyPickerWrapper>
+          <CurrencyPicker />
+        </CurrencyPickerWrapper>
+      )}
       {!isPrimaryAmountSats ? (
         <AmountWrapper>
           <Primary>{`${currency.symbol} ${displayAmount || 0}`}</Primary>
           <Secondary>
-            {satAmount || 0}
+            ≈ {satAmount || 0}
             <Secondary fontSize={15}> sats</Secondary>
           </Secondary>
         </AmountWrapper>
@@ -81,11 +88,13 @@ const Amount = () => {
           <Secondary>{`${currency.symbol} ${displayAmount || 0}`}</Secondary>
         </AmountWrapper>
       )}
-      <IconWrapper>
-        <IconBtn hitSlop={10} onPress={onToggle}>
-          <Icon name={'rotate'} size={25} solid />
-        </IconBtn>
-      </IconWrapper>
+      {!hideToggle && (
+        <IconWrapper>
+          <IconBtn hitSlop={10} onPress={onToggle}>
+            <Icon name={'rotate'} size={25} solid />
+          </IconBtn>
+        </IconWrapper>
+      )}
     </Wrapper>
   );
 };
