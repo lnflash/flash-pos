@@ -19,7 +19,7 @@ const httpLink = createHttpLink({
 
 const wsLink = new GraphQLWsLink(
   createClient({
-    url: 'wss://ws.flashapp.me/graphql',
+    url: 'wss://ws.test.flashapp.me/graphql',
     retryAttempts: 12,
     connectionParams: {},
     shouldRetry: errOrCloseEvent => {
