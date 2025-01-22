@@ -21,3 +21,42 @@ export const RealtimePriceSubscription = gql`
     }
   }
 `;
+
+export const PriceSubscription = gql`
+  subscription price(
+    $amount: SatAmount!
+    $amountCurrencyUnit: ExchangeCurrencyUnit!
+    $priceCurrencyUnit: ExchangeCurrencyUnit!
+  ) {
+    price(
+      input: {
+        amount: $amount
+        amountCurrencyUnit: $amountCurrencyUnit
+        priceCurrencyUnit: $priceCurrencyUnit
+      }
+    ) {
+      errors {
+        message
+      }
+      price {
+        base
+        offset
+        currencyUnit
+        formattedAmount
+      }
+    }
+  }
+`;
+
+export const LnInvoicePaymentStatus = gql`
+  subscription lnInvoicePaymentStatus($input: LnInvoicePaymentStatusInput!) {
+    lnInvoicePaymentStatus(input: $input) {
+      __typename
+      errors {
+        message
+        __typename
+      }
+      status
+    }
+  }
+`;
