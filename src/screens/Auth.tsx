@@ -44,7 +44,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
               walletCurrency: res.data.accountDefaultWallet.walletCurrency,
             }),
           );
-          navigation.navigate('Main');
+          navigation.replace('Main');
         })
         .catch(err => {
           setErr(err.message);
