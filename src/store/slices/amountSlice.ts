@@ -58,8 +58,9 @@ export const amountSlice = createSlice({
       ...state,
       error: action.payload,
     }),
-    resetAmount: () => ({
+    resetAmount: state => ({
       ...initialState,
+      currency: state.currency,
     }),
   },
 });
