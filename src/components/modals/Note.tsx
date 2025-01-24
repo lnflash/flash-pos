@@ -48,7 +48,10 @@ const Note: React.FC<Props> = ({btnStyle}) => {
             />
             <PrimaryButton
               btnText="Confirm"
-              onPress={() => dispatch(setMemo(note))}
+              onPress={() => {
+                dispatch(setMemo(note));
+                setVisible(false);
+              }}
             />
           </ModalView>
         </Backdrop>

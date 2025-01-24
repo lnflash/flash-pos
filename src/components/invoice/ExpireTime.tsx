@@ -53,7 +53,7 @@ const ExpireTime: React.FC<Props> = ({setErrMessage}) => {
       <Progress.Bar
         progress={progress / 100}
         width={width * 0.7}
-        color="#41ac48"
+        color="#002118"
         height={10}
       />
       <Time>{`${expiresAt}:00`}</Time>
@@ -72,5 +72,5 @@ const ProgressWrapper = styled.View`
 const Time = styled.Text`
   font-size: 15px;
   font-family: 'Outfit-SemiBold';
-  color: #41ac48;
+  color: #002118;
 `;
