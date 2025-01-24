@@ -3,7 +3,7 @@ import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 
 // screens
-import {Auth, Main} from '../screens';
+import {Auth, Invoice, Main, Success} from '../screens';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
@@ -18,18 +18,36 @@ const Root = () => {
       initialRouteName="Auth"
       screenOptions={{
         headerTitle: '',
-        headerShown: false,
         headerShadowVisible: false,
       }}>
-      <Stack.Screen name="Auth" component={Auth} />
+      <Stack.Screen
+        name="Auth"
+        component={Auth}
+        options={{headerShown: false}}
+      />
       <Stack.Screen
         name="Main"
         component={Main}
         options={{
-          headerShown: true,
-          headerTitle: `Pay ${username}`,
+          headerBackVisible: false,
+          headerTitle: `Pay to ${username}`,
           headerTitleStyle: {fontFamily: 'Outfit-Bold'},
+          headerTitleAlign: 'center',
         }}
+      />
+      <Stack.Screen
+        name="Invoice"
+        component={Invoice}
+        options={{
+          headerTitle: `Pay to ${username}`,
+          headerTitleStyle: {fontFamily: 'Outfit-Bold'},
+          headerTitleAlign: 'center',
+        }}
+      />
+      <Stack.Screen
+        name="Success"
+        component={Success}
+        options={{headerShown: false}}
       />
     </Stack.Navigator>
   );
