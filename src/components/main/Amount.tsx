@@ -15,13 +15,15 @@ import {
   setIsPrimaryAmountSats,
   setSatAmount,
 } from '../../store/slices/amountSlice';
+import {ViewStyle} from 'react-native';
 
 type Props = {
   hideCurrency?: boolean;
   hideToggle?: boolean;
+  style?: ViewStyle;
 };
 
-const Amount: React.FC<Props> = ({hideCurrency, hideToggle}) => {
+const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
   const {currencyToSats, satsToCurrency, loading} = useRealtimePrice();
   const dispatch = useAppDispatch();
   const {currency, isPrimaryAmountSats, displayAmount, satAmount} =
@@ -65,7 +67,7 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle}) => {
   };
 
   return (
-    <Wrapper>
+    <Wrapper style={style}>
       {!hideCurrency && (
         <CurrencyPickerWrapper>
           <CurrencyPicker />

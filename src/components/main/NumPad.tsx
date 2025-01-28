@@ -85,18 +85,13 @@ const RowWrapper = styled.View`
   justify-content: space-between;
 `;
 
-const NumbersWrapper = styled.View`
-  margin-horizontal: 10px;
-`;
+const NumbersWrapper = styled.View``;
 
 const NumBtn = styled.TouchableOpacity`
-  width: ${width / 5}px;
-  height: ${width / 5}px;
+  flex: 1;
+  height: ${width / 4}px;
   justify-content: center;
   align-items: center;
-  border: 1px solid #adadad;
-  border-radius: 10px;
-  margin-bottom: 10px;
 `;
 
 const NumText = styled.Text`

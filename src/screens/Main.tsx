@@ -77,7 +77,7 @@ const Main: React.FC<Props> = ({navigation, route}) => {
   return (
     <Wrapper>
       <BodyWrapper>
-        <Amount />
+        <Amount style={{marginHorizontal: 20}} />
         <Note />
         <NumPad />
       </BodyWrapper>
@@ -101,7 +101,6 @@ const Wrapper = styled.View`
   background-color: #fff;
   padding-top: 10px;
   padding-bottom: 30px;
-  padding-horizontal: 20px;
 `;
 
 const BodyWrapper = styled.View`
@@ -110,4 +109,5 @@ const BodyWrapper = styled.View`
 
 const BtnsWrapper = styled.View`
   align-items: center;
+  margin-horizontal: 20px;
 `;
