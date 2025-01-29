@@ -12,7 +12,8 @@ const usePrint = () => {
 
   const print = async () => {
     await RNPrint.print({
-      html: `<div style="display: flex;flex-direction: column;align-items: center;">
+      html: `
+          <div style="display: flex;flex-direction: column;align-items: center;">
             <div style="display: flex;flex-direction: column;align-items: center; margin-bottom: 10px">
               <img src="https://media-hosting.imagekit.io//69348383edcc4f59/LOGO.svg?Expires=1832241872&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=whr62g6uZealmeC7gPXkUMi~mT37jucBwXKuCGM0TKhh6mxrxh3ZwtZd0g2vFsMmK7fuK0tIY9k~yBVXZptpmwvQFk87P-0KrT0dZf8QU3wuNxdcQkRDAaAvn8vs6qnuYIyMQ35sNaZsHuZxJG2JZNOak5ig1Vd1Ypr4sGAXB2v47uCjultc6w-KlZmp4Bl39EobKWKWNbpggPmDahmCo8AlPbM888qnV2xeOr~CSQm~yvRCOxknWGJJ7Lva3pUaaUTVPLJhUJnFss9S2b1Gzo-6i5tATMrXn2jBnljilAKJS3Vw55mr6IhOK-cwwxDnFR9ZQoyKqxqZzMrZsWWU3Q__" style="width: 150px; height: 150px" />
             </div>
@@ -41,7 +42,8 @@ const usePrint = () => {
                 <h4 style="padding: 0; margin: 0">${memo || 'none'}</h4>
               </div>
             </div>
-          </div>`,
+          </div>
+        `,
     });
   };
 
