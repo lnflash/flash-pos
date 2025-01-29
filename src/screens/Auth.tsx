@@ -1,6 +1,7 @@
 import React, {useState} from 'react';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
+import {KeyboardAwareScrollView} from 'react-native-keyboard-aware-scroll-view';
 
 // components
 import {CurrencyPicker, PrimaryButton} from '../components';
@@ -57,26 +58,30 @@ const Auth: React.FC<Props> = ({navigation}) => {
 
   return (
     <Wrapper>
-      <InnerWrapper>
-        <LogoWrapper>
-          <Icon source={Logo} />
-          <Title>flash POS</Title>
-        </LogoWrapper>
-        <Container>
-          <Label>Enter your Flash username</Label>
-          <Input
-            value={value}
-            onChangeText={setValue}
-            placeholder="Enter your flash username"
-          />
-          {!!err && <ErrText>{err}</ErrText>}
-        </Container>
-        <Container>
-          <Label>Select your currency $</Label>
-          <CurrencyPicker btnStyle={{paddingVertical: 10}} />
-        </Container>
-      </InnerWrapper>
-      <PrimaryButton btnText="Start" onPress={onStart} />
+      <KeyboardAwareScrollView>
+        <InnerWrapper>
+          <LogoWrapper>
+            <Icon source={Logo} />
+            <Title>flash POS</Title>
+          </LogoWrapper>
+          <Container>
+            <Label>Enter your Flash username</Label>
+            <Input
+              value={value}
+              onChangeText={setValue}
+              placeholder="Enter your flash username"
+            />
+            {!!err && <ErrText>{err}</ErrText>}
+          </Container>
+          <Container>
+            <Label>Select your currency $</Label>
+            <CurrencyPicker btnStyle={{paddingVertical: 10}} />
+          </Container>
+        </InnerWrapper>
+      </KeyboardAwareScrollView>
+      <BtnWrapper>
+        <PrimaryButton btnText="Start" onPress={onStart} />
+      </BtnWrapper>
     </Wrapper>
   );
 };
@@ -86,13 +91,13 @@ export default Auth;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 30px;
-  padding-horizontal: 20px;
+  padding-bottom: 10px;
 `;
 
 const InnerWrapper = styled.View`
   flex: 1;
-  justify-content: center;
+  margin-top: 30%;
+  margin-horizontal: 20px;
 `;
 
 const LogoWrapper = styled.View`
@@ -115,13 +120,13 @@ const Container = styled.View`
 
 const Label = styled.Text`
   font-family: 'Outfit-SemiBold';
-  font-size: 16px;
+  font-size: 15px;
   color: #000;
   margin-bottom: 5px;
 `;
 
 const Input = styled.TextInput`
-  font-size: 16px;
+  font-size: 14px;
   font-family: 'Outfit-SemiBold';
   border-radius: 10px;
   border: 1px solid #adadad;
@@ -135,8 +140,12 @@ const Icon = styled.Image`
 `;
 
 const ErrText = styled.Text`
-  font-size: 15px;
+  font-size: 12px;
   font-family: 'Outfit-SemiBold';
   color: #db254e;
   margin-left: 5px;
+`;
+
+const BtnWrapper = styled.View`
+  margin-horizontal: 20px;
 `;
