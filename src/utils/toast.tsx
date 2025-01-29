@@ -1,4 +1,18 @@
-import Toast from 'react-native-toast-message';
+import * as React from 'react';
+import Toast, {
+  SuccessToast,
+  ErrorToast,
+  BaseToastProps,
+} from 'react-native-toast-message';
+
+export const toastConfig = {
+  success: (props: BaseToastProps) => (
+    <SuccessToast {...props} text1NumberOfLines={3} />
+  ),
+  error: (props: BaseToastProps) => (
+    <ErrorToast {...props} text1NumberOfLines={3} />
+  ),
+};
 
 export const toastShow = ({
   message,

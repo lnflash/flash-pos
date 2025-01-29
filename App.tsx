@@ -23,6 +23,9 @@ import client from './src/graphql/ApolloClient';
 // contexts
 import {ActivityIndicatorProvider} from './src/contexts/ActivityIndicator';
 
+// utils
+import {toastConfig} from './src/utils/toast';
+
 function App(): React.JSX.Element {
   return (
     <Provider store={store}>
@@ -30,7 +33,7 @@ function App(): React.JSX.Element {
       <ApolloProvider client={client}>
         <ActivityIndicatorProvider>
           <Layout />
-          <Toast />
+          <Toast config={toastConfig} />
         </ActivityIndicatorProvider>
       </ApolloProvider>
     </Provider>
