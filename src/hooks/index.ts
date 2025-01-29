@@ -3,6 +3,7 @@ import {useDisplayCurrency} from './useDisplayCurrency';
 import useRealtimePrice from './useRealTimePrice';
 import useSatPrice from './useSatPrice';
 import usePrint from './usePrint';
+import useNfc from './useNfc';
 
 export {
   useActivityIndicator,
@@ -10,4 +11,5 @@ export {
   useRealtimePrice,
   useSatPrice,
   usePrint,
+  useNfc,
 };

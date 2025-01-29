@@ -18,7 +18,7 @@ import {resetInvoice} from '../store/slices/invoiceSlice';
 
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
-const Success: React.FC<Props> = ({navigation}) => {
+const Success: React.FC<Props> = ({navigation, route}) => {
   const {print} = usePrint();
 
   const dispatch = useAppDispatch();
@@ -42,7 +42,7 @@ const Success: React.FC<Props> = ({navigation}) => {
         <IconWrapper>
           <Icon source={Check} />
         </IconWrapper>
-        <Title>The invoice has been paid</Title>
+        <Title>{route.params?.title || `The invoice has been paid`}</Title>
         {isPrimaryAmountSats ? (
           <>
             <PrimaryAmount>{`${satAmount} sats`}</PrimaryAmount>
@@ -85,7 +85,7 @@ export default Success;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #007856;
-  padding-bottom: 30px;
+  padding-bottom: 10px;
   padding-horizontal: 20px;
 `;
 
@@ -98,7 +98,7 @@ const InnerWrapper = styled.View`
 const IconWrapper = styled.View`
   background-color: #fff;
   border-radius: 100px;
-  padding: 23px;
+  padding: 15px;
 `;
 
 const Icon = styled.Image`
@@ -107,20 +107,21 @@ const Icon = styled.Image`
 `;
 
 const Title = styled.Text`
-  font-size: 24px;
+  font-size: 20px;
   font-family: 'Outfit-Regular';
+  text-align: center;
   color: #fff;
   margin-top: 32px;
 `;
 
 const PrimaryAmount = styled.Text`
-  font-size: 44px;
+  font-size: 32px;
   font-family: 'Outfit-Regular';
   color: #fff;
 `;
 
 const SecondaryAmount = styled.Text`
-  font-size: 24px;
+  font-size: 18px;
   font-family: 'Outfit-Regular';
   color: #fff;
   opacity: 0.8;
