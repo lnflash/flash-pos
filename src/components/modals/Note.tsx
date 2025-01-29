@@ -78,7 +78,7 @@ const Btn = styled.TouchableOpacity`
 `;
 
 const BtnText = styled.Text`
-  font-size: 16px;
+  font-size: 12px;
   font-family: 'Outfit-SemiBold';
   margin-right: 10px;
   margin-top: 3px;
@@ -91,7 +91,7 @@ const Backdrop = styled.TouchableOpacity`
 `;
 
 const ModalView = styled.View`
-  height: 40%;
+  height: 80%;
   background-color: #fff;
   border-top-left-radius: 20px;
   border-top-right-radius: 20px;
@@ -107,7 +107,7 @@ const RowWrapper = styled.View`
 `;
 
 const Title = styled.Text`
-  font-size: 22px;
+  font-size: 16px;
   font-family: 'Outfit-Bold';
   align-items: center;
 `;
@@ -117,7 +117,7 @@ const Close = styled.TouchableOpacity`
 `;
 
 const Input = styled.TextInput`
-  font-size: 16px;
+  font-size: 14px;
   font-family: 'Outfit-SemiBold';
   flex: 1;
   margin-bottom: 20px;

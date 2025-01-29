@@ -24,7 +24,7 @@ const InvoiceQRCode: React.FC<Props> = ({errMessage}) => {
         <ErrContainer width={width}>
           <Icon
             name={'triangle-exclamation'}
-            size={100}
+            size={80}
             solid
             color={'#db254e'}
           />
@@ -61,8 +61,8 @@ const ErrContainer = styled.View<{width: number}>`
 `;
 
 const ErrText = styled.Text`
-  font-size: 24px;
+  font-size: 18px;
   font-family: 'Outfit-Bold';
   text-align: center;
-  margin-top: 30px;
+  margin-top: 10px;
 `;

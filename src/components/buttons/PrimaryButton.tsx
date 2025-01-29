@@ -45,11 +45,11 @@ const Wrapper = styled.TouchableOpacity`
   justify-content: center;
   border-radius: 10px;
   background-color: #002118;
-  padding-vertical: 15px;
+  padding-vertical: 10px;
 `;
 
 const Text = styled.Text`
-  font-size: 20px;
+  font-size: 15px;
   font-family: 'Outfit-Bold';
   color: #fff;
 `;

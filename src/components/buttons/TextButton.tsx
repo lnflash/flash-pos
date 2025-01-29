@@ -11,7 +11,7 @@ type Props = {
 const TextButton: React.FC<Props> = ({icon, title, onPress}) => {
   return (
     <Btn onPress={onPress}>
-      <Icon name={icon} size={18} solid color={'#9292A0'} />
+      <Icon name={icon} size={15} solid color={'#9292A0'} />
       <BtnText>{title}</BtnText>
     </Btn>
   );
@@ -26,7 +26,7 @@ const Btn = styled.TouchableOpacity`
 `;
 
 const BtnText = styled.Text`
-  font-size: 18px;
+  font-size: 15px;
   font-family: 'Outfit-SemiBold';
   color: #9292a0;
   margin-left: 5px;

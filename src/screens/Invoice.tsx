@@ -107,4 +107,5 @@ const RowWrapper = styled.View`
   align-items: center;
   justify-content: space-between;
   margin-top: 10px;
+  margin-horizontal: 10px;
 `;

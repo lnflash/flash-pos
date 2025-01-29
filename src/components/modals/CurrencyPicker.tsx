@@ -90,7 +90,7 @@ const Btn = styled.TouchableOpacity`
 `;
 
 const BtnText = styled.Text`
-  font-size: 16px;
+  font-size: 12px;
   font-family: 'Outfit-SemiBold';
   margin-right: 10px;
   margin-top: 3px;
@@ -118,7 +118,7 @@ const RowWrapper = styled.View`
 `;
 
 const Title = styled.Text`
-  font-size: 22px;
+  font-size: 16px;
   font-family: 'Outfit-Bold';
   align-items: center;
 `;
@@ -137,7 +137,7 @@ const ItemBtn = styled.TouchableOpacity`
 `;
 
 const ItemText = styled.Text`
-  font-size: 16px;
+  font-size: 12px;
   font-family: 'Outfit-SemiBold';
   color: #000;
 `;

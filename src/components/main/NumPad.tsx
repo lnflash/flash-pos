@@ -9,7 +9,7 @@ import {useAppDispatch, useAppSelector} from '../../store/hooks';
 // store
 import {updateAmount} from '../../store/slices/amountSlice';
 
-const width = Dimensions.get('screen').width;
+const height = Dimensions.get('screen').height;
 
 const NumPad = () => {
   const dispatch = useAppDispatch();
@@ -85,16 +85,18 @@ const RowWrapper = styled.View`
   justify-content: space-between;
 `;
 
-const NumbersWrapper = styled.View``;
+const NumbersWrapper = styled.View`
+  flex: 1;
+`;
 
 const NumBtn = styled.TouchableOpacity`
   flex: 1;
-  height: ${width / 4}px;
+  height: ${height / 8}px;
   justify-content: center;
   align-items: center;
 `;
 
 const NumText = styled.Text`
-  font-size: 40px;
+  font-size: 35px;
   font-weight: bold;
 `;

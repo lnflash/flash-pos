@@ -70,7 +70,7 @@ const ProgressWrapper = styled.View`
 `;
 
 const Time = styled.Text`
-  font-size: 15px;
+  font-size: 12px;
   font-family: 'Outfit-SemiBold';
   color: #002118;
 `;

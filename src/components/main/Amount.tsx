@@ -78,14 +78,14 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
           <Primary>{`${currency.symbol} ${displayAmount || 0}`}</Primary>
           <Secondary>
             ≈ {satAmount || 0}
-            <Secondary fontSize={15}> sats</Secondary>
+            <Secondary fontSize={10}> sats</Secondary>
           </Secondary>
         </AmountWrapper>
       ) : (
         <AmountWrapper>
           <Primary>
             {satAmount || 0}
-            <Primary fontSize={15}> sats</Primary>
+            <Primary fontSize={12}> sats</Primary>
           </Primary>
           <Secondary>{`${currency.symbol} ${displayAmount || 0}`}</Secondary>
         </AmountWrapper>
@@ -121,13 +121,13 @@ const AmountWrapper = styled.View`
 `;
 
 const Primary = styled.Text<{fontSize?: number}>`
-  font-size: ${({fontSize}) => fontSize || 26}px;
+  font-size: ${({fontSize}) => fontSize || 18}px;
   font-family: 'Outfit-Bold';
   color: #000;
 `;
 
 const Secondary = styled.Text<{fontSize?: number}>`
-  font-size: ${({fontSize}) => fontSize || 18}px;
+  font-size: ${({fontSize}) => fontSize || 12}px;
   font-family: 'Outfit-Regular';
   color: #000;
 `;
