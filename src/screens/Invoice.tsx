@@ -14,6 +14,7 @@ import {
 } from '../components';
 
 // hooks
+import {useNfc} from '../hooks';
 import {useAppSelector} from '../store/hooks';
 
 // utils
@@ -35,6 +36,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     },
     skip: !paymentRequest,
   });
+
+  useNfc(paymentRequest);
 
   useEffect(() => {
     if (data) {
@@ -91,8 +94,7 @@ export default Invoice;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-top: 10px;
-  padding-bottom: 30px;
+  padding-bottom: 10px;
   padding-horizontal: 20px;
 `;
 
