@@ -23,6 +23,9 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 import {updateAmount} from '../store/slices/amountSlice';
 import {setInvoice} from '../store/slices/invoiceSlice';
 
+// utils
+import {toastShow} from '../utils/toast';
+
 type Props = NativeStackScreenProps<RootStackType, 'Main'>;
 
 const Main: React.FC<Props> = ({navigation, route}) => {
@@ -54,13 +57,19 @@ const Main: React.FC<Props> = ({navigation, route}) => {
         .then(({data}) => {
           console.log(
             'INVOICE DATA:',
-            data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice,
+            data.lnUsdInvoiceCreateOnBehalfOfRecipient,
           );
           if (data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice) {
             dispatch(
               setInvoice(data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice),
             );
             navigation.navigate('Invoice');
+          } else {
+            toastShow({
+              message:
+                'Unexpected error occurred, please try again or contact support if it persists',
+              type: 'error',
+            });
           }
         })
         .catch(err => {
@@ -99,8 +108,7 @@ export default Main;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-top: 10px;
-  padding-bottom: 30px;
+  padding-bottom: 10px;
 `;
 
 const BodyWrapper = styled.View`
