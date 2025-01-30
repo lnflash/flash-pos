@@ -1,5 +1,3 @@
-// src/ApolloClient.ts
-
 import {
   ApolloClient,
   ApolloLink,
@@ -13,13 +11,15 @@ import {createClient} from 'graphql-ws';
 import {onError} from '@apollo/client/link/error';
 import {getMainDefinition} from '@apollo/client/utilities';
 
+import {FLASH_GRAPHQL_URI, FLASH_GRAPHQL_WS_URI} from '@env';
+
 const httpLink = createHttpLink({
-  uri: 'https://api.test.flashapp.me/graphql',
+  uri: FLASH_GRAPHQL_URI,
 });
 
 const wsLink = new GraphQLWsLink(
   createClient({
-    url: 'wss://ws.test.flashapp.me/graphql',
+    url: FLASH_GRAPHQL_WS_URI,
     retryAttempts: 12,
     connectionParams: {},
     shouldRetry: errOrCloseEvent => {
