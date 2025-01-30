@@ -1,6 +1,6 @@
 type RootStackType = {
   Auth: undefined;
-  Main: undefined;
+  Home: undefined;
   Invoice: undefined;
   Success?: {title?: string};
 };
