@@ -27,7 +27,7 @@ const PrimaryButton: React.FC<Props> = ({
           name={icon}
           size={20}
           solid
-          color={iconColor}
+          color={iconColor || '#fff'}
           style={{marginRight: 5}}
         />
       )}
