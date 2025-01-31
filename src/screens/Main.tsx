@@ -1,6 +1,6 @@
 import React from 'react';
 import styled from 'styled-components/native';
-import {NativeStackScreenProps} from '@react-navigation/native-stack';
+import {StackNavigationProp} from '@react-navigation/stack';
 
 // components
 import {
@@ -14,6 +14,7 @@ import {
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {useActivityIndicator, useSatPrice} from '../hooks';
+import {useNavigation} from '@react-navigation/native';
 import {useMutation} from '@apollo/client';
 
 // gql
@@ -26,9 +27,10 @@ import {setInvoice} from '../store/slices/invoiceSlice';
 // utils
 import {toastShow} from '../utils/toast';
 
-type Props = NativeStackScreenProps<RootStackType, 'Main'>;
+type Props = StackNavigationProp<RootStackType, 'Home'>;
 
-const Main: React.FC<Props> = ({navigation, route}) => {
+const Main = () => {
+  const navigation = useNavigation<Props>();
   const [createInvoice] = useMutation(LnUsdInvoiceCreateOnBehalfOfRecipient);
 
   const {toggleLoading} = useActivityIndicator();
@@ -108,7 +110,7 @@ export default Main;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 10px;
+  padding-bottom: 100px;
 `;
 
 const BodyWrapper = styled.View`
