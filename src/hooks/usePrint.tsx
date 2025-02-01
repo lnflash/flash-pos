@@ -4,6 +4,12 @@ import RNPrint from 'react-native-print';
 // hooks
 import {useAppSelector} from '../store/hooks';
 
+// assets
+import Logo from '../assets/icons/logo.png';
+
+// env
+import {FLASH_LN_ADDRESS} from '@env';
+
 const usePrint = () => {
   const {username} = useAppSelector(state => state.user);
   const {satAmount, displayAmount, currency, memo} = useAppSelector(
@@ -47,7 +53,28 @@ const usePrint = () => {
     });
   };
 
-  return {print};
+  const printPaycode = async (image?: string) => {
+    await RNPrint.print({
+      html: `
+      <div style="display: flex; flex-direction: column; align-items: center; padding-horizontal: 100">
+        <h1 style="font-size: 40">Pay ${username}@${FLASH_LN_ADDRESS}</h1>
+        <h3 style="font-size: 24; text-align: center; color: #939998">
+          Display this static QR code online or in person to 
+          <br/>
+          allow anybody to pay ${username.toLowerCase()}.
+        </h3> 
+        <img src="data:image/png;base64, ${image}" style="width:500; height:500"/>
+        <p style="font-size: 24; text-align: center; color: #939998">
+          Having trouble scanning this QR code with your wallet? Some wallets do
+          not support printed QR codes like this one. Scan with the camera app on
+          your phone to be taken to a webpage where you can create a fresh invoice
+          for paying from any Lightning wallet.
+        </p>
+      </div>`,
+    });
+  };
+
+  return {print, printPaycode};
 };
 
 export default usePrint;

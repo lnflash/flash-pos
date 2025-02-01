@@ -1,8 +1,11 @@
-import React from 'react';
+import React, {useRef} from 'react';
 import {bech32} from 'bech32';
 import {Dimensions} from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import styled from 'styled-components/native';
+
+// hooks
+import {usePrint} from '../hooks';
 
 // components
 import {PrimaryButton} from '../components';
@@ -21,7 +24,10 @@ global.Buffer = require('buffer').Buffer;
 const width = Dimensions.get('screen').width;
 
 const Paycode = () => {
+  const {printPaycode} = usePrint();
   const {username} = useAppSelector(state => state.user);
+
+  const qrCodeRef = useRef();
 
   const lnurl = bech32.encode(
     'lnurl',
@@ -50,6 +56,13 @@ const Paycode = () => {
           logo={Logo}
           logoSize={60}
           logoBorderRadius={10}
+          getRef={c => {
+            if (c?.toDataURL) {
+              c?.toDataURL((base64Image: any) => {
+                qrCodeRef.current = base64Image;
+              });
+            }
+          }}
         />
       </QrCodeWrapper>
       <Description>
@@ -58,7 +71,11 @@ const Paycode = () => {
         your phone to be taken to a webpage where you can create a fresh invoice
         for paying from any Lightning wallet.
       </Description>
-      <PrimaryButton icon="print" btnText="Print QR code" onPress={() => {}} />
+      <PrimaryButton
+        icon="print"
+        btnText="Print QR code"
+        onPress={() => printPaycode(qrCodeRef.current)}
+      />
     </Wrapper>
   );
 };
