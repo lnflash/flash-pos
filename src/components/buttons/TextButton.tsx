@@ -3,7 +3,7 @@ import styled from 'styled-components/native';
 import Icon from 'react-native-vector-icons/FontAwesome6';
 
 type Props = {
-  icon: string;
+  icon?: string;
   title: string;
   onPress: () => void;
 };
@@ -11,7 +11,7 @@ type Props = {
 const TextButton: React.FC<Props> = ({icon, title, onPress}) => {
   return (
     <Btn onPress={onPress}>
-      <Icon name={icon} size={15} solid color={'#9292A0'} />
+      {icon && <Icon name={icon} size={15} solid color={'#9292A0'} />}
       <BtnText>{title}</BtnText>
     </Btn>
   );
