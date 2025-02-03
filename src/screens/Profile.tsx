@@ -1,9 +1,9 @@
 import React from 'react';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
-import Icon from 'react-native-vector-icons/FontAwesome6';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {useNavigation} from '@react-navigation/native';
+import {Icon} from '@rneui/themed';
 
 // components
 import {TextButton} from '../components';
@@ -39,12 +39,12 @@ const Profile = () => {
         <Container
           activeOpacity={0.5}
           onPress={() => Clipboard.setString(lnAddress)}>
-          <Icon name={'at'} size={20} color={'#4a4a4a'} />
+          <Icon name={'at-outline'} type="ionicon" />
           <Column>
             <Key>Your Lightning address</Key>
             <Value>{lnAddress}</Value>
           </Column>
-          <Icon name={'clone'} size={20} color={'#4a4a4a'} />
+          <Icon name={'copy-outline'} type="ionicon" />
         </Container>
       </InnerWrapper>
       <TextButton title="Logout" onPress={onLogout} />
@@ -80,14 +80,12 @@ const Container = styled.TouchableOpacity`
   overflow: hidden;
   align-items: center;
   justify-content: space-between;
-  padding-left: 20px;
-  padding-right: 15px;
-  padding-vertical: 10px;
+  padding: 10px;
 `;
 
 const Column = styled.View`
   flex: 1;
-  margin-left: 15px;
+  margin-left: 5px;
 `;
 
 const Key = styled.Text`
