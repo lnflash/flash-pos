@@ -1,7 +1,7 @@
 import React from 'react';
 import styled from 'styled-components/native';
 import {Text, PlatformPressable} from '@react-navigation/elements';
-import Icon from 'react-native-vector-icons/FontAwesome6';
+import {Icon} from '@rneui/themed';
 import {
   BottomTabBarProps,
   createBottomTabNavigator,
@@ -14,14 +14,15 @@ import {useLinkBuilder} from '@react-navigation/native';
 // screens
 import {Main, Paycode, Profile} from '../screens';
 
+// assets
 import Background from '../assets/icons/background.png';
 
 const Tab = createBottomTabNavigator();
 
 const tabs = [
-  {label: 'POS', icon: 'qrcode'},
-  {label: 'Paycode', icon: 'squarespace'},
-  {label: 'Profile', icon: 'gears'},
+  {label: 'POS', icon: 'apps-outline', iconActive: 'apps'},
+  {label: 'Paycode', icon: 'qr-code-outline', iconActive: 'qr-code'},
+  {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
 const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
@@ -64,9 +65,9 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
             onLongPress={onLongPress}
             style={{flex: 1}}>
             <Icon
-              name={tabs[index].icon}
-              size={20}
-              solid
+              name={isFocused ? tabs[index].iconActive : tabs[index].icon}
+              size={24}
+              type="ionicon"
               color={isFocused ? '#41AC48' : '#83899b'}
             />
             <TabBarLabel active={isFocused}>{tabs[index].label}</TabBarLabel>
@@ -122,14 +123,13 @@ const Wrapper = styled.View`
 const TabBar = styled(PlatformPressable)`
   align-items: center;
   justify-content: center;
-  padding-vertical: 10px;
+  padding-vertical: 5px;
 `;
 
 const TabBarLabel = styled(Text)<{active: boolean}>`
   font-size: 14px;
   font-family: ${({active}) => (active ? 'Outfit-SemiBold' : 'Outfit-Medium')};
   color: ${({active}) => (active ? '#41AC48' : '#83899b')};
-  margin-top: 2px;
 `;
 
 const Image = styled.ImageBackground`
