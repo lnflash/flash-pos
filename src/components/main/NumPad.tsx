@@ -91,7 +91,7 @@ const NumbersWrapper = styled.View`
 
 const NumBtn = styled.TouchableOpacity`
   flex: 1;
-  height: ${height / 8}px;
+  height: ${height / 8.5}px;
   justify-content: center;
   align-items: center;
 `;

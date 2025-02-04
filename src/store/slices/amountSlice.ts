@@ -96,12 +96,12 @@ export const updateAmount =
             return;
           }
 
-          if (digit === '.' && (currentAmount === '0' || !currentAmount)) {
-            currentAmount = '0';
-          }
-
           if (currentAmount === '0') {
             currentAmount = '';
+          }
+
+          if (digit === '.' && (currentAmount === '0' || !currentAmount)) {
+            currentAmount = '0';
           }
 
           currentAmount = `${currentAmount || ''}${digit}`;
