@@ -25,11 +25,6 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   const {satAmount, displayAmount, currency, isPrimaryAmountSats} =
     useAppSelector(state => state.amount);
 
-  const onPrint = async () => {
-    await print();
-    onDone();
-  };
-
   const onDone = () => {
     dispatch(resetInvoice());
     dispatch(resetAmount());
@@ -66,7 +61,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           iconColor="#002118"
           textStyle={{color: '#002118'}}
           btnStyle={{backgroundColor: '#fff'}}
-          onPress={onPrint}
+          onPress={print}
         />
         <SecondaryButton
           btnText="Done"
