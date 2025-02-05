@@ -19,34 +19,35 @@ const usePrint = () => {
   const print = async () => {
     await RNPrint.print({
       html: `
-          <div style="display: flex;flex-direction: column;align-items: center;">
-            <div style="display: flex;flex-direction: column;align-items: center; margin-bottom: 10px">
-              <img src="https://media-hosting.imagekit.io//69348383edcc4f59/LOGO.svg?Expires=1832241872&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=whr62g6uZealmeC7gPXkUMi~mT37jucBwXKuCGM0TKhh6mxrxh3ZwtZd0g2vFsMmK7fuK0tIY9k~yBVXZptpmwvQFk87P-0KrT0dZf8QU3wuNxdcQkRDAaAvn8vs6qnuYIyMQ35sNaZsHuZxJG2JZNOak5ig1Vd1Ypr4sGAXB2v47uCjultc6w-KlZmp4Bl39EobKWKWNbpggPmDahmCo8AlPbM888qnV2xeOr~CSQm~yvRCOxknWGJJ7Lva3pUaaUTVPLJhUJnFss9S2b1Gzo-6i5tATMrXn2jBnljilAKJS3Vw55mr6IhOK-cwwxDnFR9ZQoyKqxqZzMrZsWWU3Q__" style="width: 150px; height: 150px" />
-            </div>
+          <div style="display: flex;flex-direction: column;">
             <div style="display: flex;flex-direction: column;align-items: center;">
-              <h2 style="padding: 0; margin: 0; margin-bottom: 15px">Sale completed</h2>
-              <h3 style="padding: 0; margin: 0">${
+              <p style="padding: 0; margin: 0; margin-bottom: 15px; font-size: 20px">Sale completed</p>
+              <p style="padding: 0; margin: 0">${
                 currency.symbol
-              } ${displayAmount}</h3>
-              <h3 style="padding: 0; margin: 0; margin-bottom: 15px">≈ ${satAmount} sats</h3>
+              } ${displayAmount}</p>
+              <p style="padding: 0; margin: 0; margin-bottom: 15px">≈ ${satAmount} sats</p>
             </div>
             <div>
-              <div style="display: flex;justify-content: space-between;">
-                <h4 style="padding: 0; margin: 0">Paid to: </h4>
-                <h4 style="padding: 0; margin: 0">${username}</h4>
+              <div style="display: flex;justify-content: space-between; margin-bottom: 5px">
+                <p style="padding: 0; margin: 0">Paid to: </p>
+                <p style="padding: 0; margin: 0">${username}</p>
               </div>
-              <div style="display: flex; justify-content: space-between; padding: 0; margin: 0">
-                <h4 style="padding: 0; margin: 0; margin-right: 10px;">Paid on: </h4>
-                <h4 style="padding: 0; margin: 0">${moment().format('lll')}</h4>
+              <div style="display: flex; justify-content: space-between; padding: 0; margin: 0; margin-bottom: 5px">
+                <p style="padding: 0; margin: 0; margin-right: 10px;">Paid on: </p>
+                <p style="padding: 0; margin: 0">${moment().format('lll')}</p>
               </div>
-              <div style="display: flex;justify-content: space-between;">
-                <h4 style="padding: 0; margin: 0">Status: </h4>
-                <h4 style="padding: 0; margin: 0">Paid</h4>
+              <div style="display: flex;justify-content: space-between; margin-bottom: 5px">
+                <p style="padding: 0; margin: 0">Status: </p>
+                <p style="padding: 0; margin: 0">Paid</p>
               </div>
-              <div style="display: flex;justify-content: space-between;">
-                <h4 style="padding: 0; margin: 0">Description: </h4>
-                <h4 style="padding: 0; margin: 0">${memo || 'none'}</h4>
+              <div style="display: flex;justify-content: space-between; margin-bottom: 20px">
+                <p style="padding: 0; margin: 0">Description: </p>
+                <p style="padding: 0; margin: 0">${memo || 'none'}</p>
               </div>
+            </div>
+            <div >
+             <p style="padding: 0; margin: 0; margin-bottom: 5px">Download Flash app: </p>
+              <img src="https://media-hosting.imagekit.io//ddd57a9aba244f9f/Flash_App_Download_Link_QR-code.JPG?Expires=1833265096&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=2IK4KMXsYzqBiBdXiUUWaMp~UVx0ycnC7Q9a7RzIukQBKBG4o0Z3ZhSwKCU33XDgO8juUFsDosCeYLIu8Xi38mkHYTHSafQuBTczHUaTmuQHwor0pUdM-DVuioaaLSAqVB8iRhCMMLR5pRwFagfASeUMagUC7gIXxxsBRsaQlOPRlFVLUou~OSgZPY4Qx3u7xnYv0PfmJjFhkxhyvQKXgnRfsF9rMPrLLdTz~ohTwOeNeTtomCP6E0E61gbR2~shyn6fSY4KXb3zpVxpRH-RDBx~MzLdHLO3oI21HfZqbN~aUuPQQFdO11Kmw3rU0HjC5j89eyCjNQ9QhzoMjKGyiA__" style="width: 150px; height: 150px" />
             </div>
           </div>
         `,
