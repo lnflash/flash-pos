@@ -57,21 +57,24 @@ const usePrint = () => {
   const printPaycode = async (image?: string) => {
     await RNPrint.print({
       html: `
-      <div style="display: flex; flex-direction: column; align-items: center; padding-horizontal: 100">
-        <h1 style="font-size: 40">Pay ${username}@${FLASH_LN_ADDRESS}</h1>
-        <h3 style="font-size: 24; text-align: center; color: #939998">
-          Display this static QR code online or in person to 
-          <br/>
-          allow anybody to pay ${username.toLowerCase()}.
-        </h3> 
-        <img src="data:image/png;base64, ${image}" style="width:500; height:500"/>
-        <p style="font-size: 24; text-align: center; color: #939998">
-          Having trouble scanning this QR code with your wallet? Some wallets do
-          not support printed QR codes like this one. Scan with the camera app on
-          your phone to be taken to a webpage where you can create a fresh invoice
-          for paying from any Lightning wallet.
-        </p>
-      </div>`,
+        <div style="display: flex; flex-direction: column; align-items: center; padding-horizontal: 100">
+          <p style="font-size: 22px; text-align: center; color: #000; font-weight: bold; margin: 0; margin-bottom: 10px">
+            Pay to 
+            <br/>
+            ${username}@${FLASH_LN_ADDRESS}
+          <p style="font-size: 18px; text-align: center; color: #000; margin: 0; margin-bottom: 10px">
+            Display this static QR code online or in person to 
+            allow anybody to pay ${username.toLowerCase()}.
+          </p> 
+          <img src="data:image/png;base64, ${image}" style="width: 150px; height: 150px" />
+          <p style="font-size: 16px; text-align: center; color: #939998; margin: 0; margin-top: 10px">
+            Having trouble scanning this QR code with your wallet? Some wallets do
+            not support printed QR codes like this one. Scan with the camera app on
+            your phone to be taken to a webpage where you can create a fresh invoice
+            for paying from any Lightning wallet.
+          </p>
+        </div>
+      `,
     });
   };
 
