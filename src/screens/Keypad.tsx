@@ -29,7 +29,7 @@ import {toastShow} from '../utils/toast';
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
-const Main = () => {
+const Keypad = () => {
   const navigation = useNavigation<Props>();
   const [createInvoice] = useMutation(LnUsdInvoiceCreateOnBehalfOfRecipient);
 
@@ -105,7 +105,7 @@ const Main = () => {
   );
 };
 
-export default Main;
+export default Keypad;
 
 const Wrapper = styled.View`
   flex: 1;

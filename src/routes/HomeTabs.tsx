@@ -12,7 +12,7 @@ import {useAppSelector} from '../store/hooks';
 import {useLinkBuilder} from '@react-navigation/native';
 
 // screens
-import {Main, Paycode, Profile} from '../screens';
+import {Keypad, Paycode, Profile} from '../screens';
 
 // assets
 import Background from '../assets/icons/background.png';
@@ -92,7 +92,7 @@ export const HomeTabs = () => {
         headerTitleAlign: 'center',
         animation: 'shift',
       }}>
-      <Tab.Screen name="Main" component={Main} />
+      <Tab.Screen name="Keypad" component={Keypad} />
       <Tab.Screen
         name="Paycode"
         component={Paycode}
