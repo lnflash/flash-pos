@@ -8,7 +8,7 @@ import {PrimaryButton} from '../buttons';
 import {setMemo} from '../../store/slices/amountSlice';
 
 // hooks
-import {useAppDispatch} from '../../store/hooks';
+import {useAppDispatch, useAppSelector} from '../../store/hooks';
 
 type Props = {
   btnStyle?: ViewStyle;
@@ -16,16 +16,31 @@ type Props = {
 
 const Note: React.FC<Props> = ({btnStyle}) => {
   const dispatch = useAppDispatch();
+  const {memo} = useAppSelector(state => state.amount);
 
   const [note, setNote] = useState('');
   const [visible, setVisible] = useState(false);
 
   return (
     <Wrapper>
-      <Btn style={btnStyle} onPress={() => setVisible(true)}>
-        <BtnText>Add note</BtnText>
-        <Icon name={'pencil'} size={15} solid />
-      </Btn>
+      {!!memo ? (
+        <NoteWrapper>
+          <NoteText numberOfLines={1}>
+            Note:{' '}
+            <NoteText font="Outfit-Regular" size={13}>
+              {memo}
+            </NoteText>
+          </NoteText>
+          <EditBtn onPress={() => setVisible(true)}>
+            <Icon name={'pencil'} size={15} solid />
+          </EditBtn>
+        </NoteWrapper>
+      ) : (
+        <Btn style={btnStyle} onPress={() => setVisible(true)}>
+          <BtnText>Add note</BtnText>
+          <Icon name={'pencil'} size={15} solid />
+        </Btn>
+      )}
       <Modal
         animationType="slide"
         transparent={true}
@@ -64,7 +79,6 @@ export default Note;
 
 const Wrapper = styled.View`
   align-items: center;
-  margin-bottom: 20px;
 `;
 
 const Btn = styled.TouchableOpacity`
@@ -126,4 +140,21 @@ const Input = styled.TextInput`
   background-color: #f0f0f0;
   text-align-vertical: top;
   padding-horizontal: 5px;
+`;
+
+const NoteWrapper = styled.View`
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  margin-horizontal: 30px;
+`;
+
+const NoteText = styled.Text<{font?: string; size?: number}>`
+  font-size: ${({size}) => size || 14}px;
+  font-family: ${({font}) => font || 'Outfit-SemiBold'};
+  margin-left: 25px;
+`;
+
+const EditBtn = styled.TouchableOpacity`
+  padding: 10px;
 `;
