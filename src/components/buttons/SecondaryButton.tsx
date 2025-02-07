@@ -43,13 +43,13 @@ const Wrapper = styled.TouchableOpacity`
   flex-direction: row;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: 100px;
   border: 1px solid #002118;
   padding-vertical: 8px;
 `;
 
 const Text = styled.Text`
-  font-size: 15px;
+  font-size: 18px;
   font-family: 'Outfit-Bold';
   color: #002118;
 `;
