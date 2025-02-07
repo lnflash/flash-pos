@@ -110,7 +110,7 @@ export default Keypad;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 100px;
+  padding-bottom: 90px;
 `;
 
 const BodyWrapper = styled.View`

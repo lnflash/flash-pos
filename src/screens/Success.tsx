@@ -102,7 +102,7 @@ const Icon = styled.Image`
 `;
 
 const Title = styled.Text`
-  font-size: 20px;
+  font-size: 26px;
   font-family: 'Outfit-Regular';
   text-align: center;
   color: #fff;
@@ -110,13 +110,13 @@ const Title = styled.Text`
 `;
 
 const PrimaryAmount = styled.Text`
-  font-size: 32px;
+  font-size: 40px;
   font-family: 'Outfit-Regular';
   color: #fff;
 `;
 
 const SecondaryAmount = styled.Text`
-  font-size: 18px;
+  font-size: 26px;
   font-family: 'Outfit-Regular';
   color: #fff;
   opacity: 0.8;
