@@ -12,7 +12,7 @@ import {useAppSelector} from '../store/hooks';
 import {useLinkBuilder} from '@react-navigation/native';
 
 // screens
-import {Keypad, Paycode, Profile} from '../screens';
+import {Keypad, Paycode, Profile, Rewards} from '../screens';
 
 // assets
 import Background from '../assets/icons/background.png';
@@ -21,6 +21,7 @@ const Tab = createBottomTabNavigator();
 
 const tabs = [
   {label: 'POS', icon: 'apps-outline', iconActive: 'apps'},
+  {label: 'Rewards', icon: 'diamond-outline', iconActive: 'diamond'},
   {label: 'Paycode', icon: 'qr-code-outline', iconActive: 'qr-code'},
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
@@ -93,6 +94,11 @@ export const HomeTabs = () => {
         animation: 'shift',
       }}>
       <Tab.Screen name="Keypad" component={Keypad} />
+      <Tab.Screen
+        name="Rewards"
+        component={Rewards}
+        options={{headerShown: false}}
+      />
       <Tab.Screen
         name="Paycode"
         component={Paycode}
