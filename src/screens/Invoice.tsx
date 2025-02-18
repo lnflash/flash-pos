@@ -94,7 +94,7 @@ export default Invoice;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 10px;
+  padding-bottom: 20px;
   padding-horizontal: 20px;
 `;
 

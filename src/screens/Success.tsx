@@ -80,7 +80,7 @@ export default Success;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #007856;
-  padding-bottom: 10px;
+  padding-bottom: 20px;
   padding-horizontal: 20px;
 `;
 
