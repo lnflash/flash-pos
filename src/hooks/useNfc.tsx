@@ -1,18 +1,24 @@
 import {useEffect} from 'react';
 import {getParams} from 'js-lnurl';
 import {URL} from 'react-native-url-polyfill';
-import {useNavigation} from '@react-navigation/native';
-import {useActivityIndicator} from './useActivityIndicator';
 import {StackNavigationProp} from '@react-navigation/stack';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
+
+// hooks
+import {useNavigation} from '@react-navigation/native';
+import {useActivityIndicator} from './useActivityIndicator';
+
+// utils
 import {toastShow} from '../utils/toast';
 
 NfcManager.start();
 
+type Props = StackNavigationProp<RootStackType, 'Invoice'>;
+
 const useNfc = (paymentRequest: string) => {
+  const navigation = useNavigation<Props>();
+
   const {toggleLoading} = useActivityIndicator();
-  const navigation =
-    useNavigation<StackNavigationProp<RootStackType, 'Invoice'>>();
 
   useEffect(() => {
     checkNfc();
