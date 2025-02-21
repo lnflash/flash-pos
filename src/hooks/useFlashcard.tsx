@@ -68,33 +68,8 @@ const useFlashcard = () => {
 
             const html = response.data;
 
-            // Get balance
-            const balanceMatch = html.match(
-              /(\d{1,3}(?:,\d{3})*)\s*SATS<\/dt>/,
-            );
-            if (balanceMatch) {
-              const parsedBalance = balanceMatch[1].replace(/,/g, ''); // Remove commas
-              const satoshiAmount = parseInt(parsedBalance, 10);
-              const {convertedCurrencyAmount} = satsToCurrency(
-                Number(satoshiAmount),
-                currency.id,
-                currency.fractionDigits,
-              );
-              const displayAmount = Number(convertedCurrencyAmount).toFixed(2);
-
-              console.log('SATOSHI AMOUNT>>>>>>>>>>>>>>>', satoshiAmount);
-              console.log('DISPLAY AMOUNT>>>>>>>>>>>>>>>', displayAmount);
-
-              setSatAmount(satoshiAmount);
-              setDisplayAmount(displayAmount);
-            }
-
-            // Get lnurl pay address
-            const lnurlMatch = html.match(/href="lightning:(lnurl\w+)"/);
-            if (lnurlMatch) {
-              console.log('LNURL MATCH>>>>>>>>>>', lnurlMatch[1]);
-              setLnurl(lnurlMatch[1]);
-            }
+            getBalance(html);
+            getLnurl(html);
           } catch (err) {
             console.log('NFC ERROR:', err);
           }
@@ -104,6 +79,34 @@ const useFlashcard = () => {
       }
     } else {
       toastShow({message: 'No tag found', type: 'error'});
+    }
+  };
+
+  const getBalance = (html: string) => {
+    const balanceMatch = html.match(/(\d{1,3}(?:,\d{3})*)\s*SATS<\/dt>/);
+    if (balanceMatch) {
+      const parsedBalance = balanceMatch[1].replace(/,/g, ''); // Remove commas
+      const satoshiAmount = parseInt(parsedBalance, 10);
+      const {convertedCurrencyAmount} = satsToCurrency(
+        Number(satoshiAmount),
+        currency.id,
+        currency.fractionDigits,
+      );
+      const displayAmount = Number(convertedCurrencyAmount).toFixed(2);
+
+      console.log('SATOSHI AMOUNT>>>>>>>>>>>>>>>', satoshiAmount);
+      console.log('DISPLAY AMOUNT>>>>>>>>>>>>>>>', displayAmount);
+
+      setSatAmount(satoshiAmount);
+      setDisplayAmount(displayAmount);
+    }
+  };
+
+  const getLnurl = (html: string) => {
+    const lnurlMatch = html.match(/href="lightning:(lnurl\w+)"/);
+    if (lnurlMatch) {
+      console.log('LNURL MATCH>>>>>>>>>>', lnurlMatch[1]);
+      setLnurl(lnurlMatch[1]);
     }
   };
 

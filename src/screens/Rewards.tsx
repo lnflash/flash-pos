@@ -19,19 +19,25 @@ type Props = StackNavigationProp<RootStackType, 'Home'>;
 const Rewards = () => {
   const navigation = useNavigation<Props>();
 
-  const {lnurl, satAmount, displayAmount} = useFlashcard();
+  const {loading, satAmount, displayAmount, lnurl} = useFlashcard();
 
   const {currency} = useAppSelector(state => state.amount);
 
   useEffect(() => {
-    setTimeout(() => {
-      navigation.navigate('RewardsSuccess', {
-        satAmount: 21,
-        displayAmount: 4,
-        balance: `${currency.symbol} ${123}`,
-      });
-    }, 1000);
-  }, []);
+    if (!loading && !!lnurl) {
+      onReward();
+    }
+  }, [loading, lnurl]);
+
+  const onReward = () => {
+    // logic to make payment
+
+    navigation.navigate('RewardsSuccess', {
+      satAmount: 21,
+      displayAmount: 4,
+      balance: `${currency.symbol} ${123}`,
+    });
+  };
 
   return (
     <Wrapper>
