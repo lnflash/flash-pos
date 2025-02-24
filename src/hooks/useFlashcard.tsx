@@ -72,6 +72,11 @@ const useFlashcard = () => {
             getLnurl(html);
           } catch (err) {
             console.log('NFC ERROR:', err);
+            toastShow({
+              message:
+                'Unsupported NFC card. Please ensure you are using a flashcard.',
+              type: 'error',
+            });
           }
         }
         toggleLoading(false);

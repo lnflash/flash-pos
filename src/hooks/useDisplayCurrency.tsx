@@ -31,7 +31,7 @@ const formatCurrencyHelper = ({
     // FIXME this workaround of using .format and not .formatNumber is
     // because hermes haven't fully implemented Intl.NumberFormat yet
   }).format(Math.abs(Number(amountInMajorUnits)));
-  return `${isNegative && withSign ? '-' : ''}${symbol}${amountStr}`;
+  return `${isNegative && withSign ? '-' : ''}${symbol} ${amountStr}`;
 };
 
 export const useDisplayCurrency = () => {
