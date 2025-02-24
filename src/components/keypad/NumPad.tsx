@@ -67,10 +67,8 @@ const NumPad = () => {
         <NumBtn onPress={() => dispatch(updateAmount('addDigit', '0'))}>
           <NumText>0</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('deleteDigit'))}>
-          <NumText>
-            <Icon name={'delete-left'} size={20} solid color={'#db254e'} />
-          </NumText>
+        <NumBtn onPress={() => dispatch(updateAmount('clearInput'))}>
+          <Icon name={'xmark'} size={35} color={'#db254e'} />
         </NumBtn>
       </RowWrapper>
     </NumbersWrapper>

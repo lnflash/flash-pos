@@ -116,9 +116,9 @@ export const HomeTabs = () => {
 const Wrapper = styled.View`
   flex-direction: row;
   position: absolute;
-  bottom: 20px;
-  left: 50px;
-  right: 50px;
+  bottom: 10px;
+  left: 30px;
+  right: 30px;
   border-top-width: 0;
   border-radius: 360px;
   background-color: #fff;

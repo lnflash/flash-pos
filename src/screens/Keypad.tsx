@@ -94,12 +94,6 @@ const Keypad = () => {
       </BodyWrapper>
       <BtnsWrapper>
         <PrimaryButton btnText="Next" onPress={onCreateInvoice} />
-        <SecondaryButton
-          icon={'arrow-rotate-left'}
-          btnText="Clear"
-          btnStyle={{marginTop: 10}}
-          onPress={() => dispatch(updateAmount('clearInput'))}
-        />
       </BtnsWrapper>
     </Wrapper>
   );
@@ -110,7 +104,7 @@ export default Keypad;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 90px;
+  padding-bottom: 80px;
 `;
 
 const BodyWrapper = styled.View`
@@ -118,6 +112,5 @@ const BodyWrapper = styled.View`
 `;
 
 const BtnsWrapper = styled.View`
-  align-items: center;
-  margin-horizontal: 20px;
+  padding-horizontal: 20px;
 `;
