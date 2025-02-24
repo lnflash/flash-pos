@@ -31,6 +31,12 @@ const Rewards = () => {
 
   const {currency} = useAppSelector(state => state.amount);
 
+  const rewardDisplayAmount = satsToCurrency(
+    21,
+    currency.id,
+    2,
+  ).formattedCurrency;
+
   useEffect(() => {
     if (!loading && !!lnurl) {
       onReward();
@@ -38,10 +44,9 @@ const Rewards = () => {
   }, [loading, lnurl]);
 
   const onReward = async () => {
-    const usdAmount = satsToCurrency(21, 'USD', 2).convertedCurrencyAmount;
     const requestBody = {
       destination: lnurl,
-      amount: (usdAmount / 100).toFixed(2),
+      amount: 21,
       payoutMethodId: 'BTC-LN',
     };
 
@@ -79,7 +84,7 @@ const Rewards = () => {
         iterationCount="infinite">
         <Image source={Pos} />
       </Animatable.View>
-      <Subtitle>{`21 sats (~J$ 3.19)\nwill be applied to reward balance`}</Subtitle>
+      <Subtitle>{`21 sats (~${rewardDisplayAmount})\nwill be applied to reward balance.`}</Subtitle>
     </Wrapper>
   );
 };
@@ -89,9 +94,10 @@ export default Rewards;
 const Wrapper = styled.View`
   flex: 1;
   align-items: center;
+  justify-content: center;
   background-color: #ffffff;
-  padding-top: 100px;
-  padding-horizontal: 40px;
+  padding-bottom: 70px;
+  padding-horizontal: 20px;
 `;
 
 const Title = styled.Text`
