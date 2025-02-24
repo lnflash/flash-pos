@@ -3,5 +3,5 @@ type RootStackType = {
   Home: undefined;
   Invoice: undefined;
   Success?: {title?: string};
-  RewardsSuccess: {satAmount: number; displayAmount: number; balance: string};
+  RewardsSuccess: {rewardSatAmount: number; balance: string};
 };
