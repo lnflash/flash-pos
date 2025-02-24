@@ -91,7 +91,7 @@ export default Auth;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #fff;
-  padding-bottom: 10px;
+  padding-bottom: 20px;
 `;
 
 const InnerWrapper = styled.View`
