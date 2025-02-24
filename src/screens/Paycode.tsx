@@ -84,7 +84,6 @@ export default Paycode;
 
 const Wrapper = styled.View`
   flex: 1;
-  align-items: center;
   background-color: #fff;
   padding-top: 20px;
   padding-horizontal: 20px;
@@ -94,7 +93,7 @@ const QrCodeWrapper = styled.View`
   border-radius: 10px;
   background-color: #f0f0f0;
   padding: 20px;
-  margin-vertical: 20px;
+  margin-vertical: 10px;
 `;
 
 const Title = styled.Text`
@@ -106,14 +105,14 @@ const Title = styled.Text`
 `;
 
 const Subtitle = styled.Text`
-  font-size: 16px;
+  font-size: 15px;
   font-family: 'Outfit-Medium';
   text-align: center;
   color: #939998;
 `;
 
 const Description = styled.Text`
-  font-size: 13px;
+  font-size: 11px;
   font-family: 'Outfit-Regular';
   text-align: center;
   color: #939998;
