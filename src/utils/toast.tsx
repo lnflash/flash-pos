@@ -7,10 +7,14 @@ import Toast, {
 
 export const toastConfig = {
   success: (props: BaseToastProps) => (
-    <SuccessToast {...props} text1NumberOfLines={3} />
+    <SuccessToast
+      {...props}
+      text1NumberOfLines={3}
+      text1Style={{fontSize: 16}}
+    />
   ),
   error: (props: BaseToastProps) => (
-    <ErrorToast {...props} text1NumberOfLines={3} />
+    <ErrorToast {...props} text1NumberOfLines={3} text1Style={{fontSize: 16}} />
   ),
 };
 
