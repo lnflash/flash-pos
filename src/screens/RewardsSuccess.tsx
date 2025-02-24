@@ -8,6 +8,7 @@ import {PrimaryButton} from '../components';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
+import {useRealtimePrice} from '../hooks';
 
 // assets
 import Reward from '../assets/icons/reward.svg';
@@ -17,8 +18,16 @@ const width = Dimensions.get('screen').width;
 type Props = StackScreenProps<RootStackType, 'RewardsSuccess'>;
 
 const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
-  const {satAmount, displayAmount, balance} = route.params;
+  const {rewardSatAmount, balance} = route.params;
   const {currency} = useAppSelector(state => state.amount);
+
+  const {satsToCurrency} = useRealtimePrice();
+
+  const displayAmount = satsToCurrency(
+    rewardSatAmount,
+    currency.id,
+    2,
+  ).formattedCurrency;
 
   const onDone = () => {
     navigation.popToTop();
@@ -30,10 +39,8 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
         <Title>{balance}</Title>
         <Image source={Reward} />
         <Subtitle>The Reward has been given!</Subtitle>
-        <PrimaryAmount>{`${currency.symbol} ${
-          displayAmount || 0
-        }`}</PrimaryAmount>
-        <SecondaryAmount>{`≈ ${satAmount || 0} sats`}</SecondaryAmount>
+        <PrimaryAmount>{`${displayAmount || 0}`}</PrimaryAmount>
+        <SecondaryAmount>{`≈ ${rewardSatAmount || 0} sats`}</SecondaryAmount>
       </InnerWrapper>
       <PrimaryButton
         btnText="Done"
