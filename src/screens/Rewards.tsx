@@ -3,14 +3,21 @@ import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
 import {StackNavigationProp} from '@react-navigation/stack';
+import axios from 'axios';
 
 // hooks
-import {useFlashcard} from '../hooks';
+import {useFlashcard, useRealtimePrice} from '../hooks';
 import {useAppSelector} from '../store/hooks';
 import {useNavigation} from '@react-navigation/native';
 
 // assets
 import Pos from '../assets/icons/pos.svg';
+
+// env
+import {BTC_PAY_SERVER, PULL_PAYMENT_ID} from '@env';
+
+// utils
+import {toastShow} from '../utils/toast';
 
 const width = Dimensions.get('screen').width;
 
@@ -19,7 +26,8 @@ type Props = StackNavigationProp<RootStackType, 'Home'>;
 const Rewards = () => {
   const navigation = useNavigation<Props>();
 
-  const {loading, satAmount, displayAmount, lnurl} = useFlashcard();
+  const {satsToCurrency} = useRealtimePrice();
+  const {loading, displayAmount, lnurl} = useFlashcard();
 
   const {currency} = useAppSelector(state => state.amount);
 
@@ -29,14 +37,37 @@ const Rewards = () => {
     }
   }, [loading, lnurl]);
 
-  const onReward = () => {
-    // logic to make payment
+  const onReward = async () => {
+    const usdAmount = satsToCurrency(21, 'USD', 2).convertedCurrencyAmount;
+    const requestBody = {
+      destination: lnurl,
+      amount: (usdAmount / 100).toFixed(2),
+      payoutMethodId: 'BTC-LN',
+    };
 
-    navigation.navigate('RewardsSuccess', {
-      satAmount: 21,
-      displayAmount: 4,
-      balance: `${currency.symbol} ${123}`,
-    });
+    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
+
+    try {
+      const response = await axios.post(url, requestBody);
+      console.log('Response from redeeming rewards:', response.data);
+      if (response.data) {
+        navigation.navigate('RewardsSuccess', {
+          rewardSatAmount: 21,
+          balance: `${currency.symbol} ${displayAmount}`,
+        });
+      } else {
+        toastShow({
+          message: 'Reward is failed. Please try again.',
+          type: 'error',
+        });
+      }
+    } catch (error) {
+      console.error('Error redeeming rewards', error);
+      toastShow({
+        message: 'Reward is failed. Please try again.',
+        type: 'error',
+      });
+    }
   };
 
   return (
