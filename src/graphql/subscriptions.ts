@@ -1,7 +1,7 @@
 import {gql} from '@apollo/client';
 
 export const RealtimePriceSubscription = gql`
-  subscription realtimePriceWs($currency: string!) {
+  subscription realtimePriceWs($currency: DisplayCurrency!) {
     realtimePrice(input: {currency: $currency}) {
       errors {
         message

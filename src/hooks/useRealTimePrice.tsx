@@ -11,19 +11,10 @@ import {RealtimePrice} from '../graphql/queries';
 
 const useRealtimePrice = () => {
   const priceRef = React.useRef<number>(0);
-
   const {currency} = useAppSelector(state => state.amount);
-
   const {formatCurrency} = useDisplayCurrency();
 
-  const {data, loading: dataLoading} = useSubscription(
-    RealtimePriceSubscription,
-    {
-      variables: {currency: currency.id},
-    },
-  );
-
-  const {loading: initialDataLoading} = useQuery(RealtimePrice, {
+  const {loading: initLoading} = useQuery(RealtimePrice, {
     variables: {currency: currency.id},
     onCompleted(initData) {
       if (initData?.realtimePrice?.btcSatPrice) {
@@ -33,22 +24,27 @@ const useRealtimePrice = () => {
     },
   });
 
+  const {loading} = useSubscription(RealtimePriceSubscription, {
+    variables: {currency: currency.id},
+    onData({data}) {
+      if (data.data.realtimePrice.realtimePrice.btcSatPrice) {
+        const {base, offset} =
+          data.data.realtimePrice.realtimePrice.btcSatPrice;
+        priceRef.current = base / 10 ** offset;
+      }
+    },
+  });
+
   const conversions = React.useMemo(
     () => ({
-      satsToCurrency: (
-        sats: number,
-        display: string,
-        fractionDigits: number,
-      ) => {
-        console.log(display);
-        console.log(display);
+      satsToCurrency: (sats: number) => {
         const convertedCurrencyAmount =
-          fractionDigits === 2
+          currency.fractionDigits === 2
             ? (sats * priceRef.current) / 100
             : sats * priceRef.current;
         const formattedCurrency = formatCurrency({
           amountInMajorUnits: convertedCurrencyAmount,
-          currency: display,
+          currency: currency.id,
           withSign: true,
         });
         return {
@@ -56,18 +52,14 @@ const useRealtimePrice = () => {
           formattedCurrency,
         };
       },
-      currencyToSats: (
-        currency: number,
-        display: string,
-        fractionDigits: number,
-      ) => {
+      currencyToSats: (currencyAmount: number) => {
         const convertedCurrencyAmount =
-          fractionDigits === 2
-            ? (100 * currency) / priceRef.current
-            : currency / priceRef.current;
+          currency.fractionDigits === 2
+            ? (100 * currencyAmount) / priceRef.current
+            : currencyAmount / priceRef.current;
         const formattedCurrency = formatCurrency({
           amountInMajorUnits: convertedCurrencyAmount,
-          currency: display,
+          currency: currency.id,
           withSign: true,
         });
         return {
@@ -75,15 +67,10 @@ const useRealtimePrice = () => {
           formattedCurrency,
         };
       },
-      loading: dataLoading || initialDataLoading,
+      loading: loading || initLoading,
     }),
-    [priceRef, formatCurrency, dataLoading, initialDataLoading],
+    [priceRef, formatCurrency, loading, initLoading, currency],
   );
-
-  if (data?.realtimePrice?.realtimePrice?.btcSatPrice) {
-    const {base, offset} = data.realtimePrice.realtimePrice.btcSatPrice;
-    priceRef.current = base / 10 ** offset;
-  }
 
   if (priceRef.current === 0) {
     return {
@@ -99,7 +86,7 @@ const useRealtimePrice = () => {
           formattedCurrency: '0',
         };
       },
-      loading: dataLoading || initialDataLoading,
+      loading: loading || initLoading,
     };
   }
 
