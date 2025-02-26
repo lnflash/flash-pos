@@ -1,4 +1,5 @@
 import React, {useEffect} from 'react';
+import {ViewStyle} from 'react-native';
 import styled from 'styled-components/native';
 import Icon from 'react-native-vector-icons/FontAwesome6';
 
@@ -15,7 +16,6 @@ import {
   setIsPrimaryAmountSats,
   setSatAmount,
 } from '../../store/slices/amountSlice';
-import {ViewStyle} from 'react-native';
 
 type Props = {
   hideCurrency?: boolean;
@@ -31,11 +31,7 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
 
   useEffect(() => {
     if (!loading && isPrimaryAmountSats) {
-      const {convertedCurrencyAmount} = satsToCurrency(
-        Number(satAmount),
-        currency.id,
-        currency.fractionDigits,
-      );
+      const {convertedCurrencyAmount} = satsToCurrency(Number(satAmount));
       let displayAmount = Number(convertedCurrencyAmount).toFixed(2);
       if (
         convertedCurrencyAmount.toString().includes('NaN') ||
@@ -49,11 +45,7 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
 
   useEffect(() => {
     if (!loading && !isPrimaryAmountSats) {
-      const {convertedCurrencyAmount} = currencyToSats(
-        Number(displayAmount),
-        currency.id,
-        currency.fractionDigits,
-      );
+      const {convertedCurrencyAmount} = currencyToSats(Number(displayAmount));
       let satAmount = Math.round(convertedCurrencyAmount).toString();
       if (convertedCurrencyAmount.toString().includes('NaN')) {
         satAmount = '0';
