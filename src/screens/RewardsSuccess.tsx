@@ -23,11 +23,7 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
 
   const {satsToCurrency} = useRealtimePrice();
 
-  const displayAmount = satsToCurrency(
-    rewardSatAmount,
-    currency.id,
-    2,
-  ).formattedCurrency;
+  const {formattedCurrency} = satsToCurrency(rewardSatAmount);
 
   const onDone = () => {
     navigation.popToTop();
@@ -39,7 +35,7 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
         <Title>{balance}</Title>
         <Image source={Reward} />
         <Subtitle>The Reward has been given!</Subtitle>
-        <PrimaryAmount>{`${displayAmount || 0}`}</PrimaryAmount>
+        <PrimaryAmount>{`${formattedCurrency || 0}`}</PrimaryAmount>
         <SecondaryAmount>{`≈ ${rewardSatAmount || 0} sats`}</SecondaryAmount>
       </InnerWrapper>
       <PrimaryButton

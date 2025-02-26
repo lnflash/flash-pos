@@ -3,7 +3,6 @@ import {useEffect, useState} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
 
 // hooks
-import {useAppSelector} from '../store/hooks';
 import useRealtimePrice from './useRealTimePrice';
 import {useActivityIndicator} from './useActivityIndicator';
 
@@ -15,8 +14,6 @@ NfcManager.start();
 const useFlashcard = () => {
   const {satsToCurrency} = useRealtimePrice();
   const {toggleLoading} = useActivityIndicator();
-
-  const {currency} = useAppSelector(state => state.amount);
 
   const [loading, setLoading] = useState(false);
   const [lnurl, setLnurl] = useState<string>();
@@ -92,18 +89,13 @@ const useFlashcard = () => {
     if (balanceMatch) {
       const parsedBalance = balanceMatch[1].replace(/,/g, ''); // Remove commas
       const satoshiAmount = parseInt(parsedBalance, 10);
-      const {convertedCurrencyAmount} = satsToCurrency(
-        Number(satoshiAmount),
-        currency.id,
-        currency.fractionDigits,
-      );
-      const displayAmount = Number(convertedCurrencyAmount).toFixed(2);
+      const {formattedCurrency} = satsToCurrency(Number(satoshiAmount));
 
       console.log('SATOSHI AMOUNT>>>>>>>>>>>>>>>', satoshiAmount);
-      console.log('DISPLAY AMOUNT>>>>>>>>>>>>>>>', displayAmount);
+      console.log('DISPLAY AMOUNT>>>>>>>>>>>>>>>', formattedCurrency);
 
       setSatAmount(satoshiAmount);
-      setDisplayAmount(displayAmount);
+      setDisplayAmount(formattedCurrency);
     }
   };
 

@@ -7,7 +7,6 @@ import axios from 'axios';
 
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
-import {useAppSelector} from '../store/hooks';
 import {useNavigation} from '@react-navigation/native';
 
 // assets
@@ -29,13 +28,7 @@ const Rewards = () => {
   const {satsToCurrency} = useRealtimePrice();
   const {loading, displayAmount, lnurl} = useFlashcard();
 
-  const {currency} = useAppSelector(state => state.amount);
-
-  const rewardDisplayAmount = satsToCurrency(
-    21,
-    currency.id,
-    2,
-  ).formattedCurrency;
+  const {formattedCurrency} = satsToCurrency(21);
 
   useEffect(() => {
     if (!loading && !!lnurl) {
@@ -58,7 +51,7 @@ const Rewards = () => {
       if (response.data) {
         navigation.navigate('RewardsSuccess', {
           rewardSatAmount: 21,
-          balance: `${currency.symbol} ${displayAmount}`,
+          balance: displayAmount,
         });
       } else {
         toastShow({
@@ -84,7 +77,7 @@ const Rewards = () => {
         iterationCount="infinite">
         <Image source={Pos} />
       </Animatable.View>
-      <Subtitle>{`21 sats (~${rewardDisplayAmount})\nwill be applied to reward balance.`}</Subtitle>
+      <Subtitle>{`21 sats (~${formattedCurrency})\nwill be applied to reward balance.`}</Subtitle>
     </Wrapper>
   );
 };
