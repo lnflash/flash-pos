@@ -4,7 +4,13 @@ import {createNativeStackNavigator} from '@react-navigation/native-stack';
 
 // screens
 import {HomeTabs} from './HomeTabs';
-import {Auth, Invoice, RewardsSuccess, Success} from '../screens';
+import {
+  Auth,
+  FlashcardBalance,
+  Invoice,
+  RewardsSuccess,
+  Success,
+} from '../screens';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
@@ -18,7 +24,7 @@ const Root = () => {
 
   return (
     <Stack.Navigator
-      initialRouteName={initialRouteName}
+      initialRouteName={'FlashcardBalance'}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: `Pay to ${username}`,
@@ -44,6 +50,11 @@ const Root = () => {
       <Stack.Screen
         name="RewardsSuccess"
         component={RewardsSuccess}
+        options={{headerShown: false}}
+      />
+      <Stack.Screen
+        name="FlashcardBalance"
+        component={FlashcardBalance}
         options={{headerShown: false}}
       />
     </Stack.Navigator>
