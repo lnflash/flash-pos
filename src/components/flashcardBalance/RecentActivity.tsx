@@ -28,7 +28,7 @@ const RecentActivity: React.FC<Props> = ({transactions}) => {
           type="ionicon"
           color={item.sats < 0 ? '#B31B1B' : '#007856'}
         />
-        <Date>{moment(item.date).format('lll')}</Date>
+        <Date>{moment(item.date).format('MMM Do, h:mm a')}</Date>
         <ColumnWrapper>
           <DisplayAmount>
             {satsToCurrency(item.sats).formattedCurrency}
