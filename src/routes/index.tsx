@@ -1,6 +1,7 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import {createNavigationContainerRef} from '@react-navigation/native';
 
 // screens
 import {HomeTabs} from './HomeTabs';
@@ -15,6 +16,8 @@ import {
 // hooks
 import {useAppSelector} from '../store/hooks';
 
+export const navigationRef = createNavigationContainerRef<RootStackType>();
+
 const Stack = createNativeStackNavigator<RootStackType>();
 
 const Root = () => {
@@ -24,7 +27,7 @@ const Root = () => {
 
   return (
     <Stack.Navigator
-      initialRouteName={'FlashcardBalance'}
+      initialRouteName={initialRouteName}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: `Pay to ${username}`,
@@ -55,7 +58,11 @@ const Root = () => {
       <Stack.Screen
         name="FlashcardBalance"
         component={FlashcardBalance}
-        options={{headerShown: false}}
+        options={{
+          headerShown: true,
+          headerTitle: 'Flashcard Balance',
+          animation: 'fade_from_bottom',
+        }}
       />
     </Stack.Navigator>
   );
@@ -63,7 +70,7 @@ const Root = () => {
 
 const Layout = () => {
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Root />
     </NavigationContainer>
   );
