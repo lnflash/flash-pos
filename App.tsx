@@ -23,6 +23,7 @@ import client from './src/graphql/ApolloClient';
 
 // contexts
 import {ActivityIndicatorProvider} from './src/contexts/ActivityIndicator';
+import {FlashcardProvider} from './src/contexts/Flashcard';
 
 // utils
 import {toastConfig} from './src/utils/toast';
@@ -34,7 +35,9 @@ function App(): React.JSX.Element {
         <StatusBar barStyle={'light-content'} backgroundColor={'#000'} />
         <ApolloProvider client={client}>
           <ActivityIndicatorProvider>
-            <Layout />
+            <FlashcardProvider>
+              <Layout />
+            </FlashcardProvider>
             <Toast config={toastConfig} />
           </ActivityIndicatorProvider>
         </ApolloProvider>
