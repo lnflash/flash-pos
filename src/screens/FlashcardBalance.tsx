@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo} from 'react';
+import React, {useEffect} from 'react';
 import styled from 'styled-components/native';
 import {ActivityIndicator} from 'react-native';
 import {StackScreenProps} from '@react-navigation/stack';
@@ -31,15 +31,10 @@ const FlashcardBalance: React.FC<Props> = ({navigation, route}) => {
     );
   }
 
-  const formattedCurrency = useMemo(
-    () => satsToCurrency(balanceInSats || 0).formattedCurrency,
-    [satsToCurrency, balanceInSats],
-  );
-
   return (
     <Wrapper>
       <Image source={Flashcard} />
-      <Balance>{formattedCurrency}</Balance>
+      <Balance>{satsToCurrency(balanceInSats || 0).formattedCurrency}</Balance>
       <RecentActivity transactions={transactions} />
     </Wrapper>
   );
