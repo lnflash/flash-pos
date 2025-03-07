@@ -1,4 +1,4 @@
-import React, {useEffect} from 'react';
+import React, {useCallback, useMemo} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
@@ -7,7 +7,7 @@ import axios from 'axios';
 
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
-import {useNavigation} from '@react-navigation/native';
+import {useFocusEffect, useNavigation} from '@react-navigation/native';
 
 // assets
 import Pos from '../assets/icons/pos.svg';
@@ -26,15 +26,19 @@ const Rewards = () => {
   const navigation = useNavigation<Props>();
 
   const {satsToCurrency} = useRealtimePrice();
-  const {loading, displayAmount, lnurl} = useFlashcard();
+  const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
 
-  const {formattedCurrency} = satsToCurrency(21);
+  const formattedCurrency = useMemo(
+    () => satsToCurrency(21).formattedCurrency,
+    [satsToCurrency],
+  );
 
-  useEffect(() => {
-    if (!loading && !!lnurl) {
+  useFocusEffect(
+    useCallback(() => {
+      if (loading || !lnurl) return;
       onReward();
-    }
-  }, [loading, lnurl]);
+    }, [loading, lnurl]),
+  );
 
   const onReward = async () => {
     const requestBody = {
@@ -48,10 +52,16 @@ const Rewards = () => {
     try {
       const response = await axios.post(url, requestBody);
       console.log('Response from redeeming rewards:', response.data);
+
+      resetFlashcard();
       if (response.data) {
+        const displayAmount =
+          balanceInSats !== undefined &&
+          satsToCurrency(balanceInSats + 21).formattedCurrency;
+
         navigation.navigate('RewardsSuccess', {
           rewardSatAmount: 21,
-          balance: displayAmount,
+          balance: displayAmount || '',
         });
       } else {
         toastShow({

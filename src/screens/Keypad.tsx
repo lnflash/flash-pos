@@ -3,13 +3,7 @@ import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 
 // components
-import {
-  Amount,
-  Note,
-  NumPad,
-  PrimaryButton,
-  SecondaryButton,
-} from '../components';
+import {Amount, Note, NumPad, PrimaryButton} from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -21,7 +15,6 @@ import {useMutation} from '@apollo/client';
 import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 
 // store
-import {updateAmount} from '../store/slices/amountSlice';
 import {setInvoice} from '../store/slices/invoiceSlice';
 
 // utils

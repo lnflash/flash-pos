@@ -1,13 +1,22 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import {createNavigationContainerRef} from '@react-navigation/native';
 
 // screens
 import {HomeTabs} from './HomeTabs';
-import {Auth, Invoice, RewardsSuccess, Success} from '../screens';
+import {
+  Auth,
+  FlashcardBalance,
+  Invoice,
+  RewardsSuccess,
+  Success,
+} from '../screens';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
+
+export const navigationRef = createNavigationContainerRef<RootStackType>();
 
 const Stack = createNativeStackNavigator<RootStackType>();
 
@@ -46,13 +55,22 @@ const Root = () => {
         component={RewardsSuccess}
         options={{headerShown: false}}
       />
+      <Stack.Screen
+        name="FlashcardBalance"
+        component={FlashcardBalance}
+        options={{
+          headerShown: true,
+          headerTitle: 'Flashcard Balance',
+          animation: 'fade_from_bottom',
+        }}
+      />
     </Stack.Navigator>
   );
 };
 
 const Layout = () => {
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Root />
     </NavigationContainer>
   );
