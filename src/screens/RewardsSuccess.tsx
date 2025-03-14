@@ -26,7 +26,10 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
   const {formattedCurrency} = satsToCurrency(rewardSatAmount);
 
   const onDone = () => {
-    navigation.popToTop();
+    navigation.reset({
+      index: 0,
+      routes: [{name: 'Home'}],
+    });
   };
 
   return (
