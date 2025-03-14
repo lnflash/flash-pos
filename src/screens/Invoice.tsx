@@ -16,7 +16,7 @@ import {
 } from '../components';
 
 // hooks
-import {useFlashcard} from '../hooks';
+import {useActivityIndicator, useFlashcard} from '../hooks';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // utils
@@ -36,6 +36,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const {paymentRequest} = useAppSelector(state => state.invoice);
 
   const [errMessage, setErrMessage] = useState('');
+
+  const {toggleLoading} = useActivityIndicator();
 
   const {k1, callback, loading, resetFlashcard} = useFlashcard();
 
@@ -74,6 +76,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const payUsingFlashcard = async () => {
     if (!k1 || !callback) return;
 
+    toggleLoading(true);
     try {
       const urlObject = new URL(callback);
       urlObject.searchParams.set('k1', k1);
@@ -91,6 +94,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     } catch (error) {
       console.error('Error processing payment:', error);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
+    } finally {
+      toggleLoading(false);
     }
   };
 
