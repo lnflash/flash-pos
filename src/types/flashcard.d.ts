@@ -1,6 +1,6 @@
 type TransactionItem = {
   date: string;
-  sats: number;
+  sats: string;
 };
 
 type TransactionList = TransactionItem[];

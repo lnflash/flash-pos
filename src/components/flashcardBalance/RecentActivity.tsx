@@ -20,18 +20,19 @@ const RecentActivity: React.FC<Props> = ({transactions}) => {
   const {satsToCurrency} = useRealtimePrice();
 
   const renderItem = ({item, index}: RenderItem) => {
+    const sats = parseInt(item.sats.replaceAll(',', ''), 10);
     return (
       <RowWrapper>
         <Icon
-          name={item.sats < 0 ? 'arrow-up' : 'arrow-down'}
+          name={sats < 0 ? 'arrow-up' : 'arrow-down'}
           size={20}
           type="ionicon"
-          color={item.sats < 0 ? '#B31B1B' : '#007856'}
+          color={sats < 0 ? '#B31B1B' : '#007856'}
         />
         <Date>{moment(item.date).format('MMM Do, h:mm a')}</Date>
         <ColumnWrapper>
           <DisplayAmount>
-            {satsToCurrency(item.sats).formattedCurrency}
+            {satsToCurrency(sats).formattedCurrency}
           </DisplayAmount>
           <Sats>{`${item.sats} SATS`}</Sats>
         </ColumnWrapper>

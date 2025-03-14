@@ -1,9 +1,10 @@
 import React, {createContext, useEffect, useState} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
-import {ActivityIndicator} from 'react-native';
-import styled from 'styled-components/native';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
+
+// components
+import {ActivityIndicator} from './ActivityIndicator';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -177,12 +178,12 @@ export const FlashcardProvider = ({children}: Props) => {
     // Extract dates and SATS amounts
     const transactionMatches = [
       ...html.matchAll(
-        /<time datetime="(.*?)".*?>.*?<\/time>\s*<\/td>\s*<td.*?>\s*<span.*?>(-?\d+) SATS<\/span>/g,
+        /<time datetime="(.*?)".*?>.*?<\/time>\s*<\/td>\s*<td.*?>\s*<span.*?>(-?\d{1,3}(,\d{3})*) SATS<\/span>/g,
       ),
     ];
     const data = transactionMatches.map(match => ({
       date: match[1], // Extracted datetime value
-      sats: parseInt(match[2], 10), // Convert SATS value to integer
+      sats: match[2], // Convert SATS value to integer
     }));
     setTransactions(data);
   };
@@ -223,23 +224,7 @@ export const FlashcardProvider = ({children}: Props) => {
         resetFlashcard,
       }}>
       {children}
-      {loading && (
-        <Backdrop>
-          <ActivityIndicator color={'#002118'} size={'large'} />
-        </Backdrop>
-      )}
+      {loading && <ActivityIndicator />}
     </FlashcardContext.Provider>
   );
 };
-
-const Backdrop = styled.View`
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1;
-  align-items: center;
-  justify-content: center;
-  background-color: rgba(0, 0, 0, 0);
-`;
