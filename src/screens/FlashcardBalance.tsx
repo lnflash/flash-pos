@@ -1,10 +1,10 @@
 import React, {useEffect} from 'react';
 import styled from 'styled-components/native';
-import {ActivityIndicator} from 'react-native';
 import {StackScreenProps} from '@react-navigation/stack';
 
 // components
 import {RecentActivity} from '../components';
+import {ActivityIndicator} from '../contexts/ActivityIndicator';
 
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
@@ -24,11 +24,7 @@ const FlashcardBalance: React.FC<Props> = ({navigation, route}) => {
   }, [navigation]);
 
   if (loading) {
-    return (
-      <LoadingWrapper>
-        <ActivityIndicator color={'#002118'} size={'large'} />
-      </LoadingWrapper>
-    );
+    return <ActivityIndicator />;
   }
 
   return (
@@ -50,6 +46,7 @@ const Wrapper = styled.View`
 
 const Image = styled.Image`
   position: absolute;
+  align-self: center;
 `;
 
 const Balance = styled.Text`
@@ -58,10 +55,4 @@ const Balance = styled.Text`
   color: #212121;
   text-align: center;
   margin-top: 30px;
-`;
-
-const LoadingWrapper = styled.View`
-  flex: 1;
-  align-items: center;
-  justify-content: center;
 `;
