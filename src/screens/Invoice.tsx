@@ -1,8 +1,10 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {Share} from 'react-native';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackScreenProps} from '@react-navigation/stack';
+import {useFocusEffect} from '@react-navigation/native';
+import {URL} from 'react-native-url-polyfill';
 
 // components
 import {
@@ -14,8 +16,8 @@ import {
 } from '../components';
 
 // hooks
-import {useNfc} from '../hooks';
-import {useAppSelector} from '../store/hooks';
+import {useActivityIndicator, useFlashcard} from '../hooks';
+import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -24,37 +26,78 @@ import {useSubscription} from '@apollo/client';
 // gql
 import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
 
+// store
+import {resetInvoice} from '../store/slices/invoiceSlice';
+
 type Props = StackScreenProps<RootStackType, 'Invoice'>;
 
 const Invoice: React.FC<Props> = ({navigation}) => {
+  const dispatch = useAppDispatch();
   const {paymentRequest} = useAppSelector(state => state.invoice);
+
   const [errMessage, setErrMessage] = useState('');
 
-  const {loading, data, error} = useSubscription(LnInvoicePaymentStatus, {
+  const {toggleLoading} = useActivityIndicator();
+
+  const {k1, callback, loading, resetFlashcard} = useFlashcard();
+
+  const {data, error} = useSubscription(LnInvoicePaymentStatus, {
     variables: {
       input: {paymentRequest},
     },
     skip: !paymentRequest,
   });
 
-  useNfc(paymentRequest);
-
   useEffect(() => {
     if (data) {
       const {status, errors} = data.lnInvoicePaymentStatus;
       if (status === 'PAID') {
-        navigation.navigate('Success');
-      } else if (errors.length > 0 || error?.message) {
-        console.log('Payment Status Error: ', errors, error?.message);
+        dispatch(resetInvoice());
+        navigation.replace('Success');
+      } else if (errors?.length > 0) {
+        console.error('Payment Status Error:', errors);
         setErrMessage(
           'Please try again. Either the invoice has expired or it hasn’t been paid.',
         );
       }
     } else if (error) {
-      console.log('Payment Status Error Message: ', error?.message);
-      setErrMessage(error.message);
+      console.error('Payment Status Error Message:', error?.message);
+      setErrMessage(error.message || 'An unexpected error occurred.');
     }
-  }, [loading, data, error]);
+  }, [data, error]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (loading || !k1 || !callback || !paymentRequest) return;
+      payUsingFlashcard();
+    }, [loading, k1, callback, paymentRequest]),
+  );
+
+  const payUsingFlashcard = async () => {
+    if (!k1 || !callback) return;
+
+    toggleLoading(true);
+    try {
+      const urlObject = new URL(callback);
+      urlObject.searchParams.set('k1', k1);
+      urlObject.searchParams.set('pr', paymentRequest);
+      const url = urlObject.toString();
+
+      const result = await fetch(url);
+      const lnurlResponse = await result.json();
+      console.log('LNURL Response:', lnurlResponse);
+
+      resetFlashcard();
+      if (lnurlResponse.status === 'ERROR') {
+        toastShow({message: lnurlResponse.reason, type: 'error'});
+      }
+    } catch (error) {
+      console.error('Error processing payment:', error);
+      toastShow({message: 'Payment failed. Please try again.', type: 'error'});
+    } finally {
+      toggleLoading(false);
+    }
+  };
 
   const onCopy = () => {
     if (!errMessage) {
@@ -65,7 +108,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
   const onShare = async () => {
     if (!errMessage) {
-      await Share.share({message: paymentRequest});
+      try {
+        await Share.share({message: paymentRequest});
+      } catch (error) {
+        console.error('Error sharing invoice:', error);
+      }
     }
   };
 

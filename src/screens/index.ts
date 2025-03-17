@@ -6,6 +6,7 @@ import Paycode from './Paycode';
 import Profile from './Profile';
 import Rewards from './Rewards';
 import RewardsSuccess from './RewardsSuccess';
+import FlashcardBalance from './FlashcardBalance';
 
 export {
   Auth,
@@ -16,4 +17,5 @@ export {
   Profile,
   Rewards,
   RewardsSuccess,
+  FlashcardBalance,
 };
