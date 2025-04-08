@@ -14,9 +14,10 @@ import {
   PrimaryButton,
   TextButton,
 } from '../components';
+import {ActivityIndicator} from '../contexts/ActivityIndicator';
 
 // hooks
-import {useActivityIndicator, useFlashcard} from '../hooks';
+import {useFlashcard} from '../hooks';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // utils
@@ -35,9 +36,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {paymentRequest} = useAppSelector(state => state.invoice);
 
+  const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
-
-  const {toggleLoading} = useActivityIndicator();
 
   const {k1, callback, loading, resetFlashcard} = useFlashcard();
 
@@ -52,16 +52,19 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     if (data) {
       const {status, errors} = data.lnInvoicePaymentStatus;
       if (status === 'PAID') {
+        setPaymentLoading(false);
         dispatch(resetInvoice());
         navigation.replace('Success');
       } else if (errors?.length > 0) {
         console.error('Payment Status Error:', errors);
+        setPaymentLoading(false);
         setErrMessage(
           'Please try again. Either the invoice has expired or it hasn’t been paid.',
         );
       }
     } else if (error) {
       console.error('Payment Status Error Message:', error?.message);
+      setPaymentLoading(false);
       setErrMessage(error.message || 'An unexpected error occurred.');
     }
   }, [data, error]);
@@ -76,8 +79,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const payUsingFlashcard = async () => {
     if (!k1 || !callback) return;
 
-    toggleLoading(true);
     try {
+      setPaymentLoading(true);
       const urlObject = new URL(callback);
       urlObject.searchParams.set('k1', k1);
       urlObject.searchParams.set('pr', paymentRequest);
@@ -89,13 +92,13 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
       resetFlashcard();
       if (lnurlResponse.status === 'ERROR') {
+        setPaymentLoading(false);
         toastShow({message: lnurlResponse.reason, type: 'error'});
       }
     } catch (error) {
       console.error('Error processing payment:', error);
+      setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
-    } finally {
-      toggleLoading(false);
     }
   };
 
@@ -116,20 +119,24 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     }
   };
 
+  if (paymentLoading) return <ActivityIndicator />;
+
   return (
     <Wrapper>
       <InnerWrapper>
         <Amount hideCurrency hideToggle />
         <ExpireTime setErrMessage={setErrMessage} />
         <InvoiceQRCode errMessage={errMessage} />
-        <RowWrapper>
-          <TextButton icon="clone" title="Copy" onPress={onCopy} />
-          <TextButton
-            icon="arrow-up-from-bracket"
-            title="Share"
-            onPress={onShare}
-          />
-        </RowWrapper>
+        {!errMessage && (
+          <RowWrapper>
+            <TextButton icon="clone" title="Copy" onPress={onCopy} />
+            <TextButton
+              icon="arrow-up-from-bracket"
+              title="Share"
+              onPress={onShare}
+            />
+          </RowWrapper>
+        )}
       </InnerWrapper>
       <PrimaryButton btnText="Back" onPress={() => navigation.goBack()} />
     </Wrapper>
