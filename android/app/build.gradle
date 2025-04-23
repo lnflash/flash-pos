@@ -114,15 +114,34 @@ android {
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
+    repositories {
+        flatDir {
+            dirs 'libs'
+        }
+    }
 }
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    implementation fileTree(dir: "libs", include: ["*.jar", "*.aar"])
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {
         implementation jscFlavor
+    }
+}
+
+afterEvaluate {
+    // Ensure vector icons are copied before lint-related tasks
+    tasks.named("generateDebugLintReportModel").configure {
+        dependsOn("copyReactNativeVectorIconFonts")
+    }
+    tasks.named("generateReleaseLintReportModel").configure {
+        dependsOn("copyReactNativeVectorIconFonts")
+    }
+    tasks.named("lintAnalyzeDebug").configure {
+        dependsOn("copyReactNativeVectorIconFonts")
     }
 }
