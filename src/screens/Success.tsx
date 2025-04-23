@@ -19,7 +19,7 @@ import {resetInvoice} from '../store/slices/invoiceSlice';
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const Success: React.FC<Props> = ({navigation, route}) => {
-  const {print} = usePrint();
+  const {print, printSilently} = usePrint();
 
   const dispatch = useAppDispatch();
   const {satAmount, displayAmount, currency, isPrimaryAmountSats} =
@@ -61,7 +61,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           iconColor="#002118"
           textStyle={{color: '#002118'}}
           btnStyle={{backgroundColor: '#fff'}}
-          onPress={print}
+          onPress={printSilently}
         />
         <SecondaryButton
           btnText="Done"

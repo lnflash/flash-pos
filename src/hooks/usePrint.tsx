@@ -1,5 +1,6 @@
 import moment from 'moment';
 import RNPrint from 'react-native-print';
+import {NativeModules} from 'react-native';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
@@ -7,11 +8,39 @@ import {useAppSelector} from '../store/hooks';
 // env
 import {FLASH_LN_ADDRESS} from '@env';
 
+const {PrinterModule} = NativeModules;
+
 const usePrint = () => {
   const {username} = useAppSelector(state => state.user);
   const {satAmount, displayAmount, currency, memo} = useAppSelector(
     state => state.amount,
   );
+
+  const printSilently = () => {
+    PrinterModule.setAlignment(1);
+    PrinterModule.setTextBold(true);
+    PrinterModule.printText(`     Sale completed\n`);
+    PrinterModule.printText(`     ${currency.symbol} ${displayAmount}\n`);
+    PrinterModule.printText(`     ≈ ${satAmount} sats\n`);
+    PrinterModule.setTextBold(false);
+    PrinterModule.printText(`========================\n`);
+    PrinterModule.printText(`Paid to:   ${username}\n`);
+    PrinterModule.printText(`Date:   ${moment().format('L')}\n`);
+    PrinterModule.printText(`Time:   ${moment().format('LTS')}\n`);
+    PrinterModule.printText(`Status:   Paid\n`);
+    PrinterModule.printText(`Description:   ${memo || 'none'}\n`);
+    PrinterModule.printText('========================\n');
+
+    // Print QR code (e.g., payment ID or order number)
+    PrinterModule.setAlignment(1);
+    PrinterModule.printText(`Download the Flash APP: \n`);
+    PrinterModule.printQRCode(
+      'https://media-hosting.imagekit.io/0500d346773d4585/Screenshot_2025-04-22_at_10.37.25_AM.PNG?Expires=1839996076&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=KQnMdw4eMLdA4lc4P4zYAN7jXvmWyBbtgy1ZKA9W0ajM78zCwlSddYoIhgPND9hh4rR6Yylc4s1ZPQxj6AOn92EHAm-ivpqK9j2FeO~I3H~3zUD96twj-NTsYAAPvkIUZL2LG3699UlMidnCfqavum~CofgqFL8WnNzBnYOzVYqzPy8XA1r4Ha54rGxz6sVrBhj0rRV3-OtL4hKEsvpP7-zfIv1PgnNNgDjPQbhPHK7xsaKMgcU0DBQmj4xhNqe-yYODCk59WNYTcMmJ8BqdrUUV76yvq52kZ93feAvbBaeup1~McSOr41yWB68hWhn7iS8GySNbVVA6AI6ksYyX~A__',
+      6,
+      1,
+    );
+    PrinterModule.nextLine(4);
+  };
 
   const print = async () => {
     await RNPrint.print({
@@ -54,7 +83,7 @@ const usePrint = () => {
             </div>
             <div style="padding-bottom: 40px; display: flex; flex-direction: column; align-items: center;">
              <p style="padding: 0; margin: 0; margin-bottom: 5px; font-size: 10; font-weight: 600">Download the Flash APP: </p>
-              <img src="https://media-hosting.imagekit.io//ddd57a9aba244f9f/Flash_App_Download_Link_QR-code.JPG?Expires=1833265096&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=2IK4KMXsYzqBiBdXiUUWaMp~UVx0ycnC7Q9a7RzIukQBKBG4o0Z3ZhSwKCU33XDgO8juUFsDosCeYLIu8Xi38mkHYTHSafQuBTczHUaTmuQHwor0pUdM-DVuioaaLSAqVB8iRhCMMLR5pRwFagfASeUMagUC7gIXxxsBRsaQlOPRlFVLUou~OSgZPY4Qx3u7xnYv0PfmJjFhkxhyvQKXgnRfsF9rMPrLLdTz~ohTwOeNeTtomCP6E0E61gbR2~shyn6fSY4KXb3zpVxpRH-RDBx~MzLdHLO3oI21HfZqbN~aUuPQQFdO11Kmw3rU0HjC5j89eyCjNQ9QhzoMjKGyiA__" style="width: 120px; height: 120px" />
+             <img src="https://media-hosting.imagekit.io//ddd57a9aba244f9f/Flash_App_Download_Link_QR-code.JPG?Expires=1833265096&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=2IK4KMXsYzqBiBdXiUUWaMp~UVx0ycnC7Q9a7RzIukQBKBG4o0Z3ZhSwKCU33XDgO8juUFsDosCeYLIu8Xi38mkHYTHSafQuBTczHUaTmuQHwor0pUdM-DVuioaaLSAqVB8iRhCMMLR5pRwFagfASeUMagUC7gIXxxsBRsaQlOPRlFVLUou~OSgZPY4Qx3u7xnYv0PfmJjFhkxhyvQKXgnRfsF9rMPrLLdTz~ohTwOeNeTtomCP6E0E61gbR2~shyn6fSY4KXb3zpVxpRH-RDBx~MzLdHLO3oI21HfZqbN~aUuPQQFdO11Kmw3rU0HjC5j89eyCjNQ9QhzoMjKGyiA__" style="width: 120px; height: 120px" />
             </div>
           </div>
         `,
@@ -85,7 +114,7 @@ const usePrint = () => {
     });
   };
 
-  return {print, printPaycode};
+  return {print, printPaycode, printSilently};
 };
 
 export default usePrint;
