@@ -19,9 +19,9 @@ const usePrint = () => {
   const printSilently = () => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
-    PrinterModule.printText(`     Sale completed\n`);
-    PrinterModule.printText(`     ${currency.symbol} ${displayAmount}\n`);
-    PrinterModule.printText(`     ≈ ${satAmount} sats\n`);
+    PrinterModule.printText(`Sale completed\n`);
+    PrinterModule.printText(`${currency.symbol} ${displayAmount}\n`);
+    PrinterModule.printText(`≈ ${satAmount} sats\n`);
     PrinterModule.setTextBold(false);
     PrinterModule.printText(`========================\n`);
     PrinterModule.printText(`Paid to:   ${username}\n`);
@@ -34,11 +34,7 @@ const usePrint = () => {
     // Print QR code (e.g., payment ID or order number)
     PrinterModule.setAlignment(1);
     PrinterModule.printText(`Download the Flash APP: \n`);
-    PrinterModule.printQRCode(
-      'https://media-hosting.imagekit.io/0500d346773d4585/Screenshot_2025-04-22_at_10.37.25_AM.PNG?Expires=1839996076&Key-Pair-Id=K2ZIVPTIP2VGHC&Signature=KQnMdw4eMLdA4lc4P4zYAN7jXvmWyBbtgy1ZKA9W0ajM78zCwlSddYoIhgPND9hh4rR6Yylc4s1ZPQxj6AOn92EHAm-ivpqK9j2FeO~I3H~3zUD96twj-NTsYAAPvkIUZL2LG3699UlMidnCfqavum~CofgqFL8WnNzBnYOzVYqzPy8XA1r4Ha54rGxz6sVrBhj0rRV3-OtL4hKEsvpP7-zfIv1PgnNNgDjPQbhPHK7xsaKMgcU0DBQmj4xhNqe-yYODCk59WNYTcMmJ8BqdrUUV76yvq52kZ93feAvbBaeup1~McSOr41yWB68hWhn7iS8GySNbVVA6AI6ksYyX~A__',
-      6,
-      1,
-    );
+    PrinterModule.printQRCode('https://getflash.io/app', 6, 1);
     PrinterModule.nextLine(4);
   };
 
