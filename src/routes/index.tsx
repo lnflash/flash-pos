@@ -11,6 +11,7 @@ import {
   Invoice,
   RewardsSuccess,
   Success,
+  TransactionHistory,
 } from '../screens';
 
 // hooks
@@ -62,6 +63,14 @@ const Root = () => {
           headerShown: true,
           headerTitle: 'Flashcard Balance',
           animation: 'fade_from_bottom',
+        }}
+      />
+      <Stack.Screen
+        name="TransactionHistory"
+        component={TransactionHistory}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
         }}
       />
     </Stack.Navigator>

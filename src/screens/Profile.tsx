@@ -23,11 +23,16 @@ const Profile = () => {
 
   const dispatch = useAppDispatch();
   const {username} = useAppSelector(state => state.user);
+  const {transactions} = useAppSelector(state => state.transactionHistory);
 
   const onLogout = () => {
     dispatch(resetUserData());
     dispatch(resetAmount());
     navigation.replace('Auth');
+  };
+
+  const onViewTransactionHistory = () => {
+    navigation.navigate('TransactionHistory');
   };
 
   const lnAddress = `${username}@${FLASH_LN_ADDRESS}`;
@@ -45,6 +50,18 @@ const Profile = () => {
             <Value>{lnAddress}</Value>
           </Column>
           <Icon name={'copy-outline'} type="ionicon" />
+        </Container>
+
+        <Label style={{marginTop: 20}}>Transactions</Label>
+        <Container
+          activeOpacity={0.5}
+          onPress={onViewTransactionHistory}>
+          <Icon name={'receipt-outline'} type="ionicon" />
+          <Column>
+            <Key>Transaction History</Key>
+            <Value>{transactions.length} transactions</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
         </Container>
       </InnerWrapper>
       <TextButton title="Logout" onPress={onLogout} />

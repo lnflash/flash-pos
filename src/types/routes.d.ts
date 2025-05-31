@@ -9,4 +9,5 @@ type RootStackType = {
   Success?: {title?: string};
   RewardsSuccess: {rewardSatAmount: number; balance?: string};
   FlashcardBalance: undefined;
+  TransactionHistory: undefined;
 };

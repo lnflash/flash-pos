@@ -467,6 +467,170 @@ const sanitizeHTML = (html: string): string => {
 };
 ```
 
+## Receipt Reprinting System
+
+### Overview
+
+The app now supports reprinting receipts for completed transactions. This feature allows merchants to reprint the last transaction receipt or any previous transaction from the current session.
+
+### Reprint from Success Screen
+
+**Success Screen Integration** (`src/screens/Success.tsx:115-122`):
+```typescript
+<SecondaryButton
+  icon="refresh"
+  btnText="Reprint"
+  iconColor="#fff"
+  textStyle={{color: '#fff'}}
+  btnStyle={{borderColor: '#fff', marginTop: 10}}
+  onPress={onReprintReceipt}
+/>
+```
+
+**Last Transaction Reprint Logic**:
+```typescript
+const onReprintReceipt = () => {
+  if (lastTransaction) {
+    const receiptData: ReceiptData = {
+      id: lastTransaction.id,
+      timestamp: lastTransaction.timestamp,
+      satAmount: lastTransaction.amount.satAmount,
+      displayAmount: lastTransaction.amount.displayAmount,
+      currency: lastTransaction.amount.currency,
+      isPrimaryAmountSats: lastTransaction.amount.isPrimaryAmountSats,
+      username: lastTransaction.merchant.username,
+      memo: lastTransaction.memo,
+      paymentHash: lastTransaction.invoice.paymentHash,
+      status: lastTransaction.status,
+    };
+    
+    printReceipt(receiptData);
+  }
+};
+```
+
+### Transaction History Screen
+
+**File**: `src/screens/TransactionHistory.tsx`
+
+**Features**:
+- View all completed transactions from current session
+- Reprint receipt for any individual transaction
+- Clear transaction history
+- Formatted transaction details with timestamps
+
+**Individual Transaction Reprint**:
+```typescript
+const onReprintTransaction = (transaction: TransactionData) => {
+  const receiptData: ReceiptData = {
+    id: transaction.id,
+    timestamp: transaction.timestamp,
+    satAmount: transaction.amount.satAmount,
+    displayAmount: transaction.amount.displayAmount,
+    currency: transaction.amount.currency,
+    isPrimaryAmountSats: transaction.amount.isPrimaryAmountSats,
+    username: transaction.merchant.username,
+    memo: transaction.memo,
+    paymentHash: transaction.invoice.paymentHash,
+    status: transaction.status,
+  };
+  
+  printReceipt(receiptData);
+};
+```
+
+### Transaction Data Storage
+
+**Redux Store Integration** (`src/store/slices/transactionHistorySlice.ts`):
+```typescript
+interface TransactionHistoryState {
+  transactions: TransactionData[];
+  lastTransaction?: TransactionData;
+  maxTransactions: number; // Default: 50
+}
+```
+
+**Automatic Transaction Recording**:
+- Transactions automatically stored on Success screen mount
+- Includes complete payment details, timestamps, and merchant info
+- Persisted to AsyncStorage for session continuity
+- Limited to 50 recent transactions for performance
+
+### Enhanced Print Functions
+
+**Updated usePrint Hook** (`src/hooks/usePrint.tsx`):
+
+**Receipt Data Interface**:
+```typescript
+interface ReceiptData {
+  id: string;
+  timestamp: string;
+  satAmount: number;
+  displayAmount: string;
+  currency: CurrencyItem;
+  isPrimaryAmountSats: boolean;
+  username: string;
+  memo?: string;
+  paymentHash: string;
+  status: string;
+}
+```
+
+**Reprint Functions**:
+```typescript
+const printReceipt = (receiptData: ReceiptData) => {
+  // Silent printing with stored transaction data
+  PrinterModule.setAlignment(1);
+  PrinterModule.setTextBold(true);
+  PrinterModule.printText(`Sale completed\n`);
+  PrinterModule.printText(`${receiptData.currency.symbol} ${receiptData.displayAmount}\n`);
+  // ... rest of receipt formatting
+};
+
+const printReceiptHTML = async (receiptData: ReceiptData) => {
+  // HTML-based printing for system print dialog
+  await RNPrint.print({
+    html: generateReceiptHTML(receiptData),
+  });
+};
+```
+
+### Access Points
+
+**1. Success Screen**:
+- "Reprint" button immediately available after payment
+- Reprints the current transaction receipt
+
+**2. Profile Screen**:
+- "Transaction History" option shows transaction count
+- Navigates to full transaction history
+
+**3. Transaction History Screen**:
+- Individual reprint buttons for each transaction
+- "Clear History" option to reset transaction list
+
+### Navigation Integration
+
+**Route Configuration** (`src/types/routes.d.ts`):
+```typescript
+type RootStackType = {
+  // ... existing routes
+  TransactionHistory: undefined;
+};
+```
+
+**Navigation Setup** (`src/routes/index.tsx:68-75`):
+```typescript
+<Stack.Screen
+  name="TransactionHistory"
+  component={TransactionHistory}
+  options={{
+    headerShown: false,
+    animation: 'slide_from_right',
+  }}
+/>
+```
+
 ## Future Enhancements
 
 ### 1. Advanced Printer Support
@@ -481,14 +645,23 @@ const sanitizeHTML = (html: string): string => {
 - **Merchant Branding**: Custom logos and styling per merchant
 - **Multi-language Support**: Localized receipt templates
 
-### 3. Print Management
+### 3. Enhanced Print Management
 
 - **Print Queue**: Queue multiple print jobs
-- **Print History**: Track printed receipts
-- **Reprint Functionality**: Allow reprinting of previous receipts
+- **Print History**: Track printed receipts beyond current session
+- **Email Receipts**: Send receipts via email
+- **SMS Receipts**: Send receipt summaries via SMS
 
-### 4. Analytics
+### 4. Transaction Management
+
+- **Export Transactions**: Export transaction history to CSV/JSON
+- **Search & Filter**: Search transactions by amount, date, or memo
+- **Transaction Categories**: Organize transactions by type or category
+- **Bulk Operations**: Bulk reprint or export multiple transactions
+
+### 5. Analytics
 
 - **Print Success Rates**: Monitor printing reliability
 - **Usage Analytics**: Track printing frequency and patterns
 - **Cost Analysis**: Estimate printing costs and supplies usage
+- **Reprint Statistics**: Track most reprinted transactions

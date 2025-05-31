@@ -7,6 +7,7 @@ import Profile from './Profile';
 import Rewards from './Rewards';
 import RewardsSuccess from './RewardsSuccess';
 import FlashcardBalance from './FlashcardBalance';
+import TransactionHistory from './TransactionHistory';
 
 export {
   Auth,
@@ -18,4 +19,5 @@ export {
   Rewards,
   RewardsSuccess,
   FlashcardBalance,
+  TransactionHistory,
 };
