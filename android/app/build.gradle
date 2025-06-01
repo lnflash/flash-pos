@@ -134,14 +134,12 @@ dependencies {
 }
 
 afterEvaluate {
-    // Ensure vector icons are copied before lint-related tasks
-    tasks.named("generateDebugLintReportModel").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
-    }
-    tasks.named("generateReleaseLintReportModel").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
-    }
-    tasks.named("lintAnalyzeDebug").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
+    // Ensure vector icons are copied before lint-related tasks (if they exist)
+    def lintTasks = ["generateDebugLintReportModel", "generateReleaseLintReportModel", "lintAnalyzeDebug"]
+    lintTasks.each { taskName ->
+        def task = tasks.findByName(taskName)
+        if (task != null) {
+            task.dependsOn("copyReactNativeVectorIconFonts")
+        }
     }
 }
