@@ -10,12 +10,41 @@ interface RewardState {
   error: string; // Error messages
 }
 
+// Default configuration - can be overridden by environment variables in production
+const getDefaultConfiguration = () => {
+  try {
+    // Try to load environment variables if available
+    const {
+      DEFAULT_REWARD_RATE,
+      MIN_REWARD_SATS,
+      MAX_REWARD_SATS,
+      STANDALONE_REWARD_SATS,
+      REWARDS_ENABLED,
+    } = require('@env');
+
+    return {
+      rewardRate: parseFloat(DEFAULT_REWARD_RATE || '0.02'),
+      minimumReward: parseInt(MIN_REWARD_SATS || '1', 10),
+      maximumReward: parseInt(MAX_REWARD_SATS || '1000', 10),
+      defaultReward: parseInt(STANDALONE_REWARD_SATS || '21', 10),
+      isEnabled: (REWARDS_ENABLED || 'true').toLowerCase() === 'true',
+    };
+  } catch (error) {
+    // Fallback to hardcoded defaults if environment variables are not available
+    return {
+      rewardRate: 0.02, // 2% default
+      minimumReward: 1, // Minimum 1 sat
+      maximumReward: 1000, // Maximum 1000 sats
+      defaultReward: 21, // Current fixed amount for standalone rewards
+      isEnabled: true, // Rewards enabled by default
+    };
+  }
+};
+
+const defaultConfig = getDefaultConfiguration();
+
 const initialState: RewardState = {
-  rewardRate: 0.02, // 2% default
-  minimumReward: 1, // Minimum 1 sat
-  maximumReward: 1000, // Maximum 1000 sats
-  defaultReward: 21, // Current fixed amount for standalone rewards
-  isEnabled: true, // Rewards enabled by default
+  ...defaultConfig,
   loading: false,
   error: '',
 };

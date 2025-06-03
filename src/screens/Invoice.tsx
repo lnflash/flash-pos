@@ -29,12 +29,20 @@ import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
 
 // store
 import {resetInvoice} from '../store/slices/invoiceSlice';
+import {addTransaction} from '../store/slices/transactionHistorySlice';
+import {selectIsRewardEnabled} from '../store/slices/rewardSlice';
 
 type Props = StackScreenProps<RootStackType, 'Invoice'>;
 
 const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
-  const {paymentRequest} = useAppSelector(state => state.invoice);
+  const {paymentRequest, paymentHash, paymentSecret} = useAppSelector(
+    state => state.invoice,
+  );
+  const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
+    useAppSelector(state => state.amount);
+  const {username} = useAppSelector(state => state.user);
+  const isRewardEnabled = useAppSelector(selectIsRewardEnabled);
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
@@ -48,13 +56,67 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     skip: !paymentRequest,
   });
 
+  const handleSuccessfulPayment = useCallback(() => {
+    // Create and store transaction data
+    const transactionData: TransactionData = {
+      id: paymentHash || `tx_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      amount: {
+        satAmount: Number(satAmount) || 0,
+        displayAmount: displayAmount || '0',
+        currency,
+        isPrimaryAmountSats: isPrimaryAmountSats || false,
+      },
+      merchant: {
+        username: username || 'Unknown',
+      },
+      invoice: {
+        paymentHash: paymentHash || '',
+        paymentRequest: paymentRequest || '',
+        paymentSecret: paymentSecret || '',
+      },
+      memo,
+      status: 'completed',
+    };
+
+    dispatch(addTransaction(transactionData));
+    dispatch(resetInvoice());
+
+    // Navigate to Rewards with purchase context if rewards are enabled
+    if (isRewardEnabled && satAmount) {
+      const purchaseContext: RewardsScreenParams = {
+        purchaseAmount: Number(satAmount),
+        purchaseCurrency: currency.id,
+        purchaseDisplayAmount: `${currency.symbol}${displayAmount}`,
+        transactionId: paymentHash,
+      };
+
+      navigation.replace('Rewards', purchaseContext);
+    } else {
+      // Fallback to Success screen if rewards are disabled or no amount
+      navigation.replace('Success');
+    }
+  }, [
+    dispatch,
+    paymentHash,
+    satAmount,
+    displayAmount,
+    currency,
+    isPrimaryAmountSats,
+    username,
+    paymentRequest,
+    paymentSecret,
+    memo,
+    isRewardEnabled,
+    navigation,
+  ]);
+
   useEffect(() => {
     if (data) {
       const {status, errors} = data.lnInvoicePaymentStatus;
       if (status === 'PAID') {
         setPaymentLoading(false);
-        dispatch(resetInvoice());
-        navigation.replace('Success');
+        handleSuccessfulPayment();
       } else if (errors?.length > 0) {
         console.error('Payment Status Error:', errors);
         setPaymentLoading(false);
@@ -67,16 +129,9 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       setPaymentLoading(false);
       setErrMessage(error.message || 'An unexpected error occurred.');
     }
-  }, [data, error]);
+  }, [data, error, handleSuccessfulPayment]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (loading || !k1 || !callback || !paymentRequest) return;
-      payUsingFlashcard();
-    }, [loading, k1, callback, paymentRequest]),
-  );
-
-  const payUsingFlashcard = async () => {
+  const payUsingFlashcard = useCallback(async () => {
     if (!k1 || !callback) return;
 
     try {
@@ -100,7 +155,14 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
     }
-  };
+  }, [k1, callback, paymentRequest, resetFlashcard]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (loading || !k1 || !callback || !paymentRequest) return;
+      payUsingFlashcard();
+    }, [loading, k1, callback, paymentRequest, payUsingFlashcard]),
+  );
 
   const onCopy = () => {
     if (!errMessage) {
