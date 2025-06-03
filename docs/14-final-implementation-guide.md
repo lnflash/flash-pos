@@ -18,6 +18,7 @@ Flash POS Rewards System V2 transforms your point-of-sale experience from a basi
 - **Advanced analytics** with transaction filtering and statistics
 - **Professional UI** with animations and contextual messaging
 - **100% backward compatibility** preserving existing flows
+- **🆕 External payment rewards** for cash/card transactions with Bitcoin rewards
 
 ## 🏗️ Architecture & Features
 
@@ -25,6 +26,7 @@ Flash POS Rewards System V2 transforms your point-of-sale experience from a basi
 
 #### 1. **Intelligent Reward Engine**
 - **Purchase-based calculation**: Customers earn configurable percentage of purchase amount
+- **External payment support**: Rewards for cash/card payments without Lightning transactions
 - **Standalone support**: Maintains existing 21-sats flashcard taps
 - **Smart constraints**: Automatic minimum/maximum reward application
 - **Real-time validation**: Instant feedback for all configuration changes
@@ -126,13 +128,22 @@ Cost = (5,000 × 0.02 × 100) + (21 × 50)
 
 ## 🔄 Customer Experience Flow
 
-### Purchase-Based Rewards
+### Purchase-Based Rewards (Lightning Payments)
 1. **Customer makes purchase** → Amount calculated in Invoice screen
 2. **Payment completed** → System automatically navigates to Rewards
 3. **Enhanced Rewards screen** → Shows purchase context and calculated reward
 4. **Flashcard tap** → Customer taps their flashcard to claim
 5. **Celebratory success** → Enhanced success screen with breakdown
 6. **Transaction recorded** → Complete reward information stored
+
+### External Payment Rewards (Cash/Card/Other) 🆕
+1. **Merchant enters amount** → Uses Keypad screen for external payment amount
+2. **"Give Points" button** → Merchant presses new button instead of "Next"
+3. **Direct to Rewards** → Bypasses payment flow, goes straight to reward calculation
+4. **Enhanced Rewards screen** → Shows external payment context and calculated reward
+5. **Flashcard tap** → Customer taps their flashcard to claim Bitcoin rewards
+6. **Success confirmation** → Shows reward earned for external payment
+7. **Transaction recorded** → Stored as "rewards-only" transaction type
 
 ### Standalone Rewards (Legacy Support)
 1. **Customer taps flashcard** → Without making purchase

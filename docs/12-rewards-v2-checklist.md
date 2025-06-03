@@ -141,6 +141,50 @@
 - [x] Test error handling scenarios and validation feedback
 - [x] Validate complete merchant configuration workflow
 
+## Phase 7: External Payment Rewards ⏳ PLANNED
+
+### Step 7.1: Data Model & Types Enhancement ⏳ PLANNED
+- [ ] Update `src/types/transaction.d.ts` with transaction types and payment methods
+- [ ] Add `transactionType: 'lightning' | 'rewards-only' | 'standalone'`
+- [ ] Update `RewardsScreenParams` with `isExternalPayment` flag
+- [ ] Add `paymentMethod` field to transaction data
+- [ ] Update `ReceiptData` interface for new transaction types
+
+### Step 7.2: Keypad Screen Enhancement ⏳ PLANNED
+- [ ] Update `src/screens/Keypad.tsx` with "Give Points" button
+- [ ] Add secondary button styling and layout management
+- [ ] Implement navigation logic for external payment flow
+- [ ] Add proper button states and validation
+- [ ] Maintain existing Lightning payment flow
+
+### Step 7.3: Core Logic & Transaction Helpers ⏳ PLANNED
+- [ ] Create `src/utils/transactionHelpers.ts` with standardized transaction creation
+- [ ] Update reward calculations for external payment context
+- [ ] Add transaction type handling in reward display formatting
+- [ ] Implement proper transaction ID generation for external payments
+- [ ] Add validation for external payment scenarios
+
+### Step 7.4: Enhanced Rewards & Success Screens ⏳ PLANNED
+- [ ] Update `src/screens/Rewards.tsx` for external payment context
+- [ ] Add external payment messaging and indicators
+- [ ] Update `src/screens/RewardsSuccess.tsx` for external payment success
+- [ ] Add appropriate contextual messaging for different payment types
+- [ ] Implement proper back navigation handling
+
+### Step 7.5: Transaction History Enhancement ⏳ PLANNED
+- [ ] Update `src/screens/TransactionHistory.tsx` with transaction type badges
+- [ ] Add filtering options for different transaction types
+- [ ] Implement visual indicators for Lightning vs External vs Standalone
+- [ ] Update statistics calculations to include all transaction types
+- [ ] Add new analytics for external payment adoption
+
+### Step 7.6: Testing & Validation ⏳ PLANNED
+- [ ] Create `__tests__/utils/transactionHelpers.test.ts` for new transaction logic
+- [ ] Update existing reward calculation tests for external payments
+- [ ] Test complete external payment flow end-to-end
+- [ ] Validate transaction history filtering and statistics
+- [ ] Test navigation flows and state management
+
 ## Production Readiness ✅❌
 
 ### Code Quality
@@ -233,6 +277,9 @@
 - ✅ Phase 5: UI/UX Enhancement (Modern Design, Animations, Polish)
 - ✅ Phase 6: Testing & Validation (Comprehensive Test Coverage)
 
+**Planned Enhancements:**
+- ⏳ Phase 7: External Payment Rewards (Universal loyalty across all payment methods)
+
 **Final Accomplishments:**
 - ✅ **Complete Business Solution**: Transform fixed rewards to intelligent percentage-based system
 - ✅ **Professional Merchant Dashboard**: Full configuration control through Profile screen
@@ -241,14 +288,7 @@
 - ✅ **Robust Architecture**: 49 tests covering all scenarios, edge cases, and error conditions
 - ✅ **Production Ready**: Environment configuration, validation, and error handling
 - ✅ **Future-Proof Design**: Extensible architecture supporting additional reward features
-
-**Technical Excellence:**
-- Enhanced Redux state management with persistent reward configuration
-- Intelligent reward calculation engine with constraint application
-- Real-time validation and user feedback throughout merchant configuration
-- Professional animations and micro-interactions enhancing user experience
-- Comprehensive TypeScript integration ensuring type safety
-- Modular architecture supporting easy feature extensions
+- ✅ **🆕 Critical Bug Fixes**: Navigation registration, selector memoization, QR code handling
 
 **Business Value Delivered:**
 - **Merchant Control**: Configure reward rates, limits, and behavior
@@ -257,6 +297,7 @@
 - **Analytics Insights**: Complete reward distribution tracking and statistics
 - **Competitive Advantage**: Modern loyalty program competing with traditional POS systems
 - **Scalability**: Environment-based configuration supporting multi-merchant deployments
+- **🆕 Universal Compatibility**: Planned support for all payment methods (Lightning + External)
 
 **Ready for Production Deployment:**
 - All core functionality implemented and tested
@@ -265,11 +306,12 @@
 - Modern UI meeting professional standards
 - Comprehensive error handling and edge case coverage
 - Documentation and configuration guides complete
+- Critical navigation and performance issues resolved
 
-**Remaining Work (5%):**
-- Final deployment preparation and environment setup
-- Production monitoring and analytics setup
-- Merchant onboarding documentation refinement
+**Next Enhancement (Phase 7):**
+- External Payment Rewards system for universal loyalty across all payment methods
+- Estimated 12-15 hours implementation over 2-3 days
+- Transforms Flash POS into the first universal Bitcoin rewards platform
 
 ---
 
