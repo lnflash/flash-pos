@@ -1,4 +1,5 @@
 type RootStackType = {
+  Welcome: undefined;
   Auth: undefined;
   Home: undefined;
   Keypad: undefined;

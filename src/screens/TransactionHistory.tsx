@@ -1,6 +1,8 @@
 import React from 'react';
 import {FlatList, RefreshControl} from 'react-native';
 import styled from 'styled-components/native';
+import {useNavigation} from '@react-navigation/native';
+import {StackNavigationProp} from '@react-navigation/stack';
 import {StackScreenProps} from '@react-navigation/stack';
 import moment from 'moment';
 
@@ -19,11 +21,12 @@ import Refresh from '../assets/icons/refresh.svg';
 import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
 
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
+type NavigationProp = StackNavigationProp<RootStackType>;
 
 const TransactionHistory: React.FC<Props> = ({navigation}) => {
+  const navigations = useNavigation<NavigationProp>();
   const {printReceipt} = usePrint();
   const dispatch = useAppDispatch();
-  
   const {transactions} = useAppSelector(state => state.transactionHistory);
 
   const onClearHistory = () => {
@@ -43,7 +46,7 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
       paymentHash: transaction.invoice.paymentHash,
       status: transaction.status,
     };
-    
+
     printReceipt(receiptData);
   };
 
@@ -52,11 +55,15 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
       <TransactionHeader>
         <StatusContainer>
           <StatusIcon source={Check} />
-          <StatusText status={item.status}>{item.status.toUpperCase()}</StatusText>
+          <StatusText status={item.status}>
+            {item.status.toUpperCase()}
+          </StatusText>
         </StatusContainer>
-        <DateText>{moment(item.timestamp).format('MMM DD, YYYY HH:mm')}</DateText>
+        <DateText>
+          {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
+        </DateText>
       </TransactionHeader>
-      
+
       <AmountContainer>
         {item.amount.isPrimaryAmountSats ? (
           <>
@@ -107,45 +114,57 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
   );
 
   return (
-    <Container>
-      <Header>
-        <HeaderTitle>Transaction History</HeaderTitle>
-        <HeaderSubtitle>{transactions.length} transactions</HeaderSubtitle>
-      </Header>
+    <Wrapper>
+      <Container>
+        <Header>
+          <HeaderTitle>Transaction History</HeaderTitle>
+          <HeaderSubtitle>{transactions.length} transactions</HeaderSubtitle>
+        </Header>
 
-      <FlatList
-        data={transactions}
-        renderItem={renderTransactionItem}
-        keyExtractor={(item) => item.id}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{
-          paddingBottom: 100,
-          flexGrow: 1,
-        }}
-        ListEmptyComponent={renderEmptyState}
-        refreshControl={
-          <RefreshControl
-            refreshing={false}
-            onRefresh={() => {}} // Could add refresh functionality here
-          />
-        }
-      />
-
-      {transactions.length > 0 && (
-        <FooterContainer>
+        <FlatList
+          data={transactions}
+          renderItem={renderTransactionItem}
+          keyExtractor={item => item.id}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{
+            paddingBottom: 100,
+            flexGrow: 1,
+          }}
+          ListEmptyComponent={renderEmptyState}
+          refreshControl={
+            <RefreshControl
+              refreshing={false}
+              onRefresh={() => {}} // Could add refresh functionality here
+            />
+          }
+        />
+      </Container>
+      <ButtonWrapper>
+        {transactions.length > 0 && (
           <SecondaryButton
             btnText="Clear History"
             textStyle={{color: '#FF6B6B'}}
             btnStyle={{borderColor: '#FF6B6B'}}
             onPress={onClearHistory}
           />
-        </FooterContainer>
-      )}
-    </Container>
+        )}
+        <PrimaryButton btnText="Back" onPress={() => navigations.goBack()} />
+      </ButtonWrapper>
+    </Wrapper>
   );
 };
 
 export default TransactionHistory;
+
+const ButtonWrapper = styled.View`
+  padding: 20px;
+  padding-bottom: 40px;
+`;
+
+const Wrapper = styled.View`
+  flex: 1;
+  background-color: #f5f5f5;
+`;
 
 const Container = styled.View`
   flex: 1;
@@ -205,7 +224,7 @@ const StatusIcon = styled.Image`
 const StatusText = styled.Text<{status: string}>`
   font-size: 12px;
   font-family: 'Outfit-Medium';
-  color: ${props => props.status === 'completed' ? '#007856' : '#FF6B6B'};
+  color: ${props => (props.status === 'completed' ? '#007856' : '#FF6B6B')};
 `;
 
 const DateText = styled.Text`
@@ -280,7 +299,7 @@ const ButtonIcon = styled.Image`
 `;
 
 const ButtonText = styled.Text`
-  font-size: 14px;
+  font-size: 24px;
   font-family: 'Outfit-Medium';
   color: #007856;
 `;

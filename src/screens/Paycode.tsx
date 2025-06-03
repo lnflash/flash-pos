@@ -3,31 +3,20 @@ import {bech32} from 'bech32';
 import {Dimensions} from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import styled from 'styled-components/native';
-
-// hooks
 import {usePrint} from '../hooks';
-
-// components
 import {PrimaryButton} from '../components';
-
-// store
 import {useAppSelector} from '../store/hooks';
-
-// assets
 import Logo from '../assets/icons/logo.png';
-
-// env
 import {FLASH_LN_ADDRESS_URL, FLASH_LN_ADDRESS} from '@env';
 
 global.Buffer = require('buffer').Buffer;
 
-const width = Dimensions.get('screen').width;
+const {width} = Dimensions.get('screen');
 
 const Paycode = () => {
   const {printPaycode} = usePrint();
   const {username} = useAppSelector(state => state.user);
-
-  const qrCodeRef = useRef();
+  const qrCodeRef = useRef<string>();
 
   const lnurl = bech32.encode(
     'lnurl',
@@ -41,6 +30,14 @@ const Paycode = () => {
   );
 
   const qrCode = `${FLASH_LN_ADDRESS_URL}/${username}?lightning=${lnurl}`;
+
+  const handleQRRef = (c: any) => {
+    if (c?.toDataURL) {
+      c.toDataURL((base64Image: string) => {
+        qrCodeRef.current = base64Image;
+      });
+    }
+  };
 
   return (
     <Wrapper>
@@ -56,13 +53,7 @@ const Paycode = () => {
           logo={Logo}
           logoSize={60}
           logoBorderRadius={10}
-          getRef={c => {
-            if (c?.toDataURL) {
-              c?.toDataURL((base64Image: any) => {
-                qrCodeRef.current = base64Image;
-              });
-            }
-          }}
+          getRef={handleQRRef}
         />
       </QrCodeWrapper>
       <Description>
@@ -79,8 +70,6 @@ const Paycode = () => {
     </Wrapper>
   );
 };
-
-export default Paycode;
 
 const Wrapper = styled.View`
   flex: 1;
@@ -118,3 +107,5 @@ const Description = styled.Text`
   color: #939998;
   margin-bottom: 20px;
 `;
+
+export default Paycode;

@@ -20,13 +20,15 @@ import {addTransaction} from '../store/slices/transactionHistorySlice';
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const Success: React.FC<Props> = ({navigation, route}) => {
-  const {print, printSilently, printReceipt} = usePrint();
+  const {printSilently, printReceipt} = usePrint();
 
   const dispatch = useAppDispatch();
   const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
     useAppSelector(state => state.amount);
   const {username} = useAppSelector(state => state.user);
-  const {paymentHash, paymentRequest, paymentSecret} = useAppSelector(state => state.invoice);
+  const {paymentHash, paymentRequest, paymentSecret} = useAppSelector(
+    state => state.invoice,
+  );
   const {lastTransaction} = useAppSelector(state => state.transactionHistory);
 
   // Create and store transaction data when component mounts
@@ -35,7 +37,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
       id: paymentHash || `tx_${Date.now()}`,
       timestamp: new Date().toISOString(),
       amount: {
-        satAmount: satAmount || 0,
+        satAmount: Number(satAmount) || 0,
         displayAmount: displayAmount || '0',
         currency,
         isPrimaryAmountSats: isPrimaryAmountSats || false,
@@ -53,7 +55,18 @@ const Success: React.FC<Props> = ({navigation, route}) => {
     };
 
     dispatch(addTransaction(transactionData));
-  }, [dispatch, satAmount, displayAmount, currency, isPrimaryAmountSats, username, paymentHash, paymentRequest, paymentSecret, memo]);
+  }, [
+    dispatch,
+    satAmount,
+    displayAmount,
+    currency,
+    isPrimaryAmountSats,
+    username,
+    paymentHash,
+    paymentRequest,
+    paymentSecret,
+    memo,
+  ]);
 
   const onDone = () => {
     dispatch(resetInvoice());
@@ -75,7 +88,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         paymentHash: lastTransaction.invoice.paymentHash,
         status: lastTransaction.status,
       };
-      
+
       printReceipt(receiptData);
     }
   };
@@ -87,21 +100,9 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           <Icon source={Check} />
         </IconWrapper>
         <Title>{route.params?.title || `The invoice has been paid`}</Title>
-        {isPrimaryAmountSats ? (
-          <>
-            <PrimaryAmount>{`${satAmount} sats`}</PrimaryAmount>
-            <SecondaryAmount>{`${currency.symbol} ${
-              displayAmount || 0
-            }`}</SecondaryAmount>
-          </>
-        ) : (
-          <>
-            <PrimaryAmount>{`${currency.symbol} ${
-              displayAmount || 0
-            }`}</PrimaryAmount>
-            <SecondaryAmount>{`≈ ${satAmount} sats`}</SecondaryAmount>
-          </>
-        )}
+        <PrimaryAmount>{`${currency.symbol} ${
+          displayAmount || 0
+        }`}</PrimaryAmount>
       </InnerWrapper>
       <BtnsWrapper>
         <PrimaryButton

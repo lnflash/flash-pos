@@ -1,22 +1,27 @@
-import * as React from 'react';
 import Toast, {
   SuccessToast,
   ErrorToast,
   BaseToastProps,
 } from 'react-native-toast-message';
 
+const toastStyle = {fontSize: 16};
+
 export const toastConfig = {
   success: (props: BaseToastProps) => (
-    <SuccessToast
-      {...props}
-      text1NumberOfLines={3}
-      text1Style={{fontSize: 16}}
-    />
+    <SuccessToast {...props} text1NumberOfLines={3} text1Style={toastStyle} />
   ),
   error: (props: BaseToastProps) => (
-    <ErrorToast {...props} text1NumberOfLines={3} text1Style={{fontSize: 16}} />
+    <ErrorToast {...props} text1NumberOfLines={3} text1Style={toastStyle} />
   ),
 };
+
+interface ToastProps {
+  message: string;
+  onHide?: () => void;
+  type?: 'error' | 'success' | 'info';
+  autoHide?: boolean;
+  position?: 'top' | 'bottom';
+}
 
 export const toastShow = ({
   message,
@@ -24,13 +29,7 @@ export const toastShow = ({
   type = 'success',
   autoHide,
   position = 'top',
-}: {
-  message: string;
-  onHide?: () => void;
-  type?: 'error' | 'success' | 'info';
-  autoHide?: boolean;
-  position?: 'top' | 'bottom';
-}): void => {
+}: ToastProps): void => {
   Toast.show({
     type,
     text1: message,

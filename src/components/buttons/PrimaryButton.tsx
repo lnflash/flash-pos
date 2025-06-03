@@ -12,31 +12,23 @@ type Props = {
   onPress: () => void;
 };
 
+const iconStyle = {marginRight: 5};
+
 const PrimaryButton: React.FC<Props> = ({
   icon,
   btnText,
-  iconColor,
+  iconColor = '#fff',
   textStyle,
   btnStyle,
   onPress,
-}) => {
-  return (
-    <Wrapper style={btnStyle} onPress={onPress} activeOpacity={0.5}>
-      {icon && (
-        <Icon
-          name={icon}
-          size={20}
-          solid
-          color={iconColor || '#fff'}
-          style={{marginRight: 5}}
-        />
-      )}
-      <Text style={textStyle}>{btnText}</Text>
-    </Wrapper>
-  );
-};
-
-export default PrimaryButton;
+}) => (
+  <Wrapper style={btnStyle} onPress={onPress} activeOpacity={0.5}>
+    {icon && (
+      <Icon name={icon} size={20} solid color={iconColor} style={iconStyle} />
+    )}
+    <Text style={textStyle}>{btnText}</Text>
+  </Wrapper>
+);
 
 const Wrapper = styled.TouchableOpacity`
   width: 100%;
@@ -45,7 +37,7 @@ const Wrapper = styled.TouchableOpacity`
   justify-content: center;
   border-radius: 100px;
   background-color: #002118;
-  padding-vertical: 10px;
+  padding-vertical: 15px;
 `;
 
 const Text = styled.Text`
@@ -53,3 +45,5 @@ const Text = styled.Text`
   font-family: 'Outfit-Bold';
   color: #fff;
 `;
+
+export default PrimaryButton;

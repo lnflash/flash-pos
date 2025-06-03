@@ -10,18 +10,18 @@ import {ActivityIndicator} from '../contexts/ActivityIndicator';
 import {useFlashcard, useRealtimePrice} from '../hooks';
 
 // assets
-import Flashcard from '../assets/images/flashcard.svg';
+import Flashcard from '../assets/images/flashCard.svg';
 
 type Props = StackScreenProps<RootStackType, 'FlashcardBalance'>;
 
-const FlashcardBalance: React.FC<Props> = ({navigation, route}) => {
+const FlashcardBalance: React.FC<Props> = ({navigation}) => {
   const {satsToCurrency, loading} = useRealtimePrice();
   const {balanceInSats, transactions, resetFlashcard} = useFlashcard();
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', resetFlashcard);
     return unsubscribe;
-  }, [navigation]);
+  }, [navigation, resetFlashcard]);
 
   if (loading) {
     return <ActivityIndicator />;

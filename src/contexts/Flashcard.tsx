@@ -2,17 +2,9 @@ import React, {createContext, useEffect, useState} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
-
-// components
 import {ActivityIndicator} from './ActivityIndicator';
-
-// utils
 import {toastShow} from '../utils/toast';
-
-// env
 import {BTC_PAY_SERVER} from '@env';
-
-// route
 import {navigationRef} from '../routes';
 
 interface FlashcardInterface {
@@ -27,20 +19,14 @@ interface FlashcardInterface {
   resetFlashcard: () => void;
 }
 
-export const FlashcardContext = createContext<FlashcardInterface>({
-  tag: undefined,
-  k1: undefined,
-  callback: undefined,
-  lnurl: undefined,
-  balanceInSats: undefined,
-  transactions: undefined,
-  loading: undefined,
-  error: undefined,
+const defaultValue: FlashcardInterface = {
   resetFlashcard: () => {},
-});
+};
+
+export const FlashcardContext = createContext(defaultValue);
 
 type Props = {
-  children: string | JSX.Element | JSX.Element[];
+  children: React.ReactNode;
 };
 
 export const FlashcardProvider = ({children}: Props) => {
@@ -71,14 +57,12 @@ export const FlashcardProvider = ({children}: Props) => {
         message: 'NFC is not enabled on this device.',
         type: 'error',
       });
-    } else {
-      // NFC IS ENABLES AND SUPPORTED
     }
   };
 
   const handleTag = async (tag: TagEvent) => {
     const currentScreen = navigationRef.getCurrentRoute()?.name;
-    if (tag && tag.id) {
+    if (tag?.id) {
       const ndefRecord = tag?.ndefMessage?.[0];
       if (!ndefRecord) {
         toastShow({message: 'NDEF message not found.', type: 'error'});
@@ -89,7 +73,6 @@ export const FlashcardProvider = ({children}: Props) => {
         );
         if (payload.startsWith('lnurlw')) {
           setTag(tag);
-          console.log('CURRENT SCREEN>>>>>>>>>', currentScreen);
           if (currentScreen === 'Invoice') {
             await getPayDetails(payload);
           } else {
@@ -108,9 +91,6 @@ export const FlashcardProvider = ({children}: Props) => {
       const lnurlParams = await getParams(payload);
       if ('tag' in lnurlParams && lnurlParams.tag === 'withdrawRequest') {
         const {k1, callback} = lnurlParams;
-
-        console.log('K1>>>>>>>>>>>>>>', k1);
-        console.log('CALLBACK>>>>>>>>>>>>>', callback);
         setK1(k1);
         setCallback(callback);
       } else {
@@ -122,7 +102,6 @@ export const FlashcardProvider = ({children}: Props) => {
         });
       }
     } catch (err) {
-      console.log('NFC ERROR:', err);
       toastShow({
         message:
           'Unsupported NFC card. Please ensure you are using a flashcard.',
@@ -146,7 +125,6 @@ export const FlashcardProvider = ({children}: Props) => {
         navigationRef.navigate('FlashcardBalance');
       }
     } catch (err) {
-      console.log('NFC ERROR:', err);
       toastShow({
         message:
           'Unsupported NFC card. Please ensure you are using a flashcard.',
@@ -158,7 +136,6 @@ export const FlashcardProvider = ({children}: Props) => {
   const getLnurl = (html: string) => {
     const lnurlMatch = html.match(/href="lightning:(lnurl\w+)"/);
     if (lnurlMatch) {
-      console.log('LNURL MATCH>>>>>>>>>>', lnurlMatch[1]);
       setLnurl(lnurlMatch[1]);
     }
   };
@@ -166,24 +143,21 @@ export const FlashcardProvider = ({children}: Props) => {
   const getBalance = (html: string) => {
     const balanceMatch = html.match(/(\d{1,3}(?:,\d{3})*)\s*SATS<\/dt>/);
     if (balanceMatch) {
-      const parsedBalance = balanceMatch[1].replace(/,/g, ''); // Remove commas
+      const parsedBalance = balanceMatch[1].replace(/,/g, '');
       const satoshiAmount = parseInt(parsedBalance, 10);
-
-      console.log('SATOSHI AMOUNT>>>>>>>>>>>>>>>', satoshiAmount);
       setBalanceInSats(satoshiAmount);
     }
   };
 
   const getTransactions = (html: string) => {
-    // Extract dates and SATS amounts
     const transactionMatches = [
       ...html.matchAll(
         /<time datetime="(.*?)".*?>.*?<\/time>\s*<\/td>\s*<td.*?>\s*<span.*?>(-?\d{1,3}(,\d{3})*) SATS<\/span>/g,
       ),
     ];
     const data = transactionMatches.map(match => ({
-      date: match[1], // Extracted datetime value
-      sats: match[2], // Convert SATS value to integer
+      date: match[1],
+      sats: match[2],
     }));
     setTransactions(data);
   };
@@ -199,9 +173,7 @@ export const FlashcardProvider = ({children}: Props) => {
     setError(undefined);
   };
 
-  NfcManager.setEventListener(NfcEvents.DiscoverTag, (tag: TagEvent) => {
-    handleTag(tag);
-  });
+  NfcManager.setEventListener(NfcEvents.DiscoverTag, handleTag);
 
   NfcManager.setEventListener(NfcEvents.SessionClosed, () => {
     NfcManager.cancelTechnologyRequest();
@@ -210,19 +182,20 @@ export const FlashcardProvider = ({children}: Props) => {
 
   NfcManager.registerTagEvent();
 
+  const value = {
+    tag,
+    k1,
+    callback,
+    lnurl,
+    balanceInSats,
+    transactions,
+    loading,
+    error,
+    resetFlashcard,
+  };
+
   return (
-    <FlashcardContext.Provider
-      value={{
-        tag,
-        k1,
-        callback,
-        lnurl,
-        balanceInSats,
-        transactions,
-        loading,
-        error,
-        resetFlashcard,
-      }}>
+    <FlashcardContext.Provider value={value}>
       {children}
       {loading && <ActivityIndicator />}
     </FlashcardContext.Provider>

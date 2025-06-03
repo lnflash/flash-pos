@@ -39,13 +39,14 @@ const SecondaryButton: React.FC<Props> = ({
 export default SecondaryButton;
 
 const Wrapper = styled.TouchableOpacity`
-  width: 90%;
+  width: 100%;
   flex-direction: row;
   align-items: center;
   justify-content: center;
   border-radius: 100px;
   border: 1px solid #002118;
-  padding-vertical: 8px;
+  padding-vertical: 12px;
+  margin-bottom: 10px;
 `;
 
 const Text = styled.Text`

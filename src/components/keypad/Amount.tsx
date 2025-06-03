@@ -1,29 +1,38 @@
 import React, {useEffect} from 'react';
-import {ViewStyle} from 'react-native';
+import {ViewStyle, Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import Icon from 'react-native-vector-icons/FontAwesome6';
-
-// components
+import {useNavigation} from '@react-navigation/native';
+import {StackNavigationProp} from '@react-navigation/stack';
 import {CurrencyPicker} from '../modals';
-
-// hooks
 import {useRealtimePrice} from '../../hooks';
 import {useAppDispatch, useAppSelector} from '../../store/hooks';
-
-// store
 import {
   setDisplayAmount,
   setIsPrimaryAmountSats,
   setSatAmount,
 } from '../../store/slices/amountSlice';
 
+const {height} = Dimensions.get('screen');
+
 type Props = {
   hideCurrency?: boolean;
   hideToggle?: boolean;
+  hideSecondary?: boolean;
+  hideTransactionHistory?: boolean;
   style?: ViewStyle;
 };
 
-const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
+type NavigationProp = StackNavigationProp<RootStackType, 'Home'>;
+
+const Amount: React.FC<Props> = ({
+  hideCurrency,
+  hideToggle,
+  hideSecondary,
+  hideTransactionHistory,
+  style,
+}) => {
+  const navigation = useNavigation<NavigationProp>();
   const {currencyToSats, satsToCurrency, loading} = useRealtimePrice();
   const dispatch = useAppDispatch();
   const {currency, isPrimaryAmountSats, displayAmount, satAmount} =
@@ -41,7 +50,14 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
       }
       dispatch(setDisplayAmount(displayAmount));
     }
-  }, [isPrimaryAmountSats, satAmount, loading, currency]);
+  }, [
+    isPrimaryAmountSats,
+    satAmount,
+    loading,
+    currency,
+    dispatch,
+    satsToCurrency,
+  ]);
 
   useEffect(() => {
     if (!loading && !isPrimaryAmountSats) {
@@ -52,11 +68,55 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
       }
       dispatch(setSatAmount(satAmount));
     }
-  }, [isPrimaryAmountSats, displayAmount, loading, currency]);
+  }, [
+    isPrimaryAmountSats,
+    displayAmount,
+    loading,
+    currency,
+    dispatch,
+    currencyToSats,
+  ]);
 
   const onToggle = () => {
     dispatch(setIsPrimaryAmountSats(!isPrimaryAmountSats));
   };
+
+  const onTransactionHistory = () => {
+    navigation.navigate('TransactionHistory');
+  };
+
+  // Calculate dynamic font size based on text length
+  const calculateFontSize = (text: string, baseFontSize: number): number => {
+    const textLength = text.length;
+    let fontSize = baseFontSize;
+
+    // Reduce font size based on text length
+    if (textLength > 20) {
+      fontSize = Math.max(baseFontSize * 0.5, 20); // Minimum 20px
+    } else if (textLength > 15) {
+      fontSize = Math.max(baseFontSize * 0.6, 24); // Minimum 24px
+    } else if (textLength > 12) {
+      fontSize = Math.max(baseFontSize * 0.7, 28); // Minimum 28px
+    } else if (textLength > 10) {
+      fontSize = Math.max(baseFontSize * 0.8, 32); // Minimum 32px
+    } else if (textLength > 8) {
+      fontSize = Math.max(baseFontSize * 0.9, 36); // Minimum 36px
+    }
+
+    return Math.round(fontSize);
+  };
+
+  // Calculate font sizes for current display
+  const primaryText = !isPrimaryAmountSats
+    ? `${currency.symbol} ${displayAmount || 0}`
+    : `${satAmount || 0}`;
+
+  const secondaryText = !isPrimaryAmountSats
+    ? `≈ ${satAmount || 0} sats`
+    : `${currency.symbol} ${displayAmount || 0}`;
+
+  const primaryFontSize = calculateFontSize(primaryText, 48);
+  const secondaryFontSize = calculateFontSize(secondaryText, 36);
 
   return (
     <Wrapper style={style}>
@@ -67,33 +127,55 @@ const Amount: React.FC<Props> = ({hideCurrency, hideToggle, style}) => {
       )}
       {!isPrimaryAmountSats ? (
         <AmountWrapper>
-          <Primary>{`${currency.symbol} ${displayAmount || 0}`}</Primary>
-          <Secondary>
-            ≈ {satAmount || 0}
-            <Secondary fontSize={14}> sats</Secondary>
-          </Secondary>
+          <Primary
+            fontSize={primaryFontSize}
+            numberOfLines={1}
+            adjustsFontSizeToFit>
+            {`${currency.symbol} ${displayAmount || 0}`}
+          </Primary>
+          {!hideSecondary && (
+            <Secondary
+              fontSize={secondaryFontSize}
+              numberOfLines={1}
+              adjustsFontSizeToFit>
+              ≈ {satAmount || 0} sats
+            </Secondary>
+          )}
         </AmountWrapper>
       ) : (
         <AmountWrapper>
-          <Primary>
-            {satAmount || 0}
-            <Primary fontSize={16}> sats</Primary>
+          <Primary
+            fontSize={primaryFontSize}
+            numberOfLines={1}
+            adjustsFontSizeToFit>
+            {satAmount || 0} sats
           </Primary>
-          <Secondary>{`${currency.symbol} ${displayAmount || 0}`}</Secondary>
+          {!hideSecondary && (
+            <Secondary
+              fontSize={secondaryFontSize}
+              numberOfLines={1}
+              adjustsFontSizeToFit>
+              {`${currency.symbol} ${displayAmount || 0}`}
+            </Secondary>
+          )}
         </AmountWrapper>
       )}
-      {!hideToggle && (
-        <IconWrapper>
-          <IconBtn hitSlop={10} onPress={onToggle}>
-            <Icon name={'rotate'} size={25} solid />
-          </IconBtn>
+      {!hideTransactionHistory && (
+        <IconWrapper keypadRowHeight={height / 8.5}>
+          {!hideToggle ? (
+            <IconBtn hitSlop={10} onPress={onToggle}>
+              <Icon name={'rotate'} size={25} solid />
+            </IconBtn>
+          ) : (
+            <IconBtn hitSlop={10} onPress={onTransactionHistory}>
+              <Icon name={'clock-rotate-left'} size={25} solid />
+            </IconBtn>
+          )}
         </IconWrapper>
       )}
     </Wrapper>
   );
 };
-
-export default Amount;
 
 const Wrapper = styled.View`
   flex-direction: row;
@@ -110,23 +192,29 @@ const AmountWrapper = styled.View`
   flex: 3;
   align-items: center;
   justify-content: center;
+  padding-horizontal: 10px;
 `;
 
-const Primary = styled.Text<{fontSize?: number}>`
-  font-size: ${({fontSize}) => fontSize || 24}px;
+const Primary = styled.Text<{fontSize: number}>`
+  font-size: ${({fontSize}) => fontSize}px;
   font-family: 'Outfit-Bold';
   color: #000;
+  text-align: center;
 `;
 
-const Secondary = styled.Text<{fontSize?: number}>`
-  font-size: ${({fontSize}) => fontSize || 18}px;
+const Secondary = styled.Text<{fontSize: number}>`
+  font-size: ${({fontSize}) => fontSize}px;
   font-family: 'Outfit-Regular';
   color: #000;
+  text-align: center;
 `;
 
-const IconWrapper = styled.View`
+const IconWrapper = styled.View<{keypadRowHeight: number}>`
   flex: 1;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: center;
 `;
 
 const IconBtn = styled.TouchableOpacity``;
+
+export default Amount;

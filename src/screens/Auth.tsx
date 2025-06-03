@@ -2,22 +2,12 @@ import React, {useState} from 'react';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
 import {KeyboardAwareScrollView} from 'react-native-keyboard-aware-scroll-view';
-
-// components
 import {CurrencyPicker, PrimaryButton} from '../components';
-
-// assets
 import Logo from '../assets/icons/logo.png';
-
-// gql
 import client from '../graphql/ApolloClient';
 import {AccountDefaultWallets} from '../graphql/queries';
-
-// hooks
 import {useAppDispatch} from '../store/hooks';
 import {useActivityIndicator} from '../hooks';
-
-// store
 import {setUserData} from '../store/slices/userSlice';
 
 type Props = StackScreenProps<RootStackType, 'Auth'>;
@@ -26,33 +16,31 @@ const Auth: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {toggleLoading} = useActivityIndicator();
 
-  const [value, setValue] = useState<string>('');
+  const [value, setValue] = useState('');
   const [err, setErr] = useState<string>();
 
-  const onStart = () => {
-    if (value) {
-      toggleLoading(true);
-      client
-        .query({
-          query: AccountDefaultWallets,
-          variables: {username: value},
-        })
-        .then(res => {
-          dispatch(
-            setUserData({
-              username: value,
-              walletId: res.data.accountDefaultWallet.id,
-              walletCurrency: res.data.accountDefaultWallet.walletCurrency,
-            }),
-          );
-          navigation.replace('Home');
-        })
-        .catch(err => {
-          setErr(err.message);
-        })
-        .finally(() => {
-          toggleLoading(false);
-        });
+  const onStart = async () => {
+    if (!value) return;
+
+    toggleLoading(true);
+    try {
+      const res = await client.query({
+        query: AccountDefaultWallets,
+        variables: {username: value},
+      });
+
+      dispatch(
+        setUserData({
+          username: value,
+          walletId: res.data.accountDefaultWallet.id,
+          walletCurrency: res.data.accountDefaultWallet.walletCurrency,
+        }),
+      );
+      navigation.replace('Home');
+    } catch (error: any) {
+      setErr(error.message);
+    } finally {
+      toggleLoading(false);
     }
   };
 
@@ -71,7 +59,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
               onChangeText={setValue}
               placeholder="Enter your flash username"
             />
-            {!!err && <ErrText>{err}</ErrText>}
+            {err && <ErrText>{err}</ErrText>}
           </Container>
           <Container>
             <Label>Select your currency $</Label>
@@ -85,8 +73,6 @@ const Auth: React.FC<Props> = ({navigation}) => {
     </Wrapper>
   );
 };
-
-export default Auth;
 
 const Wrapper = styled.View`
   flex: 1;
@@ -149,3 +135,5 @@ const ErrText = styled.Text`
 const BtnWrapper = styled.View`
   margin-horizontal: 20px;
 `;
+
+export default Auth;
