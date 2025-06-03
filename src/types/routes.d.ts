@@ -19,6 +19,9 @@ type RewardsScreenParams = {
   purchaseCurrency?: string; // Currency symbol (e.g., "USD", "JMD")
   transactionId?: string; // Optional transaction linking
   purchaseDisplayAmount?: string; // Formatted amount for display (e.g., "$10.00")
+  // External Payment Rewards support
+  isExternalPayment?: boolean; // Whether this is an external payment (cash/card) vs Lightning
+  paymentMethod?: PaymentMethod; // How the customer paid (cash, card, check, etc.)
 };
 
 // Enhanced RewardsSuccess screen parameters
@@ -30,4 +33,7 @@ type RewardsSuccessParams = {
   purchaseDisplayAmount?: string; // Optional: formatted purchase amount
   rewardRate?: number; // Optional: percentage earned (e.g., 0.02 for 2%)
   calculationType?: 'purchase-based' | 'standalone'; // How the reward was calculated
+  // External Payment Rewards support
+  isExternalPayment?: boolean; // Whether this was an external payment reward
+  paymentMethod?: PaymentMethod; // Payment method used
 };

@@ -80,6 +80,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     const transactionData: TransactionData = {
       id: paymentHash || `tx_${Date.now()}`,
       timestamp: new Date().toISOString(),
+      transactionType: 'lightning', // Lightning payment transaction
+      paymentMethod: 'lightning', // Lightning payment method
       amount: {
         satAmount: Number(satAmount) || 0,
         displayAmount: displayAmount || '0',

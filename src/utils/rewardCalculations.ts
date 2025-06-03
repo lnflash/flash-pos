@@ -1,4 +1,4 @@
-interface RewardCalculation {
+export interface RewardCalculation {
   rewardAmount: number;
   rewardRate?: number;
   purchaseAmount?: number;
@@ -67,11 +67,15 @@ export const calculateReward = (
  * Format reward calculation for display purposes
  * @param calculation - Result from calculateReward
  * @param satsToCurrency - Currency conversion function
+ * @param isExternalPayment - Whether this is an external payment (cash/card) vs Lightning
+ * @param paymentMethod - The payment method used (optional)
  * @returns Formatted strings for UI display
  */
 export const formatRewardForDisplay = (
   calculation: RewardCalculation,
   satsToCurrency: (sats: number) => {formattedCurrency: string},
+  isExternalPayment: boolean = false,
+  paymentMethod?: PaymentMethod,
 ) => {
   const rewardCurrency = satsToCurrency(
     calculation.rewardAmount,
@@ -87,7 +91,26 @@ export const formatRewardForDisplay = (
 
   // Purchase-based display
   const percentage = ((calculation.rewardRate || 0) * 100).toFixed(1);
-  let description = `${percentage}% of purchase amount`;
+
+  // Determine payment context for description
+  let paymentContext = 'purchase amount';
+  if (isExternalPayment) {
+    switch (paymentMethod) {
+      case 'cash':
+        paymentContext = 'cash payment';
+        break;
+      case 'card':
+        paymentContext = 'card payment';
+        break;
+      case 'check':
+        paymentContext = 'check payment';
+        break;
+      default:
+        paymentContext = 'external payment';
+    }
+  }
+
+  let description = `${percentage}% of ${paymentContext}`;
 
   if (calculation.appliedMinimum) {
     description += ' (minimum applied)';
@@ -95,9 +118,14 @@ export const formatRewardForDisplay = (
     description += ' (maximum applied)';
   }
 
+  // Different secondary text for external payments
+  const secondaryText = isExternalPayment
+    ? 'Bitcoin reward will be applied to balance.'
+    : 'will be applied to reward balance.';
+
   return {
     primaryText: `${calculation.rewardAmount} sats (~${rewardCurrency})`,
-    secondaryText: 'will be applied to reward balance.',
+    secondaryText,
     description,
   };
 };

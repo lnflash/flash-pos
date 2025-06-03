@@ -8,7 +8,7 @@ import axios from 'axios';
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
 import {useFocusEffect} from '@react-navigation/native';
-import {useAppSelector} from '../store/hooks';
+import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // assets
 import Pos from '../assets/icons/pos.svg';
@@ -22,9 +22,14 @@ import {
   calculateReward,
   formatRewardForDisplay,
 } from '../utils/rewardCalculations';
+import {
+  createRewardsOnlyTransaction,
+  createRewardData,
+} from '../utils/transactionHelpers';
 
 // selectors
 import {selectRewardConfig} from '../store/slices/rewardSlice';
+import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 const width = Dimensions.get('screen').width;
 
@@ -32,12 +37,20 @@ type Props = StackScreenProps<RootStackType, 'Rewards'>;
 
 const Rewards: React.FC<Props> = ({navigation, route}) => {
   // Extract navigation parameters (all optional for backward compatibility)
-  const {purchaseAmount, purchaseCurrency, purchaseDisplayAmount} =
-    route.params || {};
+  const {
+    purchaseAmount,
+    purchaseCurrency,
+    purchaseDisplayAmount,
+    isExternalPayment,
+    paymentMethod,
+  } = route.params || {};
 
+  const dispatch = useAppDispatch();
   const {satsToCurrency} = useRealtimePrice();
   const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const {username} = useAppSelector(state => state.user);
+  const {currency} = useAppSelector(state => state.amount);
 
   // Calculate reward based on purchase context or standalone
   const rewardCalculation = useMemo(
@@ -45,10 +58,16 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     [purchaseAmount, rewardConfig],
   );
 
-  // Format reward information for display
+  // Format reward information for display with external payment context
   const rewardDisplay = useMemo(
-    () => formatRewardForDisplay(rewardCalculation, satsToCurrency),
-    [rewardCalculation, satsToCurrency],
+    () =>
+      formatRewardForDisplay(
+        rewardCalculation,
+        satsToCurrency,
+        isExternalPayment,
+        paymentMethod,
+      ),
+    [rewardCalculation, satsToCurrency, isExternalPayment, paymentMethod],
   );
 
   // Check if rewards are enabled
@@ -84,12 +103,33 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
       resetFlashcard();
       if (response.data) {
+        // Create transaction data for external payments
+        if (isExternalPayment && purchaseAmount) {
+          const rewardData = createRewardData(rewardCalculation, false);
+          const transactionData = createRewardsOnlyTransaction({
+            amount: {
+              satAmount: purchaseAmount,
+              displayAmount:
+                purchaseDisplayAmount?.replace(/[^0-9.]/g, '') || '0',
+              currency: currency,
+              isPrimaryAmountSats: false,
+            },
+            merchant: {
+              username: username || 'Unknown',
+            },
+            paymentMethod: paymentMethod || 'external',
+            reward: rewardData,
+          });
+
+          dispatch(addTransaction(transactionData));
+        }
+
         const displayAmount =
           balanceInSats !== undefined &&
           satsToCurrency(balanceInSats + rewardCalculation.rewardAmount)
             .formattedCurrency;
 
-        // Navigate with enhanced parameters including purchase context
+        // Navigate with enhanced parameters including external payment context
         navigation.navigate('RewardsSuccess', {
           rewardSatAmount: rewardCalculation.rewardAmount,
           balance: displayAmount || '',
@@ -98,6 +138,8 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           purchaseDisplayAmount,
           rewardRate: rewardCalculation.rewardRate,
           calculationType: rewardCalculation.calculationType,
+          isExternalPayment,
+          paymentMethod,
         });
       } else {
         toastShow({
@@ -115,7 +157,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   }, [
     isRewardsEnabled,
     lnurl,
-    rewardCalculation.rewardAmount,
+    rewardCalculation,
     resetFlashcard,
     balanceInSats,
     satsToCurrency,
@@ -123,8 +165,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     purchaseAmount,
     purchaseCurrency,
     purchaseDisplayAmount,
-    rewardCalculation.rewardRate,
-    rewardCalculation.calculationType,
+    isExternalPayment,
+    paymentMethod,
+    dispatch,
+    username,
+    currency,
   ]);
 
   useFocusEffect(
@@ -154,7 +199,9 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       {/* Enhanced Header Section */}
       <HeaderSection>
         <Title>
-          {isPurchaseBased
+          {isExternalPayment
+            ? 'Claim Bitcoin Rewards for Your Payment!'
+            : isPurchaseBased
             ? 'Claim Your Purchase Reward!'
             : 'Tap any Flashcard to receive rewards!'}
         </Title>
@@ -163,11 +210,17 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         {purchaseDisplayAmount && (
           <Animatable.View animation="fadeInDown" duration={800}>
             <PurchaseCard>
-              <PurchaseLabel>Purchase Amount</PurchaseLabel>
+              <PurchaseLabel>
+                {isExternalPayment
+                  ? 'External Payment Amount'
+                  : 'Purchase Amount'}
+              </PurchaseLabel>
               <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
               {rewardPercentage && (
                 <RewardRateBadge>
-                  <RewardRateText>{rewardPercentage}% Reward</RewardRateText>
+                  <RewardRateText>
+                    {rewardPercentage}% Bitcoin Reward
+                  </RewardRateText>
                 </RewardRateBadge>
               )}
             </PurchaseCard>
@@ -221,7 +274,9 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         </RewardDetailsContainer>
 
         <ActionHint>
-          {isPurchaseBased
+          {isExternalPayment
+            ? 'Tap your flashcard to claim your Bitcoin reward'
+            : isPurchaseBased
             ? 'Tap your flashcard to claim your purchase reward'
             : 'Tap your flashcard to receive sats'}
         </ActionHint>

@@ -1,9 +1,15 @@
-import React, {useEffect} from 'react';
+import React, {useCallback, useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 
 // components
-import {Amount, Note, NumPad, PrimaryButton} from '../components';
+import {
+  Amount,
+  Note,
+  NumPad,
+  PrimaryButton,
+  SecondaryButton,
+} from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -42,6 +48,28 @@ const Keypad = () => {
       dispatch(setIsPrimaryAmountSats(false));
     }
   }, [isPrimaryAmountSats, dispatch]);
+
+  const isValidAmount =
+    displayAmount && displayAmount !== '0' && Number(displayAmount) > 0;
+
+  // External Payment Rewards - "Give Points" functionality
+  const onGivePoints = useCallback(() => {
+    if (!satAmount || !displayAmount || !isValidAmount) {
+      toastShow({
+        message: 'Please enter a valid amount',
+        type: 'error',
+      });
+      return;
+    }
+
+    navigation.navigate('Rewards', {
+      purchaseAmount: Number(satAmount),
+      purchaseCurrency: currency.id,
+      purchaseDisplayAmount: `${currency.symbol}${displayAmount}`,
+      isExternalPayment: true,
+      paymentMethod: 'external',
+    });
+  }, [satAmount, displayAmount, currency, navigation, isValidAmount]);
 
   const onCreateInvoice = async () => {
     try {
@@ -149,7 +177,18 @@ const Keypad = () => {
         <NumPad />
       </BodyWrapper>
       <BtnsWrapper>
-        <PrimaryButton btnText="Next" onPress={onCreateInvoice} />
+        <ButtonRow>
+          <SecondaryButton
+            btnText="Give Points"
+            onPress={isValidAmount ? onGivePoints : () => {}}
+            btnStyle={{marginRight: 10, flex: 1}}
+          />
+          <PrimaryButton
+            btnText="Next"
+            onPress={isValidAmount ? onCreateInvoice : () => {}}
+            btnStyle={{flex: 1}}
+          />
+        </ButtonRow>
       </BtnsWrapper>
     </Wrapper>
   );
@@ -169,4 +208,10 @@ const BodyWrapper = styled.View`
 
 const BtnsWrapper = styled.View`
   padding-horizontal: 20px;
+`;
+
+const ButtonRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
 `;

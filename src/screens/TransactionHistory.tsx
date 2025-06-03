@@ -23,14 +23,21 @@ import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
 type NavigationProp = StackNavigationProp<RootStackType>;
 
+type FilterType =
+  | 'all'
+  | 'with-rewards'
+  | 'lightning'
+  | 'external'
+  | 'standalone';
+
 const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const navigations = useNavigation<NavigationProp>();
   const {printReceipt} = usePrint();
   const dispatch = useAppDispatch();
   const {transactions} = useAppSelector(state => state.transactionHistory);
 
-  // Filter state for transactions
-  const [showOnlyWithRewards, setShowOnlyWithRewards] = useState(false);
+  // Enhanced filter state for transaction types
+  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
   const onClearHistory = () => {
     dispatch(clearTransactionHistory());
@@ -48,6 +55,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       memo: transaction.memo,
       paymentHash: transaction.invoice.paymentHash,
       status: transaction.status,
+      transactionType: transaction.transactionType,
+      paymentMethod: transaction.paymentMethod,
       rewardAmount: transaction.reward?.rewardAmount,
       rewardRate: transaction.reward?.rewardRate,
     };
@@ -55,132 +64,227 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
     printReceipt(receiptData);
   };
 
-  // Filter transactions based on filter state
-  const filteredTransactions = showOnlyWithRewards
-    ? transactions.filter(transaction => transaction.reward)
-    : transactions;
+  // Enhanced transaction filtering
+  const filteredTransactions = React.useMemo(() => {
+    switch (activeFilter) {
+      case 'with-rewards':
+        return transactions.filter(transaction => transaction.reward);
+      case 'lightning':
+        return transactions.filter(
+          transaction => transaction.transactionType === 'lightning',
+        );
+      case 'external':
+        return transactions.filter(
+          transaction => transaction.transactionType === 'rewards-only',
+        );
+      case 'standalone':
+        return transactions.filter(
+          transaction => transaction.transactionType === 'standalone',
+        );
+      default:
+        return transactions;
+    }
+  }, [transactions, activeFilter]);
 
-  // Calculate reward statistics
-  const totalRewardsGiven = transactions.reduce(
-    (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
-    0,
-  );
-  const transactionsWithRewards = transactions.filter(
-    transaction => transaction.reward,
-  ).length;
+  // Enhanced statistics calculation
+  const statistics = React.useMemo(() => {
+    const lightningCount = transactions.filter(
+      t => t.transactionType === 'lightning',
+    ).length;
+    const externalCount = transactions.filter(
+      t => t.transactionType === 'rewards-only',
+    ).length;
+    const standaloneCount = transactions.filter(
+      t => t.transactionType === 'standalone',
+    ).length;
+    const withRewardsCount = transactions.filter(t => t.reward).length;
+    const totalRewardsGiven = transactions.reduce(
+      (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
+      0,
+    );
 
-  const renderTransactionItem = ({item}: {item: TransactionData}) => (
-    <TransactionCard>
-      <TransactionHeader>
-        <StatusContainer>
-          <StatusIcon source={Check} />
-          <StatusText status={item.status}>
-            {item.status.toUpperCase()}
-          </StatusText>
-          {item.reward && (
-            <RewardBadge>
-              <RewardBadgeText>
-                +{item.reward.rewardAmount} sats
-              </RewardBadgeText>
-            </RewardBadge>
+    return {
+      total: transactions.length,
+      lightning: lightningCount,
+      external: externalCount,
+      standalone: standaloneCount,
+      withRewards: withRewardsCount,
+      totalRewards: totalRewardsGiven,
+    };
+  }, [transactions]);
+
+  // Get transaction type badge info
+  const getTransactionTypeBadge = (transaction: TransactionData) => {
+    switch (transaction.transactionType) {
+      case 'lightning':
+        return {icon: '⚡', label: 'Lightning', color: '#007856'};
+      case 'rewards-only':
+        return {icon: '💳', label: 'External Payment', color: '#FF9500'};
+      case 'standalone':
+        return {icon: '🏷️', label: 'Reward Only', color: '#6C757D'};
+      default:
+        return {icon: '📄', label: 'Transaction', color: '#6C757D'};
+    }
+  };
+
+  // Get payment method display
+  const getPaymentMethodDisplay = (paymentMethod?: PaymentMethod) => {
+    switch (paymentMethod) {
+      case 'cash':
+        return 'Cash';
+      case 'card':
+        return 'Card';
+      case 'check':
+        return 'Check';
+      case 'lightning':
+        return 'Lightning';
+      default:
+        return 'External';
+    }
+  };
+
+  const renderTransactionItem = ({item}: {item: TransactionData}) => {
+    const typeBadge = getTransactionTypeBadge(item);
+
+    return (
+      <TransactionCard>
+        <TransactionHeader>
+          <StatusContainer>
+            <StatusIcon source={Check} />
+            <StatusText status={item.status}>
+              {item.status.toUpperCase()}
+            </StatusText>
+
+            {/* Transaction Type Badge */}
+            <TransactionTypeBadge color={typeBadge.color}>
+              <TransactionTypeBadgeText>
+                {typeBadge.icon} {typeBadge.label}
+              </TransactionTypeBadgeText>
+            </TransactionTypeBadge>
+
+            {/* Reward Badge */}
+            {item.reward && (
+              <RewardBadge>
+                <RewardBadgeText>
+                  +{item.reward.rewardAmount} sats
+                </RewardBadgeText>
+              </RewardBadge>
+            )}
+          </StatusContainer>
+          <DateText>
+            {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
+          </DateText>
+        </TransactionHeader>
+
+        <AmountContainer>
+          {item.amount.isPrimaryAmountSats ? (
+            <>
+              <PrimaryAmount>{`${item.amount.satAmount} sats`}</PrimaryAmount>
+              <SecondaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</SecondaryAmount>
+            </>
+          ) : (
+            <>
+              <PrimaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</PrimaryAmount>
+              <SecondaryAmount>{`≈ ${item.amount.satAmount} sats`}</SecondaryAmount>
+            </>
           )}
-        </StatusContainer>
-        <DateText>
-          {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
-        </DateText>
-      </TransactionHeader>
+        </AmountContainer>
 
-      <AmountContainer>
-        {item.amount.isPrimaryAmountSats ? (
-          <>
-            <PrimaryAmount>{`${item.amount.satAmount} sats`}</PrimaryAmount>
-            <SecondaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</SecondaryAmount>
-          </>
-        ) : (
-          <>
-            <PrimaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</PrimaryAmount>
-            <SecondaryAmount>{`≈ ${item.amount.satAmount} sats`}</SecondaryAmount>
-          </>
-        )}
-      </AmountContainer>
-
-      <TransactionDetails>
-        <DetailRow>
-          <DetailLabel>Paid to:</DetailLabel>
-          <DetailValue>{item.merchant.username}</DetailValue>
-        </DetailRow>
-        {item.memo && (
+        <TransactionDetails>
           <DetailRow>
-            <DetailLabel>Description:</DetailLabel>
-            <DetailValue>{item.memo}</DetailValue>
+            <DetailLabel>Paid to:</DetailLabel>
+            <DetailValue>{item.merchant.username}</DetailValue>
           </DetailRow>
-        )}
 
-        {/* Reward Information Section */}
-        {item.reward && (
-          <>
-            <RewardSection>
-              <RewardSectionTitle>Reward Information</RewardSectionTitle>
-              <DetailRow>
-                <DetailLabel>Reward Earned:</DetailLabel>
-                <RewardValue>{item.reward.rewardAmount} sats</RewardValue>
-              </DetailRow>
-              <DetailRow>
-                <DetailLabel>Reward Rate:</DetailLabel>
-                <DetailValue>
-                  {(item.reward.rewardRate * 100).toFixed(1)}%
-                </DetailValue>
-              </DetailRow>
-              {item.reward.wasMinimumApplied && (
+          {/* Payment Method for External Payments */}
+          {item.transactionType === 'rewards-only' && item.paymentMethod && (
+            <DetailRow>
+              <DetailLabel>Payment Method:</DetailLabel>
+              <DetailValue>
+                {getPaymentMethodDisplay(item.paymentMethod)}
+              </DetailValue>
+            </DetailRow>
+          )}
+
+          {item.memo && (
+            <DetailRow>
+              <DetailLabel>Description:</DetailLabel>
+              <DetailValue>{item.memo}</DetailValue>
+            </DetailRow>
+          )}
+
+          {/* Enhanced Reward Information Section */}
+          {item.reward && (
+            <>
+              <RewardSection>
+                <RewardSectionTitle>Reward Information</RewardSectionTitle>
                 <DetailRow>
-                  <DetailLabel>Constraint:</DetailLabel>
-                  <DetailValue>Minimum reward applied</DetailValue>
+                  <DetailLabel>Reward Earned:</DetailLabel>
+                  <RewardValue>{item.reward.rewardAmount} sats</RewardValue>
                 </DetailRow>
-              )}
-              {item.reward.wasMaximumApplied && (
                 <DetailRow>
-                  <DetailLabel>Constraint:</DetailLabel>
-                  <DetailValue>Maximum reward applied</DetailValue>
+                  <DetailLabel>Reward Rate:</DetailLabel>
+                  <DetailValue>
+                    {(item.reward.rewardRate * 100).toFixed(1)}%
+                  </DetailValue>
                 </DetailRow>
-              )}
-              <DetailRow>
-                <DetailLabel>Reward Type:</DetailLabel>
-                <DetailValue>
-                  {item.reward.isStandalone ? 'Standalone' : 'Purchase-based'}
-                </DetailValue>
-              </DetailRow>
-            </RewardSection>
-          </>
-        )}
+                {item.reward.wasMinimumApplied && (
+                  <DetailRow>
+                    <DetailLabel>Constraint:</DetailLabel>
+                    <DetailValue>Minimum reward applied</DetailValue>
+                  </DetailRow>
+                )}
+                {item.reward.wasMaximumApplied && (
+                  <DetailRow>
+                    <DetailLabel>Constraint:</DetailLabel>
+                    <DetailValue>Maximum reward applied</DetailValue>
+                  </DetailRow>
+                )}
+                <DetailRow>
+                  <DetailLabel>Reward Type:</DetailLabel>
+                  <DetailValue>
+                    {item.reward.isStandalone ? 'Standalone' : 'Purchase-based'}
+                  </DetailValue>
+                </DetailRow>
+              </RewardSection>
+            </>
+          )}
 
-        <DetailRow>
-          <DetailLabel>Payment ID:</DetailLabel>
-          <DetailValue numberOfLines={1} ellipsizeMode="middle">
-            {item.invoice.paymentHash || item.id}
-          </DetailValue>
-        </DetailRow>
-      </TransactionDetails>
+          <DetailRow>
+            <DetailLabel>Transaction ID:</DetailLabel>
+            <DetailValue numberOfLines={1} ellipsizeMode="middle">
+              {item.invoice.paymentHash || item.id}
+            </DetailValue>
+          </DetailRow>
+        </TransactionDetails>
 
-      <ButtonContainer>
-        <ReprintButton onPress={() => onReprintTransaction(item)}>
-          <ButtonIcon source={Refresh} />
-          <ButtonText>Reprint Receipt</ButtonText>
-        </ReprintButton>
-      </ButtonContainer>
-    </TransactionCard>
-  );
+        <ButtonContainer>
+          <ReprintButton onPress={() => onReprintTransaction(item)}>
+            <ButtonIcon source={Refresh} />
+            <ButtonText>Reprint Receipt</ButtonText>
+          </ReprintButton>
+        </ButtonContainer>
+      </TransactionCard>
+    );
+  };
 
   const renderEmptyState = () => (
     <EmptyContainer>
       <EmptyText>
-        {showOnlyWithRewards
+        {activeFilter === 'with-rewards'
           ? 'No transactions with rewards found'
+          : activeFilter === 'lightning'
+          ? 'No Lightning transactions found'
+          : activeFilter === 'external'
+          ? 'No external payment transactions found'
+          : activeFilter === 'standalone'
+          ? 'No standalone reward transactions found'
           : 'No transactions found'}
       </EmptyText>
       <EmptySubtext>
-        {showOnlyWithRewards
-          ? 'Transactions with rewards will appear here'
-          : 'Completed transactions will appear here'}
+        {activeFilter === 'all'
+          ? 'Completed transactions will appear here'
+          : 'Matching transactions will appear here'}
       </EmptySubtext>
     </EmptyContainer>
   );
@@ -191,33 +295,68 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         <Header>
           <HeaderTitle>Transaction History</HeaderTitle>
           <HeaderSubtitle>
-            {filteredTransactions.length} transactions
-            {transactionsWithRewards > 0 && (
+            {statistics.total} transactions
+            {statistics.totalRewards > 0 && (
               <>
                 {' • '}
-                {totalRewardsGiven} sats rewarded
+                {statistics.totalRewards} sats rewarded
               </>
             )}
           </HeaderSubtitle>
         </Header>
 
-        {/* Filter Controls */}
-        {transactionsWithRewards > 0 && (
+        {/* Enhanced Filter Controls */}
+        {statistics.total > 0 && (
           <FilterContainer>
-            <FilterButton
-              active={!showOnlyWithRewards}
-              onPress={() => setShowOnlyWithRewards(false)}>
-              <FilterButtonText active={!showOnlyWithRewards}>
-                All ({transactions.length})
-              </FilterButtonText>
-            </FilterButton>
-            <FilterButton
-              active={showOnlyWithRewards}
-              onPress={() => setShowOnlyWithRewards(true)}>
-              <FilterButtonText active={showOnlyWithRewards}>
-                With Rewards ({transactionsWithRewards})
-              </FilterButtonText>
-            </FilterButton>
+            <FilterScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <FilterButton
+                active={activeFilter === 'all'}
+                onPress={() => setActiveFilter('all')}>
+                <FilterButtonText active={activeFilter === 'all'}>
+                  All ({statistics.total})
+                </FilterButtonText>
+              </FilterButton>
+
+              {statistics.withRewards > 0 && (
+                <FilterButton
+                  active={activeFilter === 'with-rewards'}
+                  onPress={() => setActiveFilter('with-rewards')}>
+                  <FilterButtonText active={activeFilter === 'with-rewards'}>
+                    With Rewards ({statistics.withRewards})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+
+              {statistics.lightning > 0 && (
+                <FilterButton
+                  active={activeFilter === 'lightning'}
+                  onPress={() => setActiveFilter('lightning')}>
+                  <FilterButtonText active={activeFilter === 'lightning'}>
+                    ⚡ Lightning ({statistics.lightning})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+
+              {statistics.external > 0 && (
+                <FilterButton
+                  active={activeFilter === 'external'}
+                  onPress={() => setActiveFilter('external')}>
+                  <FilterButtonText active={activeFilter === 'external'}>
+                    💳 External ({statistics.external})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+
+              {statistics.standalone > 0 && (
+                <FilterButton
+                  active={activeFilter === 'standalone'}
+                  onPress={() => setActiveFilter('standalone')}>
+                  <FilterButtonText active={activeFilter === 'standalone'}>
+                    🏷️ Rewards ({statistics.standalone})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+            </FilterScrollView>
           </FilterContainer>
         )}
 
@@ -470,8 +609,11 @@ const FilterContainer = styled.View`
   border-bottom-color: #e9ecef;
 `;
 
-const FilterButton = styled.TouchableOpacity<{active: boolean}>`
+const FilterScrollView = styled.ScrollView`
   flex: 1;
+`;
+
+const FilterButton = styled.TouchableOpacity<{active: boolean}>`
   padding: 8px 16px;
   border-radius: 8px;
   margin-horizontal: 4px;
@@ -483,4 +625,18 @@ const FilterButtonText = styled.Text<{active: boolean}>`
   font-family: 'Outfit-Medium';
   color: ${props => (props.active ? '#ffffff' : '#666666')};
   text-align: center;
+`;
+
+const TransactionTypeBadge = styled.View<{color: string}>`
+  background-color: ${props => props.color};
+  border-radius: 12px;
+  padding-horizontal: 8px;
+  padding-vertical: 2px;
+  margin-left: 8px;
+`;
+
+const TransactionTypeBadgeText = styled.Text`
+  font-size: 10px;
+  font-family: 'Outfit-Medium';
+  color: #ffffff;
 `;

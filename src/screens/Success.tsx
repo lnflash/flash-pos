@@ -36,6 +36,8 @@ const Success: React.FC<Props> = ({navigation, route}) => {
     const transactionData: TransactionData = {
       id: paymentHash || `tx_${Date.now()}`,
       timestamp: new Date().toISOString(),
+      transactionType: 'standalone',
+      paymentMethod: undefined,
       amount: {
         satAmount: Number(satAmount) || 0,
         displayAmount: displayAmount || '0',
@@ -171,13 +173,6 @@ const PrimaryAmount = styled.Text`
   font-size: 40px;
   font-family: 'Outfit-Regular';
   color: #fff;
-`;
-
-const SecondaryAmount = styled.Text`
-  font-size: 26px;
-  font-family: 'Outfit-Regular';
-  color: #fff;
-  opacity: 0.8;
 `;
 
 const BtnsWrapper = styled.View`

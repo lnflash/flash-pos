@@ -24,6 +24,8 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
     purchaseDisplayAmount,
     rewardRate,
     calculationType,
+    isExternalPayment,
+    paymentMethod,
   } = route.params;
 
   const {satsToCurrency} = useRealtimePrice();
@@ -36,10 +38,26 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
     });
   };
 
-  // Determine if this is a purchase-based reward
+  // Determine reward context
   const isPurchaseBased = calculationType === 'purchase-based';
   const rewardPercentage =
     isPurchaseBased && rewardRate ? (rewardRate * 100).toFixed(1) : null;
+
+  // Get payment method display info
+  const getPaymentMethodInfo = () => {
+    switch (paymentMethod) {
+      case 'cash':
+        return {icon: '💵', name: 'Cash Payment'};
+      case 'card':
+        return {icon: '💳', name: 'Card Payment'};
+      case 'check':
+        return {icon: '📄', name: 'Check Payment'};
+      default:
+        return {icon: '🏪', name: 'External Payment'};
+    }
+  };
+
+  const paymentInfo = getPaymentMethodInfo();
 
   return (
     <Wrapper>
@@ -49,7 +67,9 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
           <SuccessHeader>
             <SuccessTitle>🎉 Reward Earned!</SuccessTitle>
             <SuccessSubtitle>
-              {isPurchaseBased
+              {isExternalPayment
+                ? 'Your Bitcoin reward for external payment has been added'
+                : isPurchaseBased
                 ? 'Your purchase reward has been added to your balance'
                 : 'Your flashcard reward has been added to your balance'}
             </SuccessSubtitle>
@@ -69,8 +89,48 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
           </RewardCard>
         </Animatable.View>
 
-        {/* Purchase Context Section */}
-        {isPurchaseBased && purchaseDisplayAmount && (
+        {/* External Payment Context Section */}
+        {isExternalPayment && isPurchaseBased && purchaseDisplayAmount && (
+          <Animatable.View animation="fadeInUp" duration={800} delay={600}>
+            <PurchaseContextCard>
+              <PurchaseContextHeader>
+                <PurchaseIcon>{paymentInfo.icon}</PurchaseIcon>
+                <PurchaseContextTitle>
+                  External Payment Reward Details
+                </PurchaseContextTitle>
+              </PurchaseContextHeader>
+
+              <PurchaseDetailRow>
+                <PurchaseDetailLabel>Payment Method</PurchaseDetailLabel>
+                <PurchaseDetailValue>{paymentInfo.name}</PurchaseDetailValue>
+              </PurchaseDetailRow>
+
+              <PurchaseDetailRow>
+                <PurchaseDetailLabel>Payment Amount</PurchaseDetailLabel>
+                <PurchaseDetailValue>
+                  {purchaseDisplayAmount}
+                </PurchaseDetailValue>
+              </PurchaseDetailRow>
+
+              {rewardPercentage && (
+                <PurchaseDetailRow>
+                  <PurchaseDetailLabel>Bitcoin Reward Rate</PurchaseDetailLabel>
+                  <PurchaseDetailValue>{rewardPercentage}%</PurchaseDetailValue>
+                </PurchaseDetailRow>
+              )}
+
+              <PurchaseDetailRow>
+                <PurchaseDetailLabel>Bitcoin Earned</PurchaseDetailLabel>
+                <PurchaseDetailValue highlight>
+                  {rewardSatAmount} sats
+                </PurchaseDetailValue>
+              </PurchaseDetailRow>
+            </PurchaseContextCard>
+          </Animatable.View>
+        )}
+
+        {/* Lightning Purchase Context Section */}
+        {!isExternalPayment && isPurchaseBased && purchaseDisplayAmount && (
           <Animatable.View animation="fadeInUp" duration={800} delay={600}>
             <PurchaseContextCard>
               <PurchaseContextHeader>

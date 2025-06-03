@@ -1,6 +1,21 @@
+// Transaction type enumeration for different payment flows
+type TransactionType = 'lightning' | 'rewards-only' | 'standalone';
+
+// Payment method types for tracking how the payment was made
+type PaymentMethod =
+  | 'lightning'
+  | 'cash'
+  | 'card'
+  | 'check'
+  | 'external'
+  | 'other';
+
 interface TransactionData {
   id: string;
   timestamp: string;
+  // New fields for External Payment Rewards
+  transactionType: TransactionType; // How the transaction was processed
+  paymentMethod?: PaymentMethod; // How the customer paid (optional for backward compatibility)
   amount: {
     satAmount: number;
     displayAmount: string;
@@ -44,6 +59,9 @@ interface ReceiptData {
   memo?: string;
   paymentHash: string;
   status: string;
+  // Enhanced fields for External Payment Rewards
+  transactionType?: TransactionType;
+  paymentMethod?: PaymentMethod;
   rewardAmount?: number;
   rewardRate?: number;
 }
