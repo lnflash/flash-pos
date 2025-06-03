@@ -1,4 +1,4 @@
-import {createSlice} from '@reduxjs/toolkit';
+import {createSlice, createSelector} from '@reduxjs/toolkit';
 
 interface RewardState {
   rewardRate: number; // Percentage (e.g., 0.02 for 2%)
@@ -159,10 +159,21 @@ export const selectMinimumReward = (state: any) => state.reward.minimumReward;
 export const selectMaximumReward = (state: any) => state.reward.maximumReward;
 export const selectDefaultReward = (state: any) => state.reward.defaultReward;
 export const selectIsRewardEnabled = (state: any) => state.reward.isEnabled;
-export const selectRewardConfig = (state: any) => ({
-  rewardRate: state.reward.rewardRate,
-  minimumReward: state.reward.minimumReward,
-  maximumReward: state.reward.maximumReward,
-  defaultReward: state.reward.defaultReward,
-  isEnabled: state.reward.isEnabled,
-});
+
+// Memoized selector to prevent unnecessary re-renders
+export const selectRewardConfig = createSelector(
+  [
+    selectRewardRate,
+    selectMinimumReward,
+    selectMaximumReward,
+    selectDefaultReward,
+    selectIsRewardEnabled,
+  ],
+  (rewardRate, minimumReward, maximumReward, defaultReward, isEnabled) => ({
+    rewardRate,
+    minimumReward,
+    maximumReward,
+    defaultReward,
+    isEnabled,
+  }),
+);

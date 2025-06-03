@@ -30,6 +30,11 @@ const InvoiceQRCode: React.FC<Props> = ({errMessage}) => {
           />
           <ErrText>{errMessage}</ErrText>
         </ErrContainer>
+      ) : !paymentRequest ? (
+        <ErrContainer width={width}>
+          <Icon name={'clock'} size={80} solid color={'#666666'} />
+          <ErrText>Generating payment request...</ErrText>
+        </ErrContainer>
       ) : (
         <QRCode
           size={width - 80}

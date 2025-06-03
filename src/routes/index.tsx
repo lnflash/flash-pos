@@ -9,6 +9,7 @@ import {
   Auth,
   FlashcardBalance,
   Invoice,
+  Rewards,
   RewardsSuccess,
   Success,
   TransactionHistory,
@@ -46,6 +47,11 @@ const Root = () => {
         options={{headerShown: false}}
       />
       <Stack.Screen name="Invoice" component={Invoice} />
+      <Stack.Screen
+        name="Rewards"
+        component={Rewards}
+        options={{headerShown: false}}
+      />
       <Stack.Screen
         name="Success"
         component={Success}
