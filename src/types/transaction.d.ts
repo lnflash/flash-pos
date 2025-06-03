@@ -17,6 +17,14 @@ interface TransactionData {
   };
   memo?: string;
   status: 'pending' | 'completed' | 'failed';
+  reward?: {
+    rewardAmount: number; // Reward sats earned
+    rewardRate: number; // Percentage rate used (e.g., 0.02 for 2%)
+    wasMinimumApplied: boolean; // Whether minimum constraint was applied
+    wasMaximumApplied: boolean; // Whether maximum constraint was applied
+    isStandalone: boolean; // Whether this was a standalone reward (no purchase)
+    timestamp: string; // When reward was calculated/awarded
+  };
 }
 
 interface TransactionHistoryState {
@@ -36,4 +44,6 @@ interface ReceiptData {
   memo?: string;
   paymentHash: string;
   status: string;
+  rewardAmount?: number;
+  rewardRate?: number;
 }

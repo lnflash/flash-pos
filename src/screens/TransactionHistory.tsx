@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {FlatList, RefreshControl} from 'react-native';
 import styled from 'styled-components/native';
 import {useNavigation} from '@react-navigation/native';
@@ -23,11 +23,14 @@ import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
 type NavigationProp = StackNavigationProp<RootStackType>;
 
-const TransactionHistory: React.FC<Props> = ({navigation}) => {
+const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const navigations = useNavigation<NavigationProp>();
   const {printReceipt} = usePrint();
   const dispatch = useAppDispatch();
   const {transactions} = useAppSelector(state => state.transactionHistory);
+
+  // Filter state for transactions
+  const [showOnlyWithRewards, setShowOnlyWithRewards] = useState(false);
 
   const onClearHistory = () => {
     dispatch(clearTransactionHistory());
@@ -45,10 +48,26 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
       memo: transaction.memo,
       paymentHash: transaction.invoice.paymentHash,
       status: transaction.status,
+      rewardAmount: transaction.reward?.rewardAmount,
+      rewardRate: transaction.reward?.rewardRate,
     };
 
     printReceipt(receiptData);
   };
+
+  // Filter transactions based on filter state
+  const filteredTransactions = showOnlyWithRewards
+    ? transactions.filter(transaction => transaction.reward)
+    : transactions;
+
+  // Calculate reward statistics
+  const totalRewardsGiven = transactions.reduce(
+    (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
+    0,
+  );
+  const transactionsWithRewards = transactions.filter(
+    transaction => transaction.reward,
+  ).length;
 
   const renderTransactionItem = ({item}: {item: TransactionData}) => (
     <TransactionCard>
@@ -58,6 +77,13 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
           <StatusText status={item.status}>
             {item.status.toUpperCase()}
           </StatusText>
+          {item.reward && (
+            <RewardBadge>
+              <RewardBadgeText>
+                +{item.reward.rewardAmount} sats
+              </RewardBadgeText>
+            </RewardBadge>
+          )}
         </StatusContainer>
         <DateText>
           {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
@@ -89,6 +115,44 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
             <DetailValue>{item.memo}</DetailValue>
           </DetailRow>
         )}
+
+        {/* Reward Information Section */}
+        {item.reward && (
+          <>
+            <RewardSection>
+              <RewardSectionTitle>Reward Information</RewardSectionTitle>
+              <DetailRow>
+                <DetailLabel>Reward Earned:</DetailLabel>
+                <RewardValue>{item.reward.rewardAmount} sats</RewardValue>
+              </DetailRow>
+              <DetailRow>
+                <DetailLabel>Reward Rate:</DetailLabel>
+                <DetailValue>
+                  {(item.reward.rewardRate * 100).toFixed(1)}%
+                </DetailValue>
+              </DetailRow>
+              {item.reward.wasMinimumApplied && (
+                <DetailRow>
+                  <DetailLabel>Constraint:</DetailLabel>
+                  <DetailValue>Minimum reward applied</DetailValue>
+                </DetailRow>
+              )}
+              {item.reward.wasMaximumApplied && (
+                <DetailRow>
+                  <DetailLabel>Constraint:</DetailLabel>
+                  <DetailValue>Maximum reward applied</DetailValue>
+                </DetailRow>
+              )}
+              <DetailRow>
+                <DetailLabel>Reward Type:</DetailLabel>
+                <DetailValue>
+                  {item.reward.isStandalone ? 'Standalone' : 'Purchase-based'}
+                </DetailValue>
+              </DetailRow>
+            </RewardSection>
+          </>
+        )}
+
         <DetailRow>
           <DetailLabel>Payment ID:</DetailLabel>
           <DetailValue numberOfLines={1} ellipsizeMode="middle">
@@ -108,8 +172,16 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
 
   const renderEmptyState = () => (
     <EmptyContainer>
-      <EmptyText>No transactions found</EmptyText>
-      <EmptySubtext>Completed transactions will appear here</EmptySubtext>
+      <EmptyText>
+        {showOnlyWithRewards
+          ? 'No transactions with rewards found'
+          : 'No transactions found'}
+      </EmptyText>
+      <EmptySubtext>
+        {showOnlyWithRewards
+          ? 'Transactions with rewards will appear here'
+          : 'Completed transactions will appear here'}
+      </EmptySubtext>
     </EmptyContainer>
   );
 
@@ -118,11 +190,39 @@ const TransactionHistory: React.FC<Props> = ({navigation}) => {
       <Container>
         <Header>
           <HeaderTitle>Transaction History</HeaderTitle>
-          <HeaderSubtitle>{transactions.length} transactions</HeaderSubtitle>
+          <HeaderSubtitle>
+            {filteredTransactions.length} transactions
+            {transactionsWithRewards > 0 && (
+              <>
+                {' • '}
+                {totalRewardsGiven} sats rewarded
+              </>
+            )}
+          </HeaderSubtitle>
         </Header>
 
+        {/* Filter Controls */}
+        {transactionsWithRewards > 0 && (
+          <FilterContainer>
+            <FilterButton
+              active={!showOnlyWithRewards}
+              onPress={() => setShowOnlyWithRewards(false)}>
+              <FilterButtonText active={!showOnlyWithRewards}>
+                All ({transactions.length})
+              </FilterButtonText>
+            </FilterButton>
+            <FilterButton
+              active={showOnlyWithRewards}
+              onPress={() => setShowOnlyWithRewards(true)}>
+              <FilterButtonText active={showOnlyWithRewards}>
+                With Rewards ({transactionsWithRewards})
+              </FilterButtonText>
+            </FilterButton>
+          </FilterContainer>
+        )}
+
         <FlatList
-          data={transactions}
+          data={filteredTransactions}
           renderItem={renderTransactionItem}
           keyExtractor={item => item.id}
           showsVerticalScrollIndicator={false}
@@ -326,17 +426,61 @@ const EmptySubtext = styled.Text`
   margin-top: 8px;
 `;
 
-const FooterContainer = styled.View`
-  position: absolute;
-  bottom: 20px;
-  left: 20px;
-  right: 20px;
-  background-color: #ffffff;
-  padding: 16px;
+const RewardBadge = styled.View`
+  background-color: #007856;
   border-radius: 12px;
-  shadow-color: #000;
-  shadow-offset: 0px -2px;
-  shadow-opacity: 0.1;
-  shadow-radius: 4px;
-  elevation: 5;
+  padding-horizontal: 8px;
+  padding-vertical: 2px;
+  margin-left: 8px;
+`;
+
+const RewardBadgeText = styled.Text`
+  font-size: 10px;
+  font-family: 'Outfit-Medium';
+  color: #ffffff;
+`;
+
+const RewardSection = styled.View`
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+`;
+
+const RewardSectionTitle = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Bold';
+  color: #007856;
+  margin-bottom: 8px;
+`;
+
+const RewardValue = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: #007856;
+  text-align: right;
+  margin-left: 16px;
+`;
+
+const FilterContainer = styled.View`
+  flex-direction: row;
+  padding: 10px 20px;
+  background-color: #f8f9fa;
+  border-bottom-width: 1px;
+  border-bottom-color: #e9ecef;
+`;
+
+const FilterButton = styled.TouchableOpacity<{active: boolean}>`
+  flex: 1;
+  padding: 8px 16px;
+  border-radius: 8px;
+  margin-horizontal: 4px;
+  background-color: ${props => (props.active ? '#007856' : 'transparent')};
+`;
+
+const FilterButtonText = styled.Text<{active: boolean}>`
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: ${props => (props.active ? '#ffffff' : '#666666')};
+  text-align: center;
 `;

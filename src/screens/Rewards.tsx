@@ -54,6 +54,13 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   // Check if rewards are enabled
   const isRewardsEnabled = rewardConfig.isEnabled;
 
+  // Determine reward type for enhanced messaging
+  const isPurchaseBased =
+    rewardCalculation.calculationType === 'purchase-based';
+  const rewardPercentage = isPurchaseBased
+    ? (rewardCalculation.rewardRate! * 100).toFixed(1)
+    : null;
+
   const onReward = useCallback(async () => {
     if (!isRewardsEnabled) {
       toastShow({
@@ -131,41 +138,94 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   if (!isRewardsEnabled) {
     return (
       <Wrapper>
-        <Title>Rewards System Disabled</Title>
-        <DisabledMessage>
-          Rewards are currently disabled. Please contact support or check your
-          settings.
-        </DisabledMessage>
+        <DisabledContainer>
+          <DisabledTitle>Rewards System Disabled</DisabledTitle>
+          <DisabledMessage>
+            Rewards are currently disabled. Please contact support or check your
+            settings.
+          </DisabledMessage>
+        </DisabledContainer>
       </Wrapper>
     );
   }
 
   return (
     <Wrapper>
-      <Title>Tap any Flashcard to receive rewards!</Title>
+      {/* Enhanced Header Section */}
+      <HeaderSection>
+        <Title>
+          {isPurchaseBased
+            ? 'Claim Your Purchase Reward!'
+            : 'Tap any Flashcard to receive rewards!'}
+        </Title>
 
-      {/* Show purchase context if available */}
-      {purchaseDisplayAmount && (
-        <PurchaseContext>Purchase: {purchaseDisplayAmount}</PurchaseContext>
-      )}
+        {/* Purchase Context Card */}
+        {purchaseDisplayAmount && (
+          <Animatable.View animation="fadeInDown" duration={800}>
+            <PurchaseCard>
+              <PurchaseLabel>Purchase Amount</PurchaseLabel>
+              <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
+              {rewardPercentage && (
+                <RewardRateBadge>
+                  <RewardRateText>{rewardPercentage}% Reward</RewardRateText>
+                </RewardRateBadge>
+              )}
+            </PurchaseCard>
+          </Animatable.View>
+        )}
+      </HeaderSection>
 
-      <Animatable.View
-        animation="pulse"
-        easing="ease-out"
-        iterationCount="infinite">
-        <Image source={Pos} />
-      </Animatable.View>
+      {/* Animated Icon */}
+      <IconSection>
+        <Animatable.View
+          animation="pulse"
+          easing="ease-out"
+          iterationCount="infinite"
+          duration={2000}>
+          <Image source={Pos} />
+        </Animatable.View>
+      </IconSection>
 
-      <Subtitle>
-        {rewardDisplay.primaryText}
-        {'\n'}
-        {rewardDisplay.secondaryText}
-      </Subtitle>
+      {/* Reward Information Section */}
+      <RewardSection>
+        <Animatable.View animation="fadeInUp" duration={800} delay={200}>
+          <RewardAmountCard>
+            <RewardAmountLabel>You'll Earn</RewardAmountLabel>
+            <RewardAmountText>
+              {rewardCalculation.rewardAmount} sats
+            </RewardAmountText>
+            <RewardCurrencyText>
+              (~
+              {satsToCurrency(rewardCalculation.rewardAmount).formattedCurrency}
+              )
+            </RewardCurrencyText>
+          </RewardAmountCard>
+        </Animatable.View>
 
-      {/* Show reward calculation details */}
-      {rewardCalculation.calculationType === 'purchase-based' && (
-        <RewardDetails>{rewardDisplay.description}</RewardDetails>
-      )}
+        {/* Reward Details */}
+        <RewardDetailsContainer>
+          <RewardDetailsText>{rewardDisplay.description}</RewardDetailsText>
+
+          {/* Constraint Indicators */}
+          {rewardCalculation.appliedMinimum && (
+            <ConstraintBadge type="minimum">
+              <ConstraintText>Minimum reward applied</ConstraintText>
+            </ConstraintBadge>
+          )}
+
+          {rewardCalculation.appliedMaximum && (
+            <ConstraintBadge type="maximum">
+              <ConstraintText>Maximum reward applied</ConstraintText>
+            </ConstraintBadge>
+          )}
+        </RewardDetailsContainer>
+
+        <ActionHint>
+          {isPurchaseBased
+            ? 'Tap your flashcard to claim your purchase reward'
+            : 'Tap your flashcard to receive sats'}
+        </ActionHint>
+      </RewardSection>
     </Wrapper>
   );
 };
@@ -174,48 +234,23 @@ export default Rewards;
 
 const Wrapper = styled.View`
   flex: 1;
+  background-color: #ffffff;
+  padding: 20px;
+`;
+
+const DisabledContainer = styled.View`
+  flex: 1;
   align-items: center;
   justify-content: center;
-  background-color: #ffffff;
-  padding-bottom: 70px;
-  padding-horizontal: 20px;
+  padding: 40px;
 `;
 
-const Title = styled.Text`
-  font-size: 30px;
-  font-family: 'Outfit-Medium';
+const DisabledTitle = styled.Text`
+  font-size: 28px;
+  font-family: 'Outfit-Bold';
   text-align: center;
-  color: #000000;
-`;
-
-const PurchaseContext = styled.Text`
-  font-size: 18px;
-  font-family: 'Outfit-Medium';
-  text-align: center;
-  color: #007856;
-  margin-top: 10px;
-  margin-bottom: 10px;
-`;
-
-const Image = styled.Image`
-  width: ${width - 80}px;
-  height: ${width - 80}px;
-`;
-
-const Subtitle = styled.Text`
-  font-size: 24px;
-  font-family: 'Outfit-Regular';
-  text-align: center;
-  color: #747474;
-`;
-
-const RewardDetails = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Regular';
-  text-align: center;
-  color: #007856;
-  margin-top: 10px;
-  font-style: italic;
+  color: #ff6b6b;
+  margin-bottom: 16px;
 `;
 
 const DisabledMessage = styled.Text`
@@ -223,6 +258,147 @@ const DisabledMessage = styled.Text`
   font-family: 'Outfit-Regular';
   text-align: center;
   color: #747474;
-  margin-top: 20px;
-  padding-horizontal: 40px;
+  line-height: 24px;
+`;
+
+const HeaderSection = styled.View`
+  align-items: center;
+  margin-bottom: 20px;
+`;
+
+const Title = styled.Text`
+  font-size: 28px;
+  font-family: 'Outfit-Bold';
+  text-align: center;
+  color: #000000;
+  margin-bottom: 20px;
+  line-height: 34px;
+`;
+
+const PurchaseCard = styled.View`
+  background-color: #f8f9fa;
+  border-radius: 16px;
+  padding: 20px;
+  align-items: center;
+  shadow-color: #000;
+  shadow-offset: 0px 2px;
+  shadow-opacity: 0.1;
+  shadow-radius: 8px;
+  elevation: 3;
+  min-width: 280px;
+`;
+
+const PurchaseLabel = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: #666666;
+  margin-bottom: 4px;
+`;
+
+const PurchaseAmount = styled.Text`
+  font-size: 24px;
+  font-family: 'Outfit-Bold';
+  color: #007856;
+  margin-bottom: 8px;
+`;
+
+const RewardRateBadge = styled.View`
+  background-color: #007856;
+  border-radius: 20px;
+  padding-horizontal: 12px;
+  padding-vertical: 4px;
+`;
+
+const RewardRateText = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-Bold';
+  color: #ffffff;
+`;
+
+const IconSection = styled.View`
+  align-items: center;
+  margin-vertical: 30px;
+`;
+
+const Image = styled.Image`
+  width: ${Math.min(width - 120, 250)}px;
+  height: ${Math.min(width - 120, 250)}px;
+`;
+
+const RewardSection = styled.View`
+  align-items: center;
+  flex: 1;
+  justify-content: center;
+`;
+
+const RewardAmountCard = styled.View`
+  background-color: #007856;
+  border-radius: 20px;
+  padding: 24px 32px;
+  align-items: center;
+  shadow-color: #007856;
+  shadow-offset: 0px 4px;
+  shadow-opacity: 0.3;
+  shadow-radius: 12px;
+  elevation: 8;
+  min-width: 200px;
+  margin-bottom: 20px;
+`;
+
+const RewardAmountLabel = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Medium';
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 4px;
+`;
+
+const RewardAmountText = styled.Text`
+  font-size: 32px;
+  font-family: 'Outfit-Bold';
+  color: #ffffff;
+  margin-bottom: 4px;
+`;
+
+const RewardCurrencyText = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Regular';
+  color: rgba(255, 255, 255, 0.7);
+`;
+
+const RewardDetailsContainer = styled.View`
+  align-items: center;
+  margin-bottom: 20px;
+`;
+
+const RewardDetailsText = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Medium';
+  text-align: center;
+  color: #666666;
+  margin-bottom: 12px;
+  line-height: 22px;
+`;
+
+const ConstraintBadge = styled.View<{type: 'minimum' | 'maximum'}>`
+  background-color: ${props =>
+    props.type === 'minimum' ? '#FFA500' : '#FF6B6B'};
+  border-radius: 12px;
+  padding-horizontal: 12px;
+  padding-vertical: 6px;
+  margin-top: 4px;
+`;
+
+const ConstraintText = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-Medium';
+  color: #ffffff;
+`;
+
+const ActionHint = styled.Text`
+  font-size: 18px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #888888;
+  line-height: 24px;
+  font-style: italic;
 `;

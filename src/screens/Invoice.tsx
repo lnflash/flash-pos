@@ -23,6 +23,7 @@ import {useAppDispatch, useAppSelector} from '../store/hooks';
 // utils
 import {toastShow} from '../utils/toast';
 import {useSubscription} from '@apollo/client';
+import {calculateReward} from '../utils/rewardCalculations';
 
 // gql
 import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
@@ -30,7 +31,10 @@ import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
 // store
 import {resetInvoice} from '../store/slices/invoiceSlice';
 import {addTransaction} from '../store/slices/transactionHistorySlice';
-import {selectIsRewardEnabled} from '../store/slices/rewardSlice';
+import {
+  selectIsRewardEnabled,
+  selectRewardConfig,
+} from '../store/slices/rewardSlice';
 
 type Props = StackScreenProps<RootStackType, 'Invoice'>;
 
@@ -43,6 +47,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     useAppSelector(state => state.amount);
   const {username} = useAppSelector(state => state.user);
   const isRewardEnabled = useAppSelector(selectIsRewardEnabled);
+  const rewardConfig = useAppSelector(selectRewardConfig);
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
@@ -57,6 +62,20 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   });
 
   const handleSuccessfulPayment = useCallback(() => {
+    // Calculate reward information if rewards are enabled
+    let rewardInfo = undefined;
+    if (isRewardEnabled && satAmount) {
+      const calculatedReward = calculateReward(Number(satAmount), rewardConfig);
+      rewardInfo = {
+        rewardAmount: calculatedReward.rewardAmount,
+        rewardRate: rewardConfig.rewardRate,
+        wasMinimumApplied: calculatedReward.appliedMinimum || false,
+        wasMaximumApplied: calculatedReward.appliedMaximum || false,
+        isStandalone: false, // This is a purchase-based reward
+        timestamp: new Date().toISOString(),
+      };
+    }
+
     // Create and store transaction data
     const transactionData: TransactionData = {
       id: paymentHash || `tx_${Date.now()}`,
@@ -77,6 +96,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       },
       memo,
       status: 'completed',
+      reward: rewardInfo,
     };
 
     dispatch(addTransaction(transactionData));
@@ -108,6 +128,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     paymentSecret,
     memo,
     isRewardEnabled,
+    rewardConfig,
     navigation,
   ]);
 
