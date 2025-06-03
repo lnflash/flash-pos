@@ -7,7 +7,6 @@ import {StackScreenProps} from '@react-navigation/stack';
 import {PrimaryButton} from '../components';
 
 // hooks
-import {useAppSelector} from '../store/hooks';
 import {useRealtimePrice} from '../hooks';
 
 // assets
@@ -18,11 +17,15 @@ const width = Dimensions.get('screen').width;
 type Props = StackScreenProps<RootStackType, 'RewardsSuccess'>;
 
 const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
-  const {rewardSatAmount, balance} = route.params;
-  const {currency} = useAppSelector(state => state.amount);
+  const {
+    rewardSatAmount,
+    balance,
+    purchaseDisplayAmount,
+    rewardRate,
+    calculationType,
+  } = route.params;
 
   const {satsToCurrency} = useRealtimePrice();
-
   const {formattedCurrency} = satsToCurrency(rewardSatAmount);
 
   const onDone = () => {
@@ -32,14 +35,47 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
     });
   };
 
+  // Create contextual reward message based on calculation type
+  const renderRewardContext = () => {
+    if (
+      calculationType === 'purchase-based' &&
+      rewardRate &&
+      purchaseDisplayAmount
+    ) {
+      const percentage = (rewardRate * 100).toFixed(1);
+      return (
+        <RewardContext>
+          You earned {percentage}% on your {purchaseDisplayAmount} purchase!
+        </RewardContext>
+      );
+    }
+
+    if (calculationType === 'standalone') {
+      return <RewardContext>Standalone reward earned!</RewardContext>;
+    }
+
+    return null;
+  };
+
   return (
     <Wrapper>
       <InnerWrapper>
         <Title>{balance}</Title>
         <Image source={Reward} />
         <Subtitle>The Reward has been given!</Subtitle>
+
+        {/* Purchase context information */}
+        {renderRewardContext()}
+
         <PrimaryAmount>{`${formattedCurrency || 0}`}</PrimaryAmount>
         <SecondaryAmount>{`≈ ${rewardSatAmount || 0} sats`}</SecondaryAmount>
+
+        {/* Additional purchase details if available */}
+        {purchaseDisplayAmount && calculationType === 'purchase-based' && (
+          <PurchaseDetails>
+            Original purchase: {purchaseDisplayAmount}
+          </PurchaseDetails>
+        )}
       </InnerWrapper>
       <PrimaryButton
         btnText="Done"
@@ -82,6 +118,16 @@ const Subtitle = styled.Text`
   margin-top: 20px;
 `;
 
+const RewardContext = styled.Text`
+  font-size: 18px;
+  font-family: 'Outfit-Medium';
+  text-align: center;
+  color: #fff;
+  margin-top: 10px;
+  margin-bottom: 15px;
+  opacity: 0.9;
+`;
+
 const PrimaryAmount = styled.Text`
   font-size: 40px;
   font-family: 'Outfit-Regular';
@@ -93,6 +139,15 @@ const SecondaryAmount = styled.Text`
   font-family: 'Outfit-Regular';
   color: #fff;
   opacity: 0.8;
+`;
+
+const PurchaseDetails = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #fff;
+  margin-top: 15px;
+  opacity: 0.7;
 `;
 
 const Image = styled.Image`

@@ -2,12 +2,13 @@ import React, {useCallback, useMemo} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
-import {StackNavigationProp} from '@react-navigation/stack';
+import {StackScreenProps} from '@react-navigation/stack';
 import axios from 'axios';
 
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
-import {useFocusEffect, useNavigation} from '@react-navigation/native';
+import {useFocusEffect} from '@react-navigation/native';
+import {useAppSelector} from '../store/hooks';
 
 // assets
 import Pos from '../assets/icons/pos.svg';
@@ -17,33 +18,54 @@ import {BTC_PAY_SERVER, PULL_PAYMENT_ID} from '@env';
 
 // utils
 import {toastShow} from '../utils/toast';
+import {
+  calculateReward,
+  formatRewardForDisplay,
+} from '../utils/rewardCalculations';
+
+// selectors
+import {selectRewardConfig} from '../store/slices/rewardSlice';
 
 const width = Dimensions.get('screen').width;
 
-type Props = StackNavigationProp<RootStackType, 'Home'>;
+type Props = StackScreenProps<RootStackType, 'Rewards'>;
 
-const Rewards = () => {
-  const navigation = useNavigation<Props>();
+const Rewards: React.FC<Props> = ({navigation, route}) => {
+  // Extract navigation parameters (all optional for backward compatibility)
+  const {purchaseAmount, purchaseCurrency, purchaseDisplayAmount} =
+    route.params || {};
 
   const {satsToCurrency} = useRealtimePrice();
   const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
+  const rewardConfig = useAppSelector(selectRewardConfig);
 
-  const formattedCurrency = useMemo(
-    () => satsToCurrency(21).formattedCurrency,
-    [satsToCurrency],
+  // Calculate reward based on purchase context or standalone
+  const rewardCalculation = useMemo(
+    () => calculateReward(purchaseAmount, rewardConfig),
+    [purchaseAmount, rewardConfig],
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      if (loading || !lnurl) return;
-      onReward();
-    }, [loading, lnurl]),
+  // Format reward information for display
+  const rewardDisplay = useMemo(
+    () => formatRewardForDisplay(rewardCalculation, satsToCurrency),
+    [rewardCalculation, satsToCurrency],
   );
 
-  const onReward = async () => {
+  // Check if rewards are enabled
+  const isRewardsEnabled = rewardConfig.isEnabled;
+
+  const onReward = useCallback(async () => {
+    if (!isRewardsEnabled) {
+      toastShow({
+        message: 'Rewards system is currently disabled.',
+        type: 'error',
+      });
+      return;
+    }
+
     const requestBody = {
       destination: lnurl,
-      amount: 21,
+      amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
       payoutMethodId: 'BTC-LN',
     };
 
@@ -57,11 +79,18 @@ const Rewards = () => {
       if (response.data) {
         const displayAmount =
           balanceInSats !== undefined &&
-          satsToCurrency(balanceInSats + 21).formattedCurrency;
+          satsToCurrency(balanceInSats + rewardCalculation.rewardAmount)
+            .formattedCurrency;
 
+        // Navigate with enhanced parameters including purchase context
         navigation.navigate('RewardsSuccess', {
-          rewardSatAmount: 21,
+          rewardSatAmount: rewardCalculation.rewardAmount,
           balance: displayAmount || '',
+          purchaseAmount,
+          purchaseCurrency,
+          purchaseDisplayAmount,
+          rewardRate: rewardCalculation.rewardRate,
+          calculationType: rewardCalculation.calculationType,
         });
       } else {
         toastShow({
@@ -76,18 +105,67 @@ const Rewards = () => {
         type: 'error',
       });
     }
-  };
+  }, [
+    isRewardsEnabled,
+    lnurl,
+    rewardCalculation.rewardAmount,
+    resetFlashcard,
+    balanceInSats,
+    satsToCurrency,
+    navigation,
+    purchaseAmount,
+    purchaseCurrency,
+    purchaseDisplayAmount,
+    rewardCalculation.rewardRate,
+    rewardCalculation.calculationType,
+  ]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (loading || !lnurl || !isRewardsEnabled) return;
+      onReward();
+    }, [loading, lnurl, isRewardsEnabled, onReward]),
+  );
+
+  // Don't render if rewards are disabled
+  if (!isRewardsEnabled) {
+    return (
+      <Wrapper>
+        <Title>Rewards System Disabled</Title>
+        <DisabledMessage>
+          Rewards are currently disabled. Please contact support or check your
+          settings.
+        </DisabledMessage>
+      </Wrapper>
+    );
+  }
 
   return (
     <Wrapper>
       <Title>Tap any Flashcard to receive rewards!</Title>
+
+      {/* Show purchase context if available */}
+      {purchaseDisplayAmount && (
+        <PurchaseContext>Purchase: {purchaseDisplayAmount}</PurchaseContext>
+      )}
+
       <Animatable.View
         animation="pulse"
         easing="ease-out"
         iterationCount="infinite">
         <Image source={Pos} />
       </Animatable.View>
-      <Subtitle>{`21 sats (~${formattedCurrency})\nwill be applied to reward balance.`}</Subtitle>
+
+      <Subtitle>
+        {rewardDisplay.primaryText}
+        {'\n'}
+        {rewardDisplay.secondaryText}
+      </Subtitle>
+
+      {/* Show reward calculation details */}
+      {rewardCalculation.calculationType === 'purchase-based' && (
+        <RewardDetails>{rewardDisplay.description}</RewardDetails>
+      )}
     </Wrapper>
   );
 };
@@ -110,6 +188,15 @@ const Title = styled.Text`
   color: #000000;
 `;
 
+const PurchaseContext = styled.Text`
+  font-size: 18px;
+  font-family: 'Outfit-Medium';
+  text-align: center;
+  color: #007856;
+  margin-top: 10px;
+  margin-bottom: 10px;
+`;
+
 const Image = styled.Image`
   width: ${width - 80}px;
   height: ${width - 80}px;
@@ -120,4 +207,22 @@ const Subtitle = styled.Text`
   font-family: 'Outfit-Regular';
   text-align: center;
   color: #747474;
+`;
+
+const RewardDetails = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #007856;
+  margin-top: 10px;
+  font-style: italic;
+`;
+
+const DisabledMessage = styled.Text`
+  font-size: 18px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #747474;
+  margin-top: 20px;
+  padding-horizontal: 40px;
 `;
