@@ -68,21 +68,35 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     (step: string, data: any = {}) => {
       const timestamp = new Date().toISOString();
       const logMessage = `[${timestamp}] REWARDS DEBUG - ${step}:`;
-      console.log(logMessage, JSON.stringify(data, null, 2));
+
+      try {
+        console.log(logMessage, JSON.stringify(data, null, 2));
+      } catch (jsonError) {
+        console.log(logMessage, 'Data logging failed:', jsonError);
+        console.log(logMessage, 'Raw data:', data);
+      }
 
       // Update debug state for on-screen display
-      setDebugInfo(prev => ({
-        lastStep: step,
-        lastError: step.includes('ERROR') ? step : prev.lastError,
-        stepCount: prev.stepCount + 1,
-      }));
+      try {
+        setDebugInfo(prev => ({
+          lastStep: step,
+          lastError: step.includes('ERROR') ? step : prev.lastError,
+          stepCount: prev.stepCount + 1,
+        }));
+      } catch (stateError) {
+        console.log('Debug state update failed:', stateError);
+      }
 
       // Also show critical steps to user for debugging
       if (step.includes('ERROR') || step.includes('CRASH')) {
-        toastShow({
-          message: `Debug: ${step}`,
-          type: 'error',
-        });
+        try {
+          toastShow({
+            message: `Debug: ${step}`,
+            type: 'error',
+          });
+        } catch (toastError) {
+          console.log('Toast display failed:', toastError);
+        }
       }
     },
     [setDebugInfo],
@@ -178,12 +192,20 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       let response;
       try {
         // Add timeout and detailed error handling for physical device
-        debugLog('API_REQUEST_DETAILS', {
-          url: url.substring(0, 50) + '...',
-          hasDestination: !!requestBody.destination,
-          amount: requestBody.amount,
-          payoutMethodId: requestBody.payoutMethodId,
-        });
+        try {
+          debugLog('API_REQUEST_DETAILS', {
+            url: (url || '').substring(0, 50) + '...',
+            hasDestination: !!requestBody?.destination,
+            amount: requestBody?.amount || 'undefined',
+            payoutMethodId: requestBody?.payoutMethodId || 'undefined',
+            hasRequestBody: !!requestBody,
+          });
+        } catch (debugError) {
+          console.log(
+            'Debug logging error, proceeding with API call:',
+            debugError,
+          );
+        }
 
         response = await axios.post(url, requestBody, {
           timeout: 30000, // 30 second timeout
@@ -193,9 +215,13 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           },
         });
 
+        // Simple debug step immediately after API success
+        debugLog('API_CALL_COMPLETED');
+
         debugLog('API_RESPONSE_SUCCESS', {
-          status: response.status,
-          hasData: !!response.data,
+          status: response?.status || 'unknown',
+          hasData: !!response?.data,
+          dataType: typeof response?.data,
         });
       } catch (apiError) {
         const errorMessage =
@@ -248,11 +274,18 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       }
 
       debugLog('API_RESPONSE_RECEIVED', {
-        hasData: !!response.data,
-        status: response.status,
+        hasData: !!response?.data,
+        status: response?.status || 'unknown',
       });
 
-      console.log('Response from redeeming rewards:', response.data);
+      try {
+        console.log('Response from redeeming rewards:', response?.data);
+      } catch (logError) {
+        console.log(
+          'Response logging failed, response exists:',
+          !!response?.data,
+        );
+      }
 
       debugLog('RESETTING_FLASHCARD');
       resetFlashcard();
