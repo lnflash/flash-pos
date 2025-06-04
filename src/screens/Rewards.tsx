@@ -165,10 +165,9 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       }
 
       debugLog('CREATING_REQUEST_BODY', {
-        destination: lnurl?.substring(0, 20) + '...',
-        amount: rewardCalculation.rewardAmount,
-        btcPayServer: BTC_PAY_SERVER?.substring(0, 30) + '...',
-        pullPaymentId: PULL_PAYMENT_ID?.substring(0, 20) + '...',
+        // Minimalist logging to prevent crashes
+        step: 'request_body_creation',
+        rewardAmount: rewardCalculation.rewardAmount,
       });
 
       const requestBody = {
@@ -177,33 +176,61 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         payoutMethodId: 'BTC-LN',
       };
 
-      const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
+      // Safer URL construction with fallbacks
+      let url = '';
+      try {
+        if (!BTC_PAY_SERVER || !PULL_PAYMENT_ID) {
+          debugLog('ENVIRONMENT_ERROR');
+          throw new Error('BTCPay server configuration missing');
+        }
+        url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
+        debugLog('URL_CREATED');
+      } catch (urlError) {
+        debugLog('URL_CREATION_FAILED');
+        resetFlashcard();
+        toastShow({
+          message: 'Configuration error. Please contact support.',
+          type: 'error',
+        });
+        return;
+      }
 
-      console.log('Processing reward:', {
-        amount: rewardCalculation.rewardAmount,
-        isExternalPayment,
-        purchaseAmount,
-        paymentMethod,
-        username,
-      });
+      try {
+        console.log('Processing reward:', {
+          amount: rewardCalculation.rewardAmount,
+          isExternalPayment,
+          purchaseAmount,
+          paymentMethod,
+          username,
+        });
+      } catch (consoleError) {
+        console.log('Console logging failed, proceeding...');
+      }
 
-      debugLog('MAKING_API_REQUEST', {url: url.substring(0, 50) + '...'});
+      debugLog('MAKING_API_REQUEST');
 
       let response;
       try {
-        // Add timeout and detailed error handling for physical device
-        try {
-          debugLog('API_REQUEST_DETAILS', {
-            url: (url || '').substring(0, 50) + '...',
-            hasDestination: !!requestBody?.destination,
-            amount: requestBody?.amount || 'undefined',
-            payoutMethodId: requestBody?.payoutMethodId || 'undefined',
-            hasRequestBody: !!requestBody,
-          });
-        } catch (debugError) {
-          console.log(
-            'Debug logging error, proceeding with API call:',
-            debugError,
+        // Ultra-safe debug step - minimal data exposure
+        debugLog('STARTING_API_CALL');
+
+        // Check environment variables safely
+        const hasBtcPayServer =
+          typeof BTC_PAY_SERVER === 'string' && BTC_PAY_SERVER.length > 0;
+        const hasPullPaymentId =
+          typeof PULL_PAYMENT_ID === 'string' && PULL_PAYMENT_ID.length > 0;
+
+        debugLog('ENV_CHECK', {
+          hasBtcPayServer,
+          hasPullPaymentId,
+          hasUrl: typeof url === 'string',
+          hasRequestBody: typeof requestBody === 'object',
+        });
+
+        if (!hasBtcPayServer || !hasPullPaymentId) {
+          debugLog('ENV_VARIABLES_MISSING');
+          throw new Error(
+            'Environment variables not configured for physical device',
           );
         }
 
