@@ -1,4 +1,4 @@
-import React, {useCallback, useMemo} from 'react';
+import React, {useCallback, useMemo, useState} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
@@ -45,12 +45,48 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     paymentMethod,
   } = route.params || {};
 
+  // Debug state for physical device testing
+  const [debugInfo, setDebugInfo] = useState<{
+    lastStep: string;
+    lastError: string;
+    stepCount: number;
+  }>({
+    lastStep: 'Initialized',
+    lastError: '',
+    stepCount: 0,
+  });
+
   const dispatch = useAppDispatch();
   const {satsToCurrency} = useRealtimePrice();
   const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
   const rewardConfig = useAppSelector(selectRewardConfig);
   const {username} = useAppSelector(state => state.user);
   const {currency} = useAppSelector(state => state.amount);
+
+  // Enhanced debugging utility
+  const debugLog = useCallback(
+    (step: string, data: any = {}) => {
+      const timestamp = new Date().toISOString();
+      const logMessage = `[${timestamp}] REWARDS DEBUG - ${step}:`;
+      console.log(logMessage, JSON.stringify(data, null, 2));
+
+      // Update debug state for on-screen display
+      setDebugInfo(prev => ({
+        lastStep: step,
+        lastError: step.includes('ERROR') ? step : prev.lastError,
+        stepCount: prev.stepCount + 1,
+      }));
+
+      // Also show critical steps to user for debugging
+      if (step.includes('ERROR') || step.includes('CRASH')) {
+        toastShow({
+          message: `Debug: ${step}`,
+          type: 'error',
+        });
+      }
+    },
+    [setDebugInfo],
+  );
 
   // Calculate reward based on purchase context or standalone
   const rewardCalculation = useMemo(
@@ -82,7 +118,19 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   const onReward = useCallback(async () => {
     try {
+      debugLog('REWARD_START', {
+        isRewardsEnabled,
+        hasLnurl: !!lnurl,
+        rewardAmount: rewardCalculation.rewardAmount,
+        isExternalPayment,
+        purchaseAmount,
+        paymentMethod,
+        username,
+        currency: currency?.id,
+      });
+
       if (!isRewardsEnabled) {
+        debugLog('ERROR_REWARDS_DISABLED');
         toastShow({
           message: 'Rewards system is currently disabled.',
           type: 'error',
@@ -92,6 +140,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
       // Validate required data before proceeding
       if (!lnurl) {
+        debugLog('ERROR_MISSING_LNURL');
         console.error('LNURL is missing');
         toastShow({
           message: 'Unable to process reward. Please try again.',
@@ -99,6 +148,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         });
         return;
       }
+
+      debugLog('CREATING_REQUEST_BODY', {
+        destination: lnurl?.substring(0, 20) + '...',
+        amount: rewardCalculation.rewardAmount,
+      });
 
       const requestBody = {
         destination: lnurl,
@@ -116,21 +170,49 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         username,
       });
 
+      debugLog('MAKING_API_REQUEST', {url: url.substring(0, 50) + '...'});
+
       const response = await axios.post(url, requestBody);
+
+      debugLog('API_RESPONSE_RECEIVED', {
+        hasData: !!response.data,
+        status: response.status,
+      });
+
       console.log('Response from redeeming rewards:', response.data);
 
+      debugLog('RESETTING_FLASHCARD');
       resetFlashcard();
 
       if (response.data) {
+        debugLog('PROCESSING_SUCCESS_RESPONSE', {
+          isExternalPayment,
+          hasPurchaseAmount: !!purchaseAmount,
+          hasCurrency: !!currency,
+          hasUsername: !!username,
+        });
+
         // CRITICAL FIX: Only create external payment transactions when appropriate
         if (isExternalPayment && purchaseAmount && currency && username) {
           try {
+            debugLog('CREATING_EXTERNAL_PAYMENT_TRANSACTION');
+
             const rewardData = createRewardData(rewardCalculation, false);
+
+            debugLog('REWARD_DATA_CREATED', rewardData);
 
             // Safely extract display amount with fallback
             const cleanDisplayAmount = purchaseDisplayAmount
               ? String(purchaseDisplayAmount).replace(/[^0-9.]/g, '')
               : '0';
+
+            debugLog('CREATING_TRANSACTION_DATA', {
+              satAmount: Number(purchaseAmount) || 0,
+              displayAmount: cleanDisplayAmount,
+              currency: currency.id,
+              username,
+              paymentMethod: paymentMethod || 'external',
+            });
 
             const transactionData = createRewardsOnlyTransaction({
               amount: {
@@ -146,12 +228,31 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
               reward: rewardData,
             });
 
+            debugLog('DISPATCHING_TRANSACTION', {
+              transactionId: transactionData.id,
+            });
+
             dispatch(addTransaction(transactionData));
             console.log(
               'External payment transaction created:',
               transactionData.id,
             );
+
+            debugLog('EXTERNAL_PAYMENT_TRANSACTION_SUCCESS');
           } catch (transactionError) {
+            const errorMessage =
+              transactionError instanceof Error
+                ? transactionError.message
+                : 'Unknown transaction error';
+            const errorStack =
+              transactionError instanceof Error
+                ? transactionError.stack?.substring(0, 200)
+                : 'No stack trace';
+
+            debugLog('ERROR_CREATING_TRANSACTION', {
+              error: errorMessage,
+              stack: errorStack,
+            });
             console.error(
               'Error creating external payment transaction:',
               transactionError,
@@ -164,6 +265,8 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           }
         }
 
+        debugLog('CALCULATING_BALANCE_DISPLAY');
+
         // Safely calculate balance display with error handling
         let displayAmount = '';
         try {
@@ -172,11 +275,31 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
               balanceInSats + rewardCalculation.rewardAmount,
             );
             displayAmount = balanceCalc?.formattedCurrency || '';
+
+            debugLog('BALANCE_CALCULATED', {
+              balanceInSats,
+              rewardAmount: rewardCalculation.rewardAmount,
+              displayAmount,
+            });
           }
         } catch (balanceError) {
+          const errorMessage =
+            balanceError instanceof Error
+              ? balanceError.message
+              : 'Unknown balance error';
+
+          debugLog('ERROR_CALCULATING_BALANCE', {
+            error: errorMessage,
+          });
           console.error('Error calculating balance display:', balanceError);
           displayAmount = '';
         }
+
+        debugLog('PREPARING_NAVIGATION', {
+          rewardSatAmount: rewardCalculation.rewardAmount,
+          balance: displayAmount,
+          calculationType: rewardCalculation.calculationType,
+        });
 
         // Navigate with enhanced parameters including external payment context
         navigation.navigate('RewardsSuccess', {
@@ -190,13 +313,30 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           isExternalPayment: isExternalPayment || false,
           paymentMethod: paymentMethod || undefined,
         });
+
+        debugLog('NAVIGATION_SUCCESS');
       } else {
+        debugLog('ERROR_NO_RESPONSE_DATA');
         toastShow({
           message: 'Reward request failed. Please try again.',
           type: 'error',
         });
       }
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      const errorStack =
+        error instanceof Error
+          ? error.stack?.substring(0, 500)
+          : 'No stack trace';
+      const errorName = error instanceof Error ? error.name : 'Unknown';
+
+      debugLog('CRITICAL_ERROR_IN_ONREWARD', {
+        error: errorMessage,
+        stack: errorStack,
+        name: errorName,
+      });
+
       console.error('Critical error in onReward:', error);
 
       // Reset flashcard to allow retry
@@ -204,7 +344,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
       // Show user-friendly error message
       toastShow({
-        message: 'Reward processing failed. Please try again.',
+        message: `Reward failed: ${errorMessage}`,
         type: 'error',
       });
     }
@@ -224,12 +364,26 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     dispatch,
     username,
     currency,
+    debugLog,
   ]);
 
   useFocusEffect(
     useCallback(() => {
       // CRITICAL FIX: Add safety checks before auto-processing rewards
+      debugLog('FOCUS_EFFECT_TRIGGERED', {
+        loading,
+        hasLnurl: !!lnurl,
+        isRewardsEnabled,
+        hasRewardCalculation: !!rewardCalculation,
+        rewardAmount: rewardCalculation?.rewardAmount,
+      });
+
       if (loading || !lnurl || !isRewardsEnabled) {
+        debugLog('SKIPPING_AUTO_REWARD_BASIC_CHECKS', {
+          loading,
+          hasLnurl: !!lnurl,
+          isRewardsEnabled,
+        });
         console.log('Skipping auto-reward:', {
           loading,
           hasLnurl: !!lnurl,
@@ -240,18 +394,36 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
       // Additional safety: Don't auto-process if we're in an invalid state
       if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
+        debugLog('SKIPPING_AUTO_REWARD_INVALID_CALCULATION', {
+          hasRewardCalculation: !!rewardCalculation,
+          rewardAmount: rewardCalculation?.rewardAmount,
+        });
         console.log('Skipping auto-reward: Invalid reward calculation');
         return;
       }
 
       // Log for debugging
+      debugLog('AUTO_PROCESSING_REWARD', {
+        rewardAmount: rewardCalculation.rewardAmount,
+        calculationType: rewardCalculation.calculationType,
+        isExternalPayment,
+      });
       console.log('Auto-processing reward via useFocusEffect:', {
         rewardAmount: rewardCalculation.rewardAmount,
         calculationType: rewardCalculation.calculationType,
         isExternalPayment,
       });
 
-      onReward();
+      try {
+        onReward();
+      } catch (focusError) {
+        const errorMessage =
+          focusError instanceof Error
+            ? focusError.message
+            : 'Unknown focus error';
+        debugLog('ERROR_IN_FOCUS_EFFECT', {error: errorMessage});
+        console.error('Error in useFocusEffect onReward:', focusError);
+      }
     }, [
       loading,
       lnurl,
@@ -259,6 +431,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       onReward,
       rewardCalculation,
       isExternalPayment,
+      debugLog,
     ]),
   );
 
@@ -279,6 +452,23 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   return (
     <Wrapper>
+      {/* Debug Info for Physical Device Testing */}
+      <DebugContainer>
+        <DebugText>
+          Debug: {debugInfo.lastStep} (#{debugInfo.stepCount})
+        </DebugText>
+        {debugInfo.lastError && (
+          <DebugErrorText>Last Error: {debugInfo.lastError}</DebugErrorText>
+        )}
+        <DebugText>Rewards: {isRewardsEnabled ? 'ON' : 'OFF'}</DebugText>
+        <DebugText>LNURL: {lnurl ? 'OK' : 'MISSING'}</DebugText>
+        <DebugText>Loading: {loading ? 'YES' : 'NO'}</DebugText>
+        <DebugText>External: {isExternalPayment ? 'YES' : 'NO'}</DebugText>
+        <DebugText>User: {username || 'NONE'}</DebugText>
+        <DebugText>Currency: {currency?.id || 'NONE'}</DebugText>
+        <DebugText>Reward: {rewardCalculation.rewardAmount} sats</DebugText>
+      </DebugContainer>
+
       {/* Enhanced Header Section */}
       <HeaderSection>
         <Title>
@@ -539,4 +729,26 @@ const ActionHint = styled.Text`
   color: #888888;
   line-height: 24px;
   font-style: italic;
+`;
+
+const DebugContainer = styled.View`
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.5);
+  border-radius: 10px;
+`;
+
+const DebugText = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Regular';
+  color: #ffffff;
+  margin-bottom: 5px;
+`;
+
+const DebugErrorText = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-Regular';
+  color: #ff6b6b;
 `;
