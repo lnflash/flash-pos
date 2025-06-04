@@ -116,6 +116,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     ? (rewardCalculation.rewardRate! * 100).toFixed(1)
     : null;
 
+  // onReward callback for manual NFC tapping (auto-trigger temporarily disabled)
   const onReward = useCallback(async () => {
     try {
       debugLog('REWARD_START', {
@@ -152,6 +153,8 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       debugLog('CREATING_REQUEST_BODY', {
         destination: lnurl?.substring(0, 20) + '...',
         amount: rewardCalculation.rewardAmount,
+        btcPayServer: BTC_PAY_SERVER?.substring(0, 30) + '...',
+        pullPaymentId: PULL_PAYMENT_ID?.substring(0, 20) + '...',
       });
 
       const requestBody = {
@@ -172,7 +175,77 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
       debugLog('MAKING_API_REQUEST', {url: url.substring(0, 50) + '...'});
 
-      const response = await axios.post(url, requestBody);
+      let response;
+      try {
+        // Add timeout and detailed error handling for physical device
+        debugLog('API_REQUEST_DETAILS', {
+          url: url.substring(0, 50) + '...',
+          hasDestination: !!requestBody.destination,
+          amount: requestBody.amount,
+          payoutMethodId: requestBody.payoutMethodId,
+        });
+
+        response = await axios.post(url, requestBody, {
+          timeout: 30000, // 30 second timeout
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+        });
+
+        debugLog('API_RESPONSE_SUCCESS', {
+          status: response.status,
+          hasData: !!response.data,
+        });
+      } catch (apiError) {
+        const errorMessage =
+          apiError instanceof Error ? apiError.message : 'Unknown API error';
+        const errorCode = (apiError as any)?.code;
+        const errorStatus = (apiError as any)?.response?.status;
+        const errorResponse = (apiError as any)?.response?.data;
+
+        debugLog('API_REQUEST_FAILED', {
+          error: errorMessage,
+          code: errorCode,
+          status: errorStatus,
+          response: errorResponse
+            ? JSON.stringify(errorResponse).substring(0, 200)
+            : 'No response',
+        });
+
+        console.error('API Request failed:', {
+          error: apiError,
+          message: errorMessage,
+          code: errorCode,
+          status: errorStatus,
+        });
+
+        // Reset flashcard to allow retry
+        resetFlashcard();
+
+        // Show specific error message based on error type
+        let userMessage =
+          'Network error. Please check connection and try again.';
+        if (
+          errorCode === 'NETWORK_ERROR' ||
+          errorMessage.includes('Network Error')
+        ) {
+          userMessage = 'No internet connection. Please check your network.';
+        } else if (
+          errorCode === 'ECONNABORTED' ||
+          errorMessage.includes('timeout')
+        ) {
+          userMessage = 'Request timed out. Please try again.';
+        } else if (errorStatus) {
+          userMessage = `Server error (${errorStatus}). Please try again later.`;
+        }
+
+        toastShow({
+          message: userMessage,
+          type: 'error',
+        });
+        return;
+      }
 
       debugLog('API_RESPONSE_RECEIVED', {
         hasData: !!response.data,
@@ -369,7 +442,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   useFocusEffect(
     useCallback(() => {
-      // CRITICAL FIX: Add safety checks before auto-processing rewards
+      // TEMPORARILY DISABLED: Auto-reward processing to isolate NFC crash
       debugLog('FOCUS_EFFECT_TRIGGERED', {
         loading,
         hasLnurl: !!lnurl,
@@ -378,61 +451,52 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         rewardAmount: rewardCalculation?.rewardAmount,
       });
 
-      if (loading || !lnurl || !isRewardsEnabled) {
-        debugLog('SKIPPING_AUTO_REWARD_BASIC_CHECKS', {
-          loading,
-          hasLnurl: !!lnurl,
-          isRewardsEnabled,
-        });
-        console.log('Skipping auto-reward:', {
-          loading,
-          hasLnurl: !!lnurl,
-          isRewardsEnabled,
-        });
-        return;
-      }
+      debugLog('AUTO_REWARD_DISABLED_FOR_DEBUGGING');
+      console.log(
+        'Auto-reward processing DISABLED for debugging. Tap NFC card manually.',
+      );
 
-      // Additional safety: Don't auto-process if we're in an invalid state
-      if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
-        debugLog('SKIPPING_AUTO_REWARD_INVALID_CALCULATION', {
-          hasRewardCalculation: !!rewardCalculation,
-          rewardAmount: rewardCalculation?.rewardAmount,
-        });
-        console.log('Skipping auto-reward: Invalid reward calculation');
-        return;
-      }
+      // COMMENTED OUT FOR DEBUGGING:
+      // if (loading || !lnurl || !isRewardsEnabled) {
+      //   debugLog('SKIPPING_AUTO_REWARD_BASIC_CHECKS', {
+      //     loading,
+      //     hasLnurl: !!lnurl,
+      //     isRewardsEnabled
+      //   });
+      //   console.log('Skipping auto-reward:', { loading, hasLnurl: !!lnurl, isRewardsEnabled });
+      //   return;
+      // }
 
-      // Log for debugging
-      debugLog('AUTO_PROCESSING_REWARD', {
-        rewardAmount: rewardCalculation.rewardAmount,
-        calculationType: rewardCalculation.calculationType,
-        isExternalPayment,
-      });
-      console.log('Auto-processing reward via useFocusEffect:', {
-        rewardAmount: rewardCalculation.rewardAmount,
-        calculationType: rewardCalculation.calculationType,
-        isExternalPayment,
-      });
+      // // Additional safety: Don't auto-process if we're in an invalid state
+      // if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
+      //   debugLog('SKIPPING_AUTO_REWARD_INVALID_CALCULATION', {
+      //     hasRewardCalculation: !!rewardCalculation,
+      //     rewardAmount: rewardCalculation?.rewardAmount,
+      //   });
+      //   console.log('Skipping auto-reward: Invalid reward calculation');
+      //   return;
+      // }
 
-      try {
-        onReward();
-      } catch (focusError) {
-        const errorMessage =
-          focusError instanceof Error
-            ? focusError.message
-            : 'Unknown focus error';
-        debugLog('ERROR_IN_FOCUS_EFFECT', {error: errorMessage});
-        console.error('Error in useFocusEffect onReward:', focusError);
-      }
-    }, [
-      loading,
-      lnurl,
-      isRewardsEnabled,
-      onReward,
-      rewardCalculation,
-      isExternalPayment,
-      debugLog,
-    ]),
+      // // Log for debugging
+      // debugLog('AUTO_PROCESSING_REWARD', {
+      //   rewardAmount: rewardCalculation.rewardAmount,
+      //   calculationType: rewardCalculation.calculationType,
+      //   isExternalPayment,
+      // });
+      // console.log('Auto-processing reward via useFocusEffect:', {
+      //   rewardAmount: rewardCalculation.rewardAmount,
+      //   calculationType: rewardCalculation.calculationType,
+      //   isExternalPayment,
+      // });
+
+      // try {
+      //   onReward();
+      // } catch (focusError) {
+      //   const errorMessage = focusError instanceof Error ? focusError.message : 'Unknown focus error';
+      //   debugLog('ERROR_IN_FOCUS_EFFECT', { error: errorMessage });
+      //   console.error('Error in useFocusEffect onReward:', focusError);
+      // }
+    }, [loading, lnurl, isRewardsEnabled, rewardCalculation, debugLog]),
   );
 
   // Don't render if rewards are disabled
