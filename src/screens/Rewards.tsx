@@ -36,6 +36,11 @@ const width = Dimensions.get('screen').width;
 type Props = StackScreenProps<RootStackType, 'Rewards'>;
 
 const Rewards: React.FC<Props> = ({navigation, route}) => {
+  // DIAGNOSTIC: Check environment variables immediately
+  console.log('=== REWARDS COMPONENT INITIALIZING ===');
+  console.log('BTC_PAY_SERVER exists:', !!BTC_PAY_SERVER);
+  console.log('PULL_PAYMENT_ID exists:', !!PULL_PAYMENT_ID);
+
   // Extract navigation parameters (all optional for backward compatibility)
   const {
     purchaseAmount,
