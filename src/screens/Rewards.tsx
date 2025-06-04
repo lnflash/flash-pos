@@ -81,76 +81,130 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     : null;
 
   const onReward = useCallback(async () => {
-    if (!isRewardsEnabled) {
-      toastShow({
-        message: 'Rewards system is currently disabled.',
-        type: 'error',
-      });
-      return;
-    }
-
-    const requestBody = {
-      destination: lnurl,
-      amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
-      payoutMethodId: 'BTC-LN',
-    };
-
-    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
-
     try {
+      if (!isRewardsEnabled) {
+        toastShow({
+          message: 'Rewards system is currently disabled.',
+          type: 'error',
+        });
+        return;
+      }
+
+      // Validate required data before proceeding
+      if (!lnurl) {
+        console.error('LNURL is missing');
+        toastShow({
+          message: 'Unable to process reward. Please try again.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const requestBody = {
+        destination: lnurl,
+        amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
+        payoutMethodId: 'BTC-LN',
+      };
+
+      const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
+
+      console.log('Processing reward:', {
+        amount: rewardCalculation.rewardAmount,
+        isExternalPayment,
+        purchaseAmount,
+        paymentMethod,
+        username,
+      });
+
       const response = await axios.post(url, requestBody);
       console.log('Response from redeeming rewards:', response.data);
 
       resetFlashcard();
-      if (response.data) {
-        // Create transaction data for external payments
-        if (isExternalPayment && purchaseAmount) {
-          const rewardData = createRewardData(rewardCalculation, false);
-          const transactionData = createRewardsOnlyTransaction({
-            amount: {
-              satAmount: purchaseAmount,
-              displayAmount:
-                purchaseDisplayAmount?.replace(/[^0-9.]/g, '') || '0',
-              currency: currency,
-              isPrimaryAmountSats: false,
-            },
-            merchant: {
-              username: username || 'Unknown',
-            },
-            paymentMethod: paymentMethod || 'external',
-            reward: rewardData,
-          });
 
-          dispatch(addTransaction(transactionData));
+      if (response.data) {
+        // CRITICAL FIX: Only create external payment transactions when appropriate
+        if (isExternalPayment && purchaseAmount && currency && username) {
+          try {
+            const rewardData = createRewardData(rewardCalculation, false);
+
+            // Safely extract display amount with fallback
+            const cleanDisplayAmount = purchaseDisplayAmount
+              ? String(purchaseDisplayAmount).replace(/[^0-9.]/g, '')
+              : '0';
+
+            const transactionData = createRewardsOnlyTransaction({
+              amount: {
+                satAmount: Number(purchaseAmount) || 0,
+                displayAmount: cleanDisplayAmount,
+                currency: currency,
+                isPrimaryAmountSats: false,
+              },
+              merchant: {
+                username: username,
+              },
+              paymentMethod: paymentMethod || 'external',
+              reward: rewardData,
+            });
+
+            dispatch(addTransaction(transactionData));
+            console.log(
+              'External payment transaction created:',
+              transactionData.id,
+            );
+          } catch (transactionError) {
+            console.error(
+              'Error creating external payment transaction:',
+              transactionError,
+            );
+            // Don't fail the whole reward process if transaction creation fails
+            toastShow({
+              message: 'Reward successful, but transaction record failed.',
+              type: 'info',
+            });
+          }
         }
 
-        const displayAmount =
-          balanceInSats !== undefined &&
-          satsToCurrency(balanceInSats + rewardCalculation.rewardAmount)
-            .formattedCurrency;
+        // Safely calculate balance display with error handling
+        let displayAmount = '';
+        try {
+          if (balanceInSats !== undefined && balanceInSats !== null) {
+            const balanceCalc = satsToCurrency(
+              balanceInSats + rewardCalculation.rewardAmount,
+            );
+            displayAmount = balanceCalc?.formattedCurrency || '';
+          }
+        } catch (balanceError) {
+          console.error('Error calculating balance display:', balanceError);
+          displayAmount = '';
+        }
 
         // Navigate with enhanced parameters including external payment context
         navigation.navigate('RewardsSuccess', {
           rewardSatAmount: rewardCalculation.rewardAmount,
-          balance: displayAmount || '',
-          purchaseAmount,
-          purchaseCurrency,
-          purchaseDisplayAmount,
-          rewardRate: rewardCalculation.rewardRate,
+          balance: displayAmount,
+          purchaseAmount: purchaseAmount || undefined,
+          purchaseCurrency: purchaseCurrency || undefined,
+          purchaseDisplayAmount: purchaseDisplayAmount || undefined,
+          rewardRate: rewardCalculation.rewardRate || 0,
           calculationType: rewardCalculation.calculationType,
-          isExternalPayment,
-          paymentMethod,
+          isExternalPayment: isExternalPayment || false,
+          paymentMethod: paymentMethod || undefined,
         });
       } else {
         toastShow({
-          message: 'Reward is failed. Please try again.',
+          message: 'Reward request failed. Please try again.',
           type: 'error',
         });
       }
     } catch (error) {
-      console.error('Error redeeming rewards', error);
+      console.error('Critical error in onReward:', error);
+
+      // Reset flashcard to allow retry
+      resetFlashcard();
+
+      // Show user-friendly error message
       toastShow({
-        message: 'Reward is failed. Please try again.',
+        message: 'Reward processing failed. Please try again.',
         type: 'error',
       });
     }
@@ -174,9 +228,38 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   useFocusEffect(
     useCallback(() => {
-      if (loading || !lnurl || !isRewardsEnabled) return;
+      // CRITICAL FIX: Add safety checks before auto-processing rewards
+      if (loading || !lnurl || !isRewardsEnabled) {
+        console.log('Skipping auto-reward:', {
+          loading,
+          hasLnurl: !!lnurl,
+          isRewardsEnabled,
+        });
+        return;
+      }
+
+      // Additional safety: Don't auto-process if we're in an invalid state
+      if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
+        console.log('Skipping auto-reward: Invalid reward calculation');
+        return;
+      }
+
+      // Log for debugging
+      console.log('Auto-processing reward via useFocusEffect:', {
+        rewardAmount: rewardCalculation.rewardAmount,
+        calculationType: rewardCalculation.calculationType,
+        isExternalPayment,
+      });
+
       onReward();
-    }, [loading, lnurl, isRewardsEnabled, onReward]),
+    }, [
+      loading,
+      lnurl,
+      isRewardsEnabled,
+      onReward,
+      rewardCalculation,
+      isExternalPayment,
+    ]),
   );
 
   // Don't render if rewards are disabled
