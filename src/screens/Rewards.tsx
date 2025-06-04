@@ -116,7 +116,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     ? (rewardCalculation.rewardRate! * 100).toFixed(1)
     : null;
 
-  // onReward callback for manual NFC tapping (auto-trigger temporarily disabled)
+  // onReward callback for both auto-trigger and manual NFC tapping
   const onReward = useCallback(async () => {
     try {
       debugLog('REWARD_START', {
@@ -442,7 +442,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   useFocusEffect(
     useCallback(() => {
-      // TEMPORARILY DISABLED: Auto-reward processing to isolate NFC crash
+      // RE-ENABLED: Auto-reward processing (crash was API-related, not auto-trigger)
       debugLog('FOCUS_EFFECT_TRIGGERED', {
         loading,
         hasLnurl: !!lnurl,
@@ -451,52 +451,61 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         rewardAmount: rewardCalculation?.rewardAmount,
       });
 
-      debugLog('AUTO_REWARD_DISABLED_FOR_DEBUGGING');
-      console.log(
-        'Auto-reward processing DISABLED for debugging. Tap NFC card manually.',
-      );
+      if (loading || !lnurl || !isRewardsEnabled) {
+        debugLog('SKIPPING_AUTO_REWARD_BASIC_CHECKS', {
+          loading,
+          hasLnurl: !!lnurl,
+          isRewardsEnabled,
+        });
+        console.log('Skipping auto-reward:', {
+          loading,
+          hasLnurl: !!lnurl,
+          isRewardsEnabled,
+        });
+        return;
+      }
 
-      // COMMENTED OUT FOR DEBUGGING:
-      // if (loading || !lnurl || !isRewardsEnabled) {
-      //   debugLog('SKIPPING_AUTO_REWARD_BASIC_CHECKS', {
-      //     loading,
-      //     hasLnurl: !!lnurl,
-      //     isRewardsEnabled
-      //   });
-      //   console.log('Skipping auto-reward:', { loading, hasLnurl: !!lnurl, isRewardsEnabled });
-      //   return;
-      // }
+      // Additional safety: Don't auto-process if we're in an invalid state
+      if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
+        debugLog('SKIPPING_AUTO_REWARD_INVALID_CALCULATION', {
+          hasRewardCalculation: !!rewardCalculation,
+          rewardAmount: rewardCalculation?.rewardAmount,
+        });
+        console.log('Skipping auto-reward: Invalid reward calculation');
+        return;
+      }
 
-      // // Additional safety: Don't auto-process if we're in an invalid state
-      // if (!rewardCalculation || rewardCalculation.rewardAmount <= 0) {
-      //   debugLog('SKIPPING_AUTO_REWARD_INVALID_CALCULATION', {
-      //     hasRewardCalculation: !!rewardCalculation,
-      //     rewardAmount: rewardCalculation?.rewardAmount,
-      //   });
-      //   console.log('Skipping auto-reward: Invalid reward calculation');
-      //   return;
-      // }
+      // Log for debugging
+      debugLog('AUTO_PROCESSING_REWARD', {
+        rewardAmount: rewardCalculation.rewardAmount,
+        calculationType: rewardCalculation.calculationType,
+        isExternalPayment,
+      });
+      console.log('Auto-processing reward via useFocusEffect:', {
+        rewardAmount: rewardCalculation.rewardAmount,
+        calculationType: rewardCalculation.calculationType,
+        isExternalPayment,
+      });
 
-      // // Log for debugging
-      // debugLog('AUTO_PROCESSING_REWARD', {
-      //   rewardAmount: rewardCalculation.rewardAmount,
-      //   calculationType: rewardCalculation.calculationType,
-      //   isExternalPayment,
-      // });
-      // console.log('Auto-processing reward via useFocusEffect:', {
-      //   rewardAmount: rewardCalculation.rewardAmount,
-      //   calculationType: rewardCalculation.calculationType,
-      //   isExternalPayment,
-      // });
-
-      // try {
-      //   onReward();
-      // } catch (focusError) {
-      //   const errorMessage = focusError instanceof Error ? focusError.message : 'Unknown focus error';
-      //   debugLog('ERROR_IN_FOCUS_EFFECT', { error: errorMessage });
-      //   console.error('Error in useFocusEffect onReward:', focusError);
-      // }
-    }, [loading, lnurl, isRewardsEnabled, rewardCalculation, debugLog]),
+      try {
+        onReward();
+      } catch (focusError) {
+        const errorMessage =
+          focusError instanceof Error
+            ? focusError.message
+            : 'Unknown focus error';
+        debugLog('ERROR_IN_FOCUS_EFFECT', {error: errorMessage});
+        console.error('Error in useFocusEffect onReward:', focusError);
+      }
+    }, [
+      loading,
+      lnurl,
+      isRewardsEnabled,
+      onReward,
+      rewardCalculation,
+      isExternalPayment,
+      debugLog,
+    ]),
   );
 
   // Don't render if rewards are disabled
