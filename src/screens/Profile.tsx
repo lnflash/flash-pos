@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState, useEffect} from 'react';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -6,12 +6,19 @@ import {useNavigation} from '@react-navigation/native';
 import {Icon} from '@rneui/themed';
 
 // components
-import {TextButton} from '../components';
+import {TextButton, PinModal} from '../components';
 
 // store
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {resetUserData} from '../store/slices/userSlice';
 import {resetAmount} from '../store/slices/amountSlice';
+import {
+  selectHasPin,
+  selectIsAuthenticated,
+  setPin,
+  authenticatePin,
+  checkSession,
+} from '../store/slices/pinSlice';
 
 // env
 import {FLASH_LN_ADDRESS} from '@env';
@@ -25,6 +32,19 @@ const Profile = () => {
   const {username} = useAppSelector(state => state.user);
   const {transactions} = useAppSelector(state => state.transactionHistory);
 
+  // PIN management
+  const hasPin = useAppSelector(selectHasPin);
+  const isAuthenticated = useAppSelector(selectIsAuthenticated);
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinModalMode, setPinModalMode] = useState<'setup' | 'verify'>(
+    'verify',
+  );
+
+  // Check session on mount
+  useEffect(() => {
+    dispatch(checkSession());
+  }, [dispatch]);
+
   const onLogout = () => {
     dispatch(resetUserData());
     dispatch(resetAmount());
@@ -36,7 +56,32 @@ const Profile = () => {
   };
 
   const onViewRewardSettings = () => {
+    if (!hasPin) {
+      // First time setup - create PIN
+      setPinModalMode('setup');
+      setPinModalVisible(true);
+    } else if (!isAuthenticated) {
+      // PIN exists but not authenticated - verify PIN
+      setPinModalMode('verify');
+      setPinModalVisible(true);
+    } else {
+      // Already authenticated - go to settings
+      navigation.navigate('RewardsSettings');
+    }
+  };
+
+  const handlePinSuccess = (pin: string) => {
+    if (pinModalMode === 'setup') {
+      dispatch(setPin(pin));
+    } else {
+      dispatch(authenticatePin(pin));
+    }
+    setPinModalVisible(false);
     navigation.navigate('RewardsSettings');
+  };
+
+  const handlePinCancel = () => {
+    setPinModalVisible(false);
   };
 
   const onViewPaycode = () => {
@@ -93,6 +138,19 @@ const Profile = () => {
         </Container>
       </InnerWrapper>
       <TextButton title="Logout" onPress={onLogout} />
+
+      <PinModal
+        visible={pinModalVisible}
+        mode={pinModalMode}
+        title={pinModalMode === 'setup' ? 'Set PIN for Settings' : 'Enter PIN'}
+        subtitle={
+          pinModalMode === 'setup'
+            ? 'Create a 4-digit PIN to protect reward settings'
+            : 'Enter your PIN to access reward settings'
+        }
+        onSuccess={handlePinSuccess}
+        onCancel={handlePinCancel}
+      />
     </Wrapper>
   );
 };

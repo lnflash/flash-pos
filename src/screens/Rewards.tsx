@@ -319,6 +319,13 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
             ? 'Tap your flashcard to claim your purchase reward'
             : 'Tap your flashcard to receive points'}
         </ActionHint>
+
+        {/* Cancel Button */}
+        <CancelButtonContainer>
+          <CancelButton onPress={() => navigation.goBack()}>
+            <CancelButtonText>Cancel</CancelButtonText>
+          </CancelButton>
+        </CancelButtonContainer>
       </RewardSection>
     </Wrapper>
   );
@@ -496,4 +503,24 @@ const ActionHint = styled.Text`
   color: #888888;
   line-height: 24px;
   font-style: italic;
+`;
+
+const CancelButtonContainer = styled.View`
+  margin-top: 30px;
+  align-items: center;
+`;
+
+const CancelButton = styled.TouchableOpacity`
+  background-color: transparent;
+  border: 2px solid #ccc;
+  border-radius: 25px;
+  padding: 12px 30px;
+  min-width: 120px;
+`;
+
+const CancelButtonText = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Medium';
+  color: #666;
+  text-align: center;
 `;

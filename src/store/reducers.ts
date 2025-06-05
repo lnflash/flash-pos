@@ -6,6 +6,7 @@ import userSlice from './slices/userSlice';
 import invoiceSlice from './slices/invoiceSlice';
 import transactionHistorySlice from './slices/transactionHistorySlice';
 import rewardSlice from './slices/rewardSlice';
+import pinSlice from './slices/pinSlice';
 
 export default combineReducers({
   amount: amountSlice,
@@ -13,4 +14,5 @@ export default combineReducers({
   invoice: invoiceSlice,
   transactionHistory: transactionHistorySlice,
   reward: rewardSlice,
+  pin: pinSlice,
 });
