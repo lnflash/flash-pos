@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState} from 'react';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -12,13 +12,7 @@ import {TextButton, PinModal} from '../components';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {resetUserData} from '../store/slices/userSlice';
 import {resetAmount} from '../store/slices/amountSlice';
-import {
-  selectHasPin,
-  selectIsAuthenticated,
-  setPin,
-  authenticatePin,
-  checkSession,
-} from '../store/slices/pinSlice';
+import {selectHasPin, setPin, authenticatePin} from '../store/slices/pinSlice';
 
 // env
 import {FLASH_LN_ADDRESS} from '@env';
@@ -34,16 +28,10 @@ const Profile = () => {
 
   // PIN management
   const hasPin = useAppSelector(selectHasPin);
-  const isAuthenticated = useAppSelector(selectIsAuthenticated);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinModalMode, setPinModalMode] = useState<'setup' | 'verify'>(
     'verify',
   );
-
-  // Check session on mount
-  useEffect(() => {
-    dispatch(checkSession());
-  }, [dispatch]);
 
   const onLogout = () => {
     dispatch(resetUserData());
@@ -60,13 +48,10 @@ const Profile = () => {
       // First time setup - create PIN
       setPinModalMode('setup');
       setPinModalVisible(true);
-    } else if (!isAuthenticated) {
-      // PIN exists but not authenticated - verify PIN
+    } else {
+      // PIN exists - always require verification for security
       setPinModalMode('verify');
       setPinModalVisible(true);
-    } else {
-      // Already authenticated - go to settings
-      navigation.navigate('RewardsSettings');
     }
   };
 

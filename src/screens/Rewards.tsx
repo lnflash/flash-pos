@@ -257,9 +257,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
               <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
               {rewardPercentage && (
                 <RewardRateBadge>
-                  <RewardRateText>
-                    {rewardPercentage}% Bitcoin Reward
-                  </RewardRateText>
+                  <RewardRateText>{rewardPercentage}% Reward</RewardRateText>
                 </RewardRateBadge>
               )}
             </PurchaseCard>
@@ -337,7 +335,7 @@ const Wrapper = styled.View`
   flex: 1;
   background-color: #ffffff;
   padding: 20px;
-  padding-bottom: 100px;
+  padding-bottom: 140px;
 `;
 
 const DisabledContainer = styled.View`
