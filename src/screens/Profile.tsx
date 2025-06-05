@@ -41,7 +41,7 @@ const Profile = () => {
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinModalMode, setPinModalMode] = useState<
-    'setup' | 'verify' | 'change'
+    'setup' | 'verify' | 'change' | 'remove'
   >('verify');
   const [pinError, setPinError] = useState('');
 
@@ -106,6 +106,24 @@ const Profile = () => {
           }
         }, 100);
       }
+    } else if (pinModalMode === 'remove') {
+      // Remove mode - verify PIN first, then remove if correct
+      dispatch(clearAuthentication());
+      dispatch(authenticatePin(pin));
+
+      // Check if authentication was successful
+      setTimeout(() => {
+        const currentState = store.getState();
+        if (currentState.pin.isAuthenticated) {
+          // PIN is correct, proceed with removal
+          dispatch(removePin());
+          setPinModalVisible(false);
+          setPinError('');
+          // Could add success toast here
+        } else {
+          setPinError('Incorrect PIN. Cannot remove PIN protection.');
+        }
+      }, 100);
     } else {
       // Verify mode - clear any previous authentication state first
       dispatch(clearAuthentication());
@@ -141,15 +159,11 @@ const Profile = () => {
   };
 
   const onRemovePinPress = () => {
-    // Show confirmation before removing PIN
-    const handleRemovePin = () => {
-      dispatch(removePin());
-      setPinError('');
-      // Could add success toast here
-    };
-
-    // For now, just remove it directly - could add Alert confirmation
-    handleRemovePin();
+    // Show PIN verification modal before removing PIN
+    setPinError('');
+    dispatch(clearResults());
+    setPinModalMode('remove');
+    setPinModalVisible(true);
   };
 
   const onViewPaycode = () => {
@@ -249,6 +263,8 @@ const Profile = () => {
             ? 'Set PIN for Settings'
             : pinModalMode === 'change'
             ? 'Change PIN'
+            : pinModalMode === 'remove'
+            ? 'Remove PIN Protection'
             : 'Enter PIN'
         }
         subtitle={
@@ -256,6 +272,8 @@ const Profile = () => {
             ? 'Create a 4-digit PIN to protect reward settings'
             : pinModalMode === 'change'
             ? 'Enter your current PIN, then set a new one'
+            : pinModalMode === 'remove'
+            ? 'Enter your current PIN to remove PIN protection'
             : 'Enter your PIN to access reward settings'
         }
         onSuccess={handlePinSuccess}

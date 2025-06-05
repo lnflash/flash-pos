@@ -5,7 +5,7 @@ import {Icon} from '@rneui/themed';
 
 type PinModalProps = {
   visible: boolean;
-  mode: 'setup' | 'verify' | 'change';
+  mode: 'setup' | 'verify' | 'change' | 'remove';
   title: string;
   subtitle?: string;
   onSuccess: (pin: string, oldPin?: string) => void;
@@ -118,7 +118,7 @@ const PinModal: React.FC<PinModalProps> = ({
       if (mode === 'setup' || mode === 'change') {
         setStep('confirm');
       } else {
-        // Verify mode
+        // Verify or Remove mode
         onSuccess(pin);
       }
       return;
