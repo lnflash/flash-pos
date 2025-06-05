@@ -12,7 +12,7 @@ import {useAppSelector} from '../store/hooks';
 import {useLinkBuilder} from '@react-navigation/native';
 
 // screens
-import {Keypad, Paycode, Profile, Rewards} from '../screens';
+import {Keypad, Profile, Rewards} from '../screens';
 
 // assets
 import Background from '../assets/icons/background.png';
@@ -22,7 +22,6 @@ const Tab = createBottomTabNavigator();
 const tabs = [
   {label: 'POS', icon: 'apps-outline', iconActive: 'apps'},
   {label: 'Rewards', icon: 'diamond-outline', iconActive: 'diamond'},
-  {label: 'Paycode', icon: 'qr-code-outline', iconActive: 'qr-code'},
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
@@ -44,7 +43,10 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
           });
 
           if (!isFocused && !event.defaultPrevented) {
-            navigation.navigate(route.name, route.params);
+            // Clear parameters for Rewards tab to ensure standalone rewards (21 sats)
+            const navParams =
+              route.name === 'Rewards' ? undefined : route.params;
+            navigation.navigate(route.name, navParams);
           }
         };
 
@@ -97,11 +99,6 @@ export const HomeTabs = () => {
       <Tab.Screen
         name="Rewards"
         component={Rewards}
-        options={{headerShown: false}}
-      />
-      <Tab.Screen
-        name="Paycode"
-        component={Paycode}
         options={{headerShown: false}}
       />
       <Tab.Screen

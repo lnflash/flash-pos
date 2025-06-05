@@ -1,8 +1,9 @@
-import React from 'react';
-import {Dimensions} from 'react-native';
+import React, {useEffect} from 'react';
+import {Dimensions, BackHandler} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
 import {StackScreenProps} from '@react-navigation/stack';
+import {useFocusEffect} from '@react-navigation/native';
 
 // components
 import {PrimaryButton} from '../components';
@@ -58,6 +59,34 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
   };
 
   const paymentInfo = getPaymentMethodInfo();
+
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        return true;
+      },
+    );
+
+    return () => {
+      backHandler.remove();
+    };
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const backHandler = BackHandler.addEventListener(
+        'hardwareBackPress',
+        () => {
+          return true;
+        },
+      );
+
+      return () => {
+        backHandler.remove();
+      };
+    }, []),
+  );
 
   return (
     <Wrapper>
@@ -215,9 +244,9 @@ export default RewardsSuccess;
 
 const Wrapper = styled.View`
   flex: 1;
-  background: linear-gradient(135deg, #007856 0%, #005940 100%);
   background-color: #007856;
   padding: 20px;
+  padding-top: 60px;
 `;
 
 const InnerWrapper = styled.View`
@@ -373,12 +402,13 @@ const StandaloneMessage = styled.Text`
 const BalanceContainer = styled.View`
   align-items: center;
   margin-top: 20px;
+  margin-bottom: 40px;
 `;
 
 const BalanceLabel = styled.Text`
-  font-size: 14px;
+  font-size: 16px;
   font-family: 'Outfit-Medium';
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(255, 255, 255, 0.9);
   margin-bottom: 4px;
 `;
 

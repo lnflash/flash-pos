@@ -181,12 +181,21 @@ const Keypad = () => {
           <SecondaryButton
             btnText="Give Points"
             onPress={isValidAmount ? onGivePoints : () => {}}
-            btnStyle={{marginRight: 10, flex: 1}}
+            btnStyle={{
+              flex: 1,
+              marginRight: 8,
+              marginBottom: 0,
+              paddingVertical: 15,
+            }}
           />
           <PrimaryButton
             btnText="Next"
             onPress={isValidAmount ? onCreateInvoice : () => {}}
-            btnStyle={{flex: 1}}
+            btnStyle={{
+              flex: 1,
+              marginLeft: 8,
+              paddingVertical: 15,
+            }}
           />
         </ButtonRow>
       </BtnsWrapper>
@@ -214,4 +223,5 @@ const ButtonRow = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
+  gap: 0px;
 `;

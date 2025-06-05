@@ -1,9 +1,6 @@
 import React, {createContext, useState} from 'react';
-import {Dimensions} from 'react-native';
-import {BallIndicator} from 'react-native-indicators';
+import {ActivityIndicator as RNActivityIndicator} from 'react-native';
 import styled from 'styled-components/native';
-
-const {width} = Dimensions.get('screen');
 
 interface ActivityIndicatorInterface {
   toggleLoading: (loading: boolean) => void;
@@ -34,11 +31,13 @@ export const ActivityIndicatorProvider = ({children}: Props) => {
   );
 };
 
-export const ActivityIndicator = () => (
-  <Backdrop>
-    <BallIndicator size={width / 3} color="#002118" />
-  </Backdrop>
-);
+export const ActivityIndicator = () => {
+  return (
+    <Backdrop>
+      <RNActivityIndicator size="large" color="#002118" animating={true} />
+    </Backdrop>
+  );
+};
 
 const Backdrop = styled.View`
   position: absolute;

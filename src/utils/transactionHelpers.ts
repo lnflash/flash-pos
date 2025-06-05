@@ -72,24 +72,6 @@ export const createRewardsOnlyTransaction = (params: {
   };
   memo?: string;
 }): TransactionData => {
-  // Validate required parameters to prevent crashes
-  if (!params.amount || !params.merchant || !params.reward) {
-    throw new Error(
-      'Missing required parameters for external payment transaction',
-    );
-  }
-
-  if (!params.merchant.username) {
-    throw new Error(
-      'Merchant username is required for external payment transaction',
-    );
-  }
-
-  // Safely create memo with fallback for undefined paymentMethod
-  const defaultMemo = params.paymentMethod
-    ? `${params.paymentMethod} payment reward`
-    : 'external payment reward';
-
   return {
     id: `external_${Date.now()}`,
     timestamp: new Date().toISOString(),
@@ -102,7 +84,7 @@ export const createRewardsOnlyTransaction = (params: {
       paymentRequest: '',
       paymentSecret: '',
     },
-    memo: params.memo || defaultMemo,
+    memo: params.memo || `${params.paymentMethod} payment reward`,
     status: 'completed',
     reward: params.reward,
   };
@@ -168,15 +150,6 @@ export const createRewardData = (
   calculation: RewardCalculation,
   isStandalone: boolean = false,
 ) => {
-  // Validate calculation object to prevent crashes
-  if (!calculation || typeof calculation.rewardAmount !== 'number') {
-    throw new Error('Invalid reward calculation provided');
-  }
-
-  if (calculation.rewardAmount < 0) {
-    throw new Error('Reward amount cannot be negative');
-  }
-
   return {
     rewardAmount: calculation.rewardAmount,
     rewardRate: calculation.rewardRate || 0,
