@@ -292,18 +292,17 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
             </PurchaseCard>
           </Animatable.View>
         )}
+        {/* Animated Icon */}
+        <IconSection>
+          <Animatable.View
+            animation="pulse"
+            easing="ease-out"
+            iterationCount="infinite"
+            duration={2000}>
+            <Image source={Pos} />
+          </Animatable.View>
+        </IconSection>
       </HeaderSection>
-
-      {/* Animated Icon */}
-      <IconSection>
-        <Animatable.View
-          animation="pulse"
-          easing="ease-out"
-          iterationCount="infinite"
-          duration={2000}>
-          <Image source={Pos} />
-        </Animatable.View>
-      </IconSection>
 
       {/* Reward Information Section */}
       <RewardSection>
@@ -446,7 +445,7 @@ const RewardRateText = styled.Text`
 
 const IconSection = styled.View`
   align-items: center;
-  margin-vertical: 30px;
+  margin-vertical: -70px;
 `;
 
 const Image = styled.Image`
