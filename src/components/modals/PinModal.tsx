@@ -99,11 +99,11 @@ const PinModal: React.FC<PinModalProps> = ({
             setStep('enter');
           } else {
             setError('Incorrect current PIN. Please try again.');
-            setOldPin('');
+            setOldPin(''); // Auto-clear on error
           }
         } catch (error) {
           setError('Verification failed. Please try again.');
-          setOldPin('');
+          setOldPin(''); // Auto-clear on error
         } finally {
           setIsVerifying(false);
         }
@@ -135,7 +135,7 @@ const PinModal: React.FC<PinModalProps> = ({
         setError('PINs do not match. Please try again.');
         // Use Alert instead of Vibration for better compatibility
         Alert.alert('Error', 'PINs do not match. Please try again.');
-        setPin('');
+        setPin(''); // Auto-clear both PINs on mismatch
         setConfirmPin('');
         setStep('enter');
       }
@@ -160,6 +160,31 @@ const PinModal: React.FC<PinModalProps> = ({
     return subtitle;
   };
 
+  const handleClear = () => {
+    setError('');
+    if (step === 'old') {
+      setOldPin('');
+    } else if (step === 'enter') {
+      setPin('');
+    } else if (step === 'confirm') {
+      setConfirmPin('');
+    }
+  };
+
+  // Clear PIN input when external error occurs
+  useEffect(() => {
+    if (externalError) {
+      // Clear the current PIN input when there's an external error
+      if (step === 'old') {
+        setOldPin('');
+      } else if (step === 'enter') {
+        setPin('');
+      } else if (step === 'confirm') {
+        setConfirmPin('');
+      }
+    }
+  }, [externalError, step]);
+
   // Auto-submit when PIN is complete
   useEffect(() => {
     const currentPin =
@@ -176,7 +201,7 @@ const PinModal: React.FC<PinModalProps> = ({
     ['1', '2', '3'],
     ['4', '5', '6'],
     ['7', '8', '9'],
-    ['', '0', 'backspace'],
+    ['clear', '0', 'backspace'],
   ];
 
   return (
@@ -211,6 +236,8 @@ const PinModal: React.FC<PinModalProps> = ({
                     onPress={() => {
                       if (number === 'backspace') {
                         handleBackspace();
+                      } else if (number === 'clear') {
+                        handleClear();
                       } else if (number !== '') {
                         handleNumberPress(number);
                       }
@@ -224,6 +251,8 @@ const PinModal: React.FC<PinModalProps> = ({
                         size={24}
                         color={isVerifying ? '#ccc' : '#333'}
                       />
+                    ) : number === 'clear' ? (
+                      <NumText disabled={isVerifying}>C</NumText>
                     ) : (
                       <NumText disabled={isVerifying}>{number}</NumText>
                     )}

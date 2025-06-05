@@ -1,4 +1,4 @@
-import React, {useCallback, useMemo, useState, useRef} from 'react';
+import React, {useCallback, useMemo, useState, useRef, useEffect} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
@@ -84,6 +84,35 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   const rewardPercentage = isPurchaseBased
     ? (rewardCalculation.rewardRate! * 100).toFixed(1)
     : null;
+
+  // Hide tab bar for external payments to create fullscreen experience
+  useEffect(() => {
+    if (isExternalPayment) {
+      navigation.getParent()?.setOptions({
+        tabBarStyle: {display: 'none'},
+      });
+    }
+
+    // Cleanup: restore tab bar when component unmounts
+    return () => {
+      if (isExternalPayment) {
+        navigation.getParent()?.setOptions({
+          tabBarStyle: {
+            flexDirection: 'row',
+            position: 'absolute',
+            bottom: 10,
+            left: 30,
+            right: 30,
+            borderTopWidth: 0,
+            borderRadius: 360,
+            backgroundColor: '#fff',
+            overflow: 'hidden',
+            elevation: 5,
+          },
+        });
+      }
+    };
+  }, [isExternalPayment, navigation]);
 
   const onReward = useCallback(async () => {
     if (!isRewardsEnabled) {
@@ -221,7 +250,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   // Don't render if rewards are disabled
   if (!isRewardsEnabled) {
     return (
-      <Wrapper>
+      <Wrapper isExternalPayment={isExternalPayment}>
         <DisabledContainer>
           <DisabledTitle>Rewards System Disabled</DisabledTitle>
           <DisabledMessage>
@@ -234,7 +263,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   }
 
   return (
-    <Wrapper>
+    <Wrapper isExternalPayment={isExternalPayment}>
       {/* Enhanced Header Section */}
       <HeaderSection>
         <Title>
@@ -331,11 +360,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
 export default Rewards;
 
-const Wrapper = styled.View`
+const Wrapper = styled.View<{isExternalPayment?: boolean}>`
   flex: 1;
   background-color: #ffffff;
   padding: 20px;
-  padding-bottom: 140px;
+  padding-bottom: ${props => (props.isExternalPayment ? '20px' : '140px')};
 `;
 
 const DisabledContainer = styled.View`
