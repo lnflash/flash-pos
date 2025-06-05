@@ -10,9 +10,16 @@ import {TextButton, PinModal} from '../components';
 
 // store
 import {useAppDispatch, useAppSelector} from '../store/hooks';
+import {store} from '../store';
 import {resetUserData} from '../store/slices/userSlice';
 import {resetAmount} from '../store/slices/amountSlice';
-import {selectHasPin, setPin, authenticatePin} from '../store/slices/pinSlice';
+import {
+  selectHasPin,
+  setPin,
+  authenticatePin,
+  removePin,
+  changePin,
+} from '../store/slices/pinSlice';
 
 // env
 import {FLASH_LN_ADDRESS} from '@env';
@@ -29,9 +36,10 @@ const Profile = () => {
   // PIN management
   const hasPin = useAppSelector(selectHasPin);
   const [pinModalVisible, setPinModalVisible] = useState(false);
-  const [pinModalMode, setPinModalMode] = useState<'setup' | 'verify'>(
-    'verify',
-  );
+  const [pinModalMode, setPinModalMode] = useState<
+    'setup' | 'verify' | 'change'
+  >('verify');
+  const [pinError, setPinError] = useState('');
 
   const onLogout = () => {
     dispatch(resetUserData());
@@ -44,6 +52,7 @@ const Profile = () => {
   };
 
   const onViewRewardSettings = () => {
+    setPinError(''); // Clear any previous errors
     if (!hasPin) {
       // First time setup - create PIN
       setPinModalMode('setup');
@@ -55,18 +64,54 @@ const Profile = () => {
     }
   };
 
-  const handlePinSuccess = (pin: string) => {
+  const handlePinSuccess = (pin: string, oldPin?: string) => {
     if (pinModalMode === 'setup') {
       dispatch(setPin(pin));
+      setPinModalVisible(false);
+      navigation.navigate('RewardsSettings');
+    } else if (pinModalMode === 'change') {
+      if (oldPin) {
+        dispatch(changePin({oldPin, newPin: pin}));
+        setPinModalVisible(false);
+        // Could add success toast here
+      }
     } else {
+      // Verify PIN first
       dispatch(authenticatePin(pin));
+
+      // Check if authentication was successful
+      setTimeout(() => {
+        const currentState = store.getState();
+        if (currentState.pin.isAuthenticated) {
+          setPinModalVisible(false);
+          navigation.navigate('RewardsSettings');
+        } else {
+          setPinError('Incorrect PIN. Please try again.');
+        }
+      }, 100);
     }
-    setPinModalVisible(false);
-    navigation.navigate('RewardsSettings');
   };
 
   const handlePinCancel = () => {
     setPinModalVisible(false);
+    setPinError(''); // Clear error when canceling
+  };
+
+  const onChangePinPress = () => {
+    setPinError('');
+    setPinModalMode('change');
+    setPinModalVisible(true);
+  };
+
+  const onRemovePinPress = () => {
+    // Show confirmation before removing PIN
+    const handleRemovePin = () => {
+      dispatch(removePin());
+      // Could add success toast here
+    };
+
+    // For now, just remove it directly - could add Alert confirmation
+    handleRemovePin();
   };
 
   const onViewPaycode = () => {
@@ -102,6 +147,40 @@ const Profile = () => {
           <Icon name={'chevron-forward-outline'} type="ionicon" />
         </Container>
 
+        <Label style={{marginTop: 20}}>Security</Label>
+
+        {/* PIN Management */}
+        {hasPin ? (
+          <>
+            <Container activeOpacity={0.5} onPress={onChangePinPress}>
+              <Icon name={'key-outline'} type="ionicon" />
+              <Column>
+                <Key>Change PIN</Key>
+                <Value>Modify your admin PIN</Value>
+              </Column>
+              <Icon name={'chevron-forward-outline'} type="ionicon" />
+            </Container>
+
+            <Container activeOpacity={0.5} onPress={onRemovePinPress}>
+              <Icon name={'trash-outline'} type="ionicon" />
+              <Column>
+                <Key>Remove PIN</Key>
+                <Value>Disable PIN protection</Value>
+              </Column>
+              <Icon name={'chevron-forward-outline'} type="ionicon" />
+            </Container>
+          </>
+        ) : (
+          <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
+            <Icon name={'lock-closed-outline'} type="ionicon" />
+            <Column>
+              <Key>Set Admin PIN</Key>
+              <Value>Protect your settings</Value>
+            </Column>
+            <Icon name={'chevron-forward-outline'} type="ionicon" />
+          </Container>
+        )}
+
         {/* PayCode Navigation */}
         <Container activeOpacity={0.5} onPress={onViewPaycode}>
           <Icon name={'qr-code-outline'} type="ionicon" />
@@ -127,14 +206,24 @@ const Profile = () => {
       <PinModal
         visible={pinModalVisible}
         mode={pinModalMode}
-        title={pinModalMode === 'setup' ? 'Set PIN for Settings' : 'Enter PIN'}
+        title={
+          pinModalMode === 'setup'
+            ? 'Set PIN for Settings'
+            : pinModalMode === 'change'
+            ? 'Change PIN'
+            : 'Enter PIN'
+        }
         subtitle={
           pinModalMode === 'setup'
             ? 'Create a 4-digit PIN to protect reward settings'
+            : pinModalMode === 'change'
+            ? 'Enter your current PIN, then set a new one'
             : 'Enter your PIN to access reward settings'
         }
         onSuccess={handlePinSuccess}
         onCancel={handlePinCancel}
+        externalError={pinError}
+        onClearError={() => setPinError('')}
       />
     </Wrapper>
   );

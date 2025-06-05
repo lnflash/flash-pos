@@ -11,6 +11,8 @@ type PinModalProps = {
   onSuccess: (pin: string, oldPin?: string) => void;
   onCancel: () => void;
   maxAttempts?: number;
+  externalError?: string;
+  onClearError?: () => void;
 };
 
 const PinModal: React.FC<PinModalProps> = ({
@@ -21,6 +23,8 @@ const PinModal: React.FC<PinModalProps> = ({
   onSuccess,
   onCancel,
   maxAttempts: _maxAttempts = 3,
+  externalError,
+  onClearError,
 }) => {
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -48,6 +52,10 @@ const PinModal: React.FC<PinModalProps> = ({
 
   const handleNumberPress = (number: string) => {
     setError('');
+    // Clear external error when user starts typing
+    if (externalError && onClearError) {
+      onClearError();
+    }
 
     if (step === 'old') {
       if (oldPin.length < PIN_LENGTH) {
@@ -153,7 +161,9 @@ const PinModal: React.FC<PinModalProps> = ({
             ))}
           </PinDisplay>
 
-          {error ? <ErrorMessage>{error}</ErrorMessage> : null}
+          {error || externalError ? (
+            <ErrorMessage>{error || externalError}</ErrorMessage>
+          ) : null}
 
           <NumPad>
             {numbers.map((row, rowIndex) => (
