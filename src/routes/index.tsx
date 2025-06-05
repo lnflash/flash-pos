@@ -1,7 +1,6 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
-import {createNavigationContainerRef} from '@react-navigation/native';
 
 // screens
 import {HomeTabs} from './HomeTabs';
@@ -9,7 +8,9 @@ import {
   Auth,
   FlashcardBalance,
   Invoice,
+  Paycode,
   Rewards,
+  RewardsSettings,
   RewardsSuccess,
   Success,
   TransactionHistory,
@@ -18,7 +19,8 @@ import {
 // hooks
 import {useAppSelector} from '../store/hooks';
 
-export const navigationRef = createNavigationContainerRef<RootStackType>();
+// navigation
+import {navigationRef} from '../navigation/navigationRef';
 
 const Stack = createNativeStackNavigator<RootStackType>();
 
@@ -74,6 +76,22 @@ const Root = () => {
       <Stack.Screen
         name="TransactionHistory"
         component={TransactionHistory}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="RewardsSettings"
+        component={RewardsSettings}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="Paycode"
+        component={Paycode}
         options={{
           headerShown: false,
           animation: 'slide_from_right',

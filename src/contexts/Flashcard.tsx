@@ -5,7 +5,7 @@ import axios from 'axios';
 import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
 import {BTC_PAY_SERVER} from '@env';
-import {navigationRef} from '../routes';
+import {navigationRef} from '../navigation/navigationRef';
 
 interface FlashcardInterface {
   tag?: TagEvent;

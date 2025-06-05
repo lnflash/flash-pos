@@ -1,4 +1,4 @@
-import React, {useCallback, useMemo} from 'react';
+import React, {useCallback, useMemo, useState, useRef} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import * as Animatable from 'react-native-animatable';
@@ -52,6 +52,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   const {username} = useAppSelector(state => state.user);
   const {currency} = useAppSelector(state => state.amount);
 
+  // Security: Cooldown protection against duplicate rewards
+  const [isProcessingReward, setIsProcessingReward] = useState(false);
+  const lastRewardTime = useRef<number>(0);
+  const COOLDOWN_PERIOD = 5000; // 5 seconds cooldown
+
   // Calculate reward based on purchase context or standalone
   const rewardCalculation = useMemo(
     () => calculateReward(purchaseAmount, rewardConfig),
@@ -89,6 +94,32 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       return;
     }
 
+    // Security: Check cooldown period to prevent duplicate rewards
+    const currentTime = Date.now();
+    const timeSinceLastReward = currentTime - lastRewardTime.current;
+
+    if (isProcessingReward) {
+      toastShow({
+        message: 'Please wait, processing previous reward...',
+        type: 'info',
+      });
+      return;
+    }
+
+    if (timeSinceLastReward < COOLDOWN_PERIOD) {
+      const remainingSeconds = Math.ceil(
+        (COOLDOWN_PERIOD - timeSinceLastReward) / 1000,
+      );
+      toastShow({
+        message: `Please wait ${remainingSeconds} seconds before claiming another reward.`,
+        type: 'info',
+      });
+      return;
+    }
+
+    setIsProcessingReward(true);
+    lastRewardTime.current = currentTime;
+
     const requestBody = {
       destination: lnurl,
       amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
@@ -99,7 +130,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
     try {
       const response = await axios.post(url, requestBody);
-      console.log('Response from redeeming rewards:', response.data);
+      // Rewards redeemed successfully
 
       resetFlashcard();
       if (response.data) {
@@ -141,11 +172,15 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           isExternalPayment,
           paymentMethod,
         });
+
+        // Reset processing state after successful navigation
+        setIsProcessingReward(false);
       } else {
         toastShow({
           message: 'Reward is failed. Please try again.',
           type: 'error',
         });
+        setIsProcessingReward(false); // Reset on failure
       }
     } catch (error) {
       console.error('Error redeeming rewards', error);
@@ -153,9 +188,13 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         message: 'Reward is failed. Please try again.',
         type: 'error',
       });
+      setIsProcessingReward(false); // Reset on error
     }
   }, [
     isRewardsEnabled,
+    isProcessingReward,
+    lastRewardTime,
+    COOLDOWN_PERIOD,
     lnurl,
     rewardCalculation,
     resetFlashcard,
@@ -245,7 +284,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           <RewardAmountCard>
             <RewardAmountLabel>You'll Earn</RewardAmountLabel>
             <RewardAmountText>
-              {rewardCalculation.rewardAmount} sats
+              {rewardCalculation.rewardAmount} points
             </RewardAmountText>
             <RewardCurrencyText>
               (~
@@ -278,7 +317,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
             ? 'Tap your flashcard to claim your Bitcoin reward'
             : isPurchaseBased
             ? 'Tap your flashcard to claim your purchase reward'
-            : 'Tap your flashcard to receive sats'}
+            : 'Tap your flashcard to receive points'}
         </ActionHint>
       </RewardSection>
     </Wrapper>
@@ -291,6 +330,7 @@ const Wrapper = styled.View`
   flex: 1;
   background-color: #ffffff;
   padding: 20px;
+  padding-bottom: 100px;
 `;
 
 const DisabledContainer = styled.View`

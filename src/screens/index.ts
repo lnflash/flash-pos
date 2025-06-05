@@ -5,6 +5,7 @@ import Success from './Success';
 import Paycode from './Paycode';
 import Profile from './Profile';
 import Rewards from './Rewards';
+import RewardsSettings from './RewardsSettings';
 import RewardsSuccess from './RewardsSuccess';
 import FlashcardBalance from './FlashcardBalance';
 import TransactionHistory from './TransactionHistory';
@@ -17,6 +18,7 @@ export {
   Paycode,
   Profile,
   Rewards,
+  RewardsSettings,
   RewardsSuccess,
   FlashcardBalance,
   TransactionHistory,

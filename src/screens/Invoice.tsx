@@ -166,7 +166,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
       const result = await fetch(url);
       const lnurlResponse = await result.json();
-      console.log('LNURL Response:', lnurlResponse);
+      // LNURL response processed
 
       resetFlashcard();
       if (lnurlResponse.status === 'ERROR') {

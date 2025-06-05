@@ -166,7 +166,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
             {item.reward && (
               <RewardBadge>
                 <RewardBadgeText>
-                  +{item.reward.rewardAmount} sats
+                  +{item.reward.rewardAmount} points
                 </RewardBadgeText>
               </RewardBadge>
             )}
@@ -179,13 +179,13 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         <AmountContainer>
           {item.amount.isPrimaryAmountSats ? (
             <>
-              <PrimaryAmount>{`${item.amount.satAmount} sats`}</PrimaryAmount>
+              <PrimaryAmount>{`${item.amount.satAmount} points`}</PrimaryAmount>
               <SecondaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</SecondaryAmount>
             </>
           ) : (
             <>
               <PrimaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</PrimaryAmount>
-              <SecondaryAmount>{`≈ ${item.amount.satAmount} sats`}</SecondaryAmount>
+              <SecondaryAmount>{`≈ ${item.amount.satAmount} points`}</SecondaryAmount>
             </>
           )}
         </AmountContainer>
@@ -220,7 +220,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
                 <RewardSectionTitle>Reward Information</RewardSectionTitle>
                 <DetailRow>
                   <DetailLabel>Reward Earned:</DetailLabel>
-                  <RewardValue>{item.reward.rewardAmount} sats</RewardValue>
+                  <RewardValue>{item.reward.rewardAmount} points</RewardValue>
                 </DetailRow>
                 <DetailRow>
                   <DetailLabel>Reward Rate:</DetailLabel>
@@ -299,7 +299,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
             {statistics.totalRewards > 0 && (
               <>
                 {' • '}
-                {statistics.totalRewards} sats rewarded
+                {statistics.totalRewards} points rewarded
               </>
             )}
           </HeaderSubtitle>

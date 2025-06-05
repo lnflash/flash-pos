@@ -23,6 +23,7 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
 import {setIsPrimaryAmountSats} from '../store/slices/amountSlice';
+import {selectRewardConfig} from '../store/slices/rewardSlice';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -41,6 +42,7 @@ const Keypad = () => {
   const {walletId} = useAppSelector(state => state.user);
   const {satAmount, memo, displayAmount, currency, isPrimaryAmountSats} =
     useAppSelector(state => state.amount);
+  const rewardConfig = useAppSelector(selectRewardConfig);
 
   // Ensure currency is always shown as primary amount since toggle is hidden
   useEffect(() => {
@@ -178,15 +180,26 @@ const Keypad = () => {
       </BodyWrapper>
       <BtnsWrapper>
         <ButtonRow>
-          <SecondaryButton
-            btnText="Give Points"
-            onPress={isValidAmount ? onGivePoints : () => {}}
-            btnStyle={{marginRight: 10, flex: 1}}
-          />
+          {rewardConfig.isEnabled && (
+            <SecondaryButton
+              btnText="Give Points"
+              onPress={isValidAmount ? onGivePoints : () => {}}
+              btnStyle={{
+                flex: 1,
+                marginRight: rewardConfig.isEnabled ? 8 : 0,
+                marginBottom: 0,
+                paddingVertical: 15,
+              }}
+            />
+          )}
           <PrimaryButton
             btnText="Next"
             onPress={isValidAmount ? onCreateInvoice : () => {}}
-            btnStyle={{flex: 1}}
+            btnStyle={{
+              flex: 1,
+              marginLeft: rewardConfig.isEnabled ? 8 : 0,
+              paddingVertical: 15,
+            }}
           />
         </ButtonRow>
       </BtnsWrapper>
@@ -214,4 +227,5 @@ const ButtonRow = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
+  gap: 0px;
 `;

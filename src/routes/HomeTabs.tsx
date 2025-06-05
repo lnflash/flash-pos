@@ -11,8 +11,11 @@ import {
 import {useAppSelector} from '../store/hooks';
 import {useLinkBuilder} from '@react-navigation/native';
 
+// store
+import {selectRewardConfig} from '../store/slices/rewardSlice';
+
 // screens
-import {Keypad, Paycode, Profile, Rewards} from '../screens';
+import {Keypad, Profile, Rewards} from '../screens';
 
 // assets
 import Background from '../assets/icons/background.png';
@@ -22,19 +25,38 @@ const Tab = createBottomTabNavigator();
 const tabs = [
   {label: 'POS', icon: 'apps-outline', iconActive: 'apps'},
   {label: 'Rewards', icon: 'diamond-outline', iconActive: 'diamond'},
-  {label: 'Paycode', icon: 'qr-code-outline', iconActive: 'qr-code'},
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
 const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
   const {buildHref} = useLinkBuilder();
+  const rewardConfig = useAppSelector(selectRewardConfig);
+
+  // Create dynamic tabs array based on rewards enabled state
+  const dynamicTabs = rewardConfig.isEnabled
+    ? tabs
+    : tabs.filter(tab => tab.label !== 'Rewards');
 
   return (
     <Wrapper>
       {state.routes.map((route, index) => {
-        const {options} = descriptors[route.key];
+        // Skip rendering Rewards tab if rewards are disabled
+        if (route.name === 'Rewards' && !rewardConfig.isEnabled) {
+          return null;
+        }
 
+        const {options} = descriptors[route.key];
         const isFocused = state.index === index;
+
+        // Find the correct tab configuration for this route
+        const tabConfig = dynamicTabs.find(tab => {
+          if (route.name === 'Keypad') return tab.label === 'POS';
+          if (route.name === 'Rewards') return tab.label === 'Rewards';
+          if (route.name === 'Profile') return tab.label === 'Profile';
+          return false;
+        });
+
+        if (!tabConfig) return null;
 
         const onPress = () => {
           const event = navigation.emit({
@@ -44,7 +66,10 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
           });
 
           if (!isFocused && !event.defaultPrevented) {
-            navigation.navigate(route.name, route.params);
+            // Clear parameters for Rewards tab to ensure standalone rewards (21 points)
+            const navParams =
+              route.name === 'Rewards' ? undefined : route.params;
+            navigation.navigate(route.name, navParams);
           }
         };
 
@@ -66,12 +91,12 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
             onLongPress={onLongPress}
             style={{flex: 1}}>
             <Icon
-              name={isFocused ? tabs[index].iconActive : tabs[index].icon}
+              name={isFocused ? tabConfig.iconActive : tabConfig.icon}
               size={24}
               type="ionicon"
               color={isFocused ? '#41AC48' : '#83899b'}
             />
-            <TabBarLabel active={isFocused}>{tabs[index].label}</TabBarLabel>
+            <TabBarLabel active={isFocused}>{tabConfig.label}</TabBarLabel>
           </TabBar>
         );
       })}
@@ -82,6 +107,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
 
 export const HomeTabs = () => {
   const {username} = useAppSelector(state => state.user);
+  const rewardConfig = useAppSelector(selectRewardConfig);
 
   return (
     <Tab.Navigator
@@ -94,16 +120,13 @@ export const HomeTabs = () => {
         animation: 'shift',
       }}>
       <Tab.Screen name="Keypad" component={Keypad} />
-      <Tab.Screen
-        name="Rewards"
-        component={Rewards}
-        options={{headerShown: false}}
-      />
-      <Tab.Screen
-        name="Paycode"
-        component={Paycode}
-        options={{headerShown: false}}
-      />
+      {rewardConfig.isEnabled && (
+        <Tab.Screen
+          name="Rewards"
+          component={Rewards}
+          options={{headerShown: false}}
+        />
+      )}
       <Tab.Screen
         name="Profile"
         component={Profile}
