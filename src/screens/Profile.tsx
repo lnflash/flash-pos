@@ -20,6 +20,8 @@ import {
   removePin,
   changePin,
   clearAuthentication,
+  clearResults,
+  verifyPinOnly,
 } from '../store/slices/pinSlice';
 
 // env
@@ -36,6 +38,7 @@ const Profile = () => {
 
   // PIN management
   const hasPin = useAppSelector(selectHasPin);
+
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinModalMode, setPinModalMode] = useState<
     'setup' | 'verify' | 'change'
@@ -53,7 +56,9 @@ const Profile = () => {
   };
 
   const onViewRewardSettings = () => {
-    setPinError(''); // Clear any previous errors
+    setPinError('');
+    dispatch(clearResults());
+
     if (!hasPin) {
       // First time setup - create PIN
       setPinModalMode('setup');
@@ -65,7 +70,22 @@ const Profile = () => {
     }
   };
 
+  const handleVerifyOldPin = async (oldPin: string): Promise<boolean> => {
+    return new Promise(resolve => {
+      dispatch(verifyPinOnly(oldPin));
+
+      // Wait for the verification result
+      setTimeout(() => {
+        const currentState = store.getState();
+        const result = currentState.pin.lastVerificationResult;
+        resolve(result === 'success');
+      }, 100);
+    });
+  };
+
   const handlePinSuccess = (pin: string, oldPin?: string) => {
+    dispatch(clearResults());
+
     if (pinModalMode === 'setup') {
       dispatch(setPin(pin));
       setPinModalVisible(false);
@@ -73,11 +93,21 @@ const Profile = () => {
     } else if (pinModalMode === 'change') {
       if (oldPin) {
         dispatch(changePin({oldPin, newPin: pin}));
-        setPinModalVisible(false);
-        // Could add success toast here
+
+        // Check if the change was successful
+        setTimeout(() => {
+          const currentState = store.getState();
+          if (currentState.pin.lastOperationResult === 'success') {
+            setPinModalVisible(false);
+            setPinError('');
+            // Could add success toast here
+          } else {
+            setPinError('Failed to change PIN. Please try again.');
+          }
+        }, 100);
       }
     } else {
-      // Clear any previous authentication state first
+      // Verify mode - clear any previous authentication state first
       dispatch(clearAuthentication());
 
       // Then verify the PIN
@@ -88,6 +118,7 @@ const Profile = () => {
         const currentState = store.getState();
         if (currentState.pin.isAuthenticated) {
           setPinModalVisible(false);
+          setPinError('');
           navigation.navigate('RewardsSettings');
         } else {
           setPinError('Incorrect PIN. Please try again.');
@@ -98,11 +129,13 @@ const Profile = () => {
 
   const handlePinCancel = () => {
     setPinModalVisible(false);
-    setPinError(''); // Clear error when canceling
+    setPinError('');
+    dispatch(clearResults());
   };
 
   const onChangePinPress = () => {
     setPinError('');
+    dispatch(clearResults());
     setPinModalMode('change');
     setPinModalVisible(true);
   };
@@ -111,6 +144,7 @@ const Profile = () => {
     // Show confirmation before removing PIN
     const handleRemovePin = () => {
       dispatch(removePin());
+      setPinError('');
       // Could add success toast here
     };
 
@@ -228,6 +262,9 @@ const Profile = () => {
         onCancel={handlePinCancel}
         externalError={pinError}
         onClearError={() => setPinError('')}
+        onVerifyOldPin={
+          pinModalMode === 'change' ? handleVerifyOldPin : undefined
+        }
       />
     </Wrapper>
   );

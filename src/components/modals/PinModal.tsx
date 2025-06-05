@@ -1,5 +1,5 @@
 import React, {useState, useEffect, useCallback} from 'react';
-import {Modal, Vibration} from 'react-native';
+import {Modal, Alert} from 'react-native';
 import styled from 'styled-components/native';
 import {Icon} from '@rneui/themed';
 
@@ -13,6 +13,7 @@ type PinModalProps = {
   maxAttempts?: number;
   externalError?: string;
   onClearError?: () => void;
+  onVerifyOldPin?: (pin: string) => Promise<boolean>;
 };
 
 const PinModal: React.FC<PinModalProps> = ({
@@ -25,6 +26,7 @@ const PinModal: React.FC<PinModalProps> = ({
   maxAttempts: _maxAttempts = 3,
   externalError,
   onClearError,
+  onVerifyOldPin,
 }) => {
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -32,6 +34,7 @@ const PinModal: React.FC<PinModalProps> = ({
   const [step, setStep] = useState<'enter' | 'confirm' | 'old'>('enter');
   const [_attempts, _setAttempts] = useState(0);
   const [error, setError] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const PIN_LENGTH = 4;
 
@@ -42,6 +45,7 @@ const PinModal: React.FC<PinModalProps> = ({
     setStep(mode === 'change' ? 'old' : 'enter');
     _setAttempts(0);
     setError('');
+    setIsVerifying(false);
   }, [mode]);
 
   useEffect(() => {
@@ -84,9 +88,29 @@ const PinModal: React.FC<PinModalProps> = ({
     }
   };
 
-  const handleNext = useCallback(() => {
+  const handleNext = useCallback(async () => {
     if (step === 'old' && oldPin.length === PIN_LENGTH) {
-      setStep('enter');
+      // Verify old PIN before proceeding
+      if (onVerifyOldPin) {
+        setIsVerifying(true);
+        try {
+          const isValid = await onVerifyOldPin(oldPin);
+          if (isValid) {
+            setStep('enter');
+          } else {
+            setError('Incorrect current PIN. Please try again.');
+            setOldPin('');
+          }
+        } catch (error) {
+          setError('Verification failed. Please try again.');
+          setOldPin('');
+        } finally {
+          setIsVerifying(false);
+        }
+      } else {
+        // Fallback if no verification function provided
+        setStep('enter');
+      }
       return;
     }
 
@@ -109,13 +133,14 @@ const PinModal: React.FC<PinModalProps> = ({
         }
       } else {
         setError('PINs do not match. Please try again.');
-        Vibration.vibrate(200);
+        // Use Alert instead of Vibration for better compatibility
+        Alert.alert('Error', 'PINs do not match. Please try again.');
         setPin('');
         setConfirmPin('');
         setStep('enter');
       }
     }
-  }, [step, oldPin, pin, confirmPin, mode, onSuccess]);
+  }, [step, oldPin, pin, confirmPin, mode, onSuccess, onVerifyOldPin]);
 
   const getCurrentPin = () => {
     if (step === 'old') return oldPin;
@@ -139,13 +164,13 @@ const PinModal: React.FC<PinModalProps> = ({
   useEffect(() => {
     const currentPin =
       step === 'old' ? oldPin : step === 'enter' ? pin : confirmPin;
-    if (currentPin.length === PIN_LENGTH) {
+    if (currentPin.length === PIN_LENGTH && !isVerifying) {
       const timer = setTimeout(() => {
         handleNext();
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [pin, confirmPin, oldPin, step, handleNext]);
+  }, [pin, confirmPin, oldPin, step, handleNext, isVerifying]);
 
   const numbers = [
     ['1', '2', '3'],
@@ -175,6 +200,8 @@ const PinModal: React.FC<PinModalProps> = ({
             <ErrorMessage>{error || externalError}</ErrorMessage>
           ) : null}
 
+          {isVerifying && <VerifyingMessage>Verifying PIN...</VerifyingMessage>}
+
           <NumPad>
             {numbers.map((row, rowIndex) => (
               <NumRow key={rowIndex}>
@@ -188,17 +215,17 @@ const PinModal: React.FC<PinModalProps> = ({
                         handleNumberPress(number);
                       }
                     }}
-                    disabled={number === ''}
+                    disabled={number === '' || isVerifying}
                     activeOpacity={number === '' ? 1 : 0.7}>
                     {number === 'backspace' ? (
                       <Icon
                         name="backspace"
                         type="material"
                         size={24}
-                        color="#333"
+                        color={isVerifying ? '#ccc' : '#333'}
                       />
                     ) : (
-                      <NumText>{number}</NumText>
+                      <NumText disabled={isVerifying}>{number}</NumText>
                     )}
                   </NumButton>
                 ))}
@@ -207,8 +234,8 @@ const PinModal: React.FC<PinModalProps> = ({
           </NumPad>
 
           <Actions>
-            <CancelButton onPress={onCancel}>
-              <CancelButtonText>Cancel</CancelButtonText>
+            <CancelButton onPress={onCancel} disabled={isVerifying}>
+              <CancelButtonText disabled={isVerifying}>Cancel</CancelButtonText>
             </CancelButton>
           </Actions>
         </ModalContainer>
@@ -278,6 +305,15 @@ const ErrorMessage = styled.Text`
   line-height: 18px;
 `;
 
+const VerifyingMessage = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: #007856;
+  text-align: center;
+  margin-bottom: 15px;
+  line-height: 18px;
+`;
+
 const NumPad = styled.View`
   margin-bottom: 20px;
 `;
@@ -288,33 +324,35 @@ const NumRow = styled.View`
   margin-bottom: 15px;
 `;
 
-const NumButton = styled.TouchableOpacity`
+const NumButton = styled.TouchableOpacity<{disabled?: boolean}>`
   width: 60px;
   height: 60px;
   border-radius: 30px;
-  background-color: #f5f5f5;
+  background-color: ${props => (props.disabled ? '#f0f0f0' : '#f5f5f5')};
   justify-content: center;
   align-items: center;
   border: 1px solid #e0e0e0;
+  opacity: ${props => (props.disabled ? 0.6 : 1)};
 `;
 
-const NumText = styled.Text`
+const NumText = styled.Text<{disabled?: boolean}>`
   font-size: 24px;
   font-family: 'Outfit-Medium';
-  color: #333;
+  color: ${props => (props.disabled ? '#ccc' : '#333')};
 `;
 
 const Actions = styled.View`
   align-items: center;
 `;
 
-const CancelButton = styled.TouchableOpacity`
+const CancelButton = styled.TouchableOpacity<{disabled?: boolean}>`
   padding: 12px 24px;
   border-radius: 8px;
+  opacity: ${props => (props.disabled ? 0.6 : 1)};
 `;
 
-const CancelButtonText = styled.Text`
+const CancelButtonText = styled.Text<{disabled?: boolean}>`
   font-size: 16px;
   font-family: 'Outfit-Medium';
-  color: #666;
+  color: ${props => (props.disabled ? '#ccc' : '#666')};
 `;
