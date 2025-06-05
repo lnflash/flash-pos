@@ -19,6 +19,7 @@ import {
   authenticatePin,
   removePin,
   changePin,
+  clearAuthentication,
 } from '../store/slices/pinSlice';
 
 // env
@@ -76,7 +77,10 @@ const Profile = () => {
         // Could add success toast here
       }
     } else {
-      // Verify PIN first
+      // Clear any previous authentication state first
+      dispatch(clearAuthentication());
+
+      // Then verify the PIN
       dispatch(authenticatePin(pin));
 
       // Check if authentication was successful
@@ -135,6 +139,16 @@ const Profile = () => {
           <Icon name={'copy-outline'} type="ionicon" />
         </Container>
 
+        {/* PayCode Navigation */}
+        <Container activeOpacity={0.5} onPress={onViewPaycode}>
+          <Icon name={'qr-code-outline'} type="ionicon" />
+          <Column>
+            <Key>PayCode</Key>
+            <Value>Merchant QR code</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+
         <Label style={{marginTop: 20}}>Settings</Label>
 
         {/* Reward Settings Navigation */}
@@ -180,16 +194,6 @@ const Profile = () => {
             <Icon name={'chevron-forward-outline'} type="ionicon" />
           </Container>
         )}
-
-        {/* PayCode Navigation */}
-        <Container activeOpacity={0.5} onPress={onViewPaycode}>
-          <Icon name={'qr-code-outline'} type="ionicon" />
-          <Column>
-            <Key>PayCode</Key>
-            <Value>Merchant QR code</Value>
-          </Column>
-          <Icon name={'chevron-forward-outline'} type="ionicon" />
-        </Container>
 
         <Label style={{marginTop: 20}}>Transactions</Label>
         <Container activeOpacity={0.5} onPress={onViewTransactionHistory}>

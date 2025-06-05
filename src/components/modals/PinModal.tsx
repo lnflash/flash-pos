@@ -84,7 +84,7 @@ const PinModal: React.FC<PinModalProps> = ({
     }
   };
 
-  const handleNext = () => {
+  const handleNext = useCallback(() => {
     if (step === 'old' && oldPin.length === PIN_LENGTH) {
       setStep('enter');
       return;
@@ -115,7 +115,7 @@ const PinModal: React.FC<PinModalProps> = ({
         setStep('enter');
       }
     }
-  };
+  }, [step, oldPin, pin, confirmPin, mode, onSuccess]);
 
   const getCurrentPin = () => {
     if (step === 'old') return oldPin;
@@ -135,7 +135,17 @@ const PinModal: React.FC<PinModalProps> = ({
     return subtitle;
   };
 
-  // Manual submission - user taps when ready
+  // Auto-submit when PIN is complete
+  useEffect(() => {
+    const currentPin =
+      step === 'old' ? oldPin : step === 'enter' ? pin : confirmPin;
+    if (currentPin.length === PIN_LENGTH) {
+      const timer = setTimeout(() => {
+        handleNext();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [pin, confirmPin, oldPin, step, handleNext]);
 
   const numbers = [
     ['1', '2', '3'],
@@ -197,13 +207,6 @@ const PinModal: React.FC<PinModalProps> = ({
           </NumPad>
 
           <Actions>
-            {getCurrentPin().length === PIN_LENGTH && (
-              <SubmitButton onPress={handleNext}>
-                <SubmitButtonText>
-                  {step === 'confirm' ? 'Confirm' : 'Continue'}
-                </SubmitButtonText>
-              </SubmitButton>
-            )}
             <CancelButton onPress={onCancel}>
               <CancelButtonText>Cancel</CancelButtonText>
             </CancelButton>
@@ -303,21 +306,6 @@ const NumText = styled.Text`
 
 const Actions = styled.View`
   align-items: center;
-`;
-
-const SubmitButton = styled.TouchableOpacity`
-  background-color: #007856;
-  padding: 12px 24px;
-  border-radius: 8px;
-  margin-bottom: 10px;
-  min-width: 120px;
-`;
-
-const SubmitButtonText = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Medium';
-  color: #ffffff;
-  text-align: center;
 `;
 
 const CancelButton = styled.TouchableOpacity`

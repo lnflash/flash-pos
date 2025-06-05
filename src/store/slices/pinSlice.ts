@@ -52,6 +52,10 @@ export const pinSlice = createSlice({
       if (state.pinHash === hashPin(action.payload)) {
         state.isAuthenticated = true;
         state.lastAuthTime = Date.now();
+      } else {
+        // Clear authentication if PIN is wrong
+        state.isAuthenticated = false;
+        state.lastAuthTime = null;
       }
     },
 
