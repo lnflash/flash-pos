@@ -31,11 +31,16 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   );
   const {lastTransaction} = useAppSelector(state => state.transactionHistory);
 
+  // Track whether receipt has been printed
+  const [hasBeenPrinted, setHasBeenPrinted] = React.useState(false);
+
   // Create and store transaction data when component mounts
   useEffect(() => {
     const transactionData: TransactionData = {
       id: paymentHash || `tx_${Date.now()}`,
       timestamp: new Date().toISOString(),
+      transactionType: 'standalone',
+      paymentMethod: undefined,
       amount: {
         satAmount: Number(satAmount) || 0,
         displayAmount: displayAmount || '0',
@@ -74,8 +79,13 @@ const Success: React.FC<Props> = ({navigation, route}) => {
     navigation.popToTop();
   };
 
-  const onReprintReceipt = () => {
-    if (lastTransaction) {
+  const onPrintReceipt = () => {
+    if (!hasBeenPrinted) {
+      // First print - use silent printing
+      printSilently();
+      setHasBeenPrinted(true);
+    } else if (lastTransaction) {
+      // Subsequent prints - use reprint functionality
       const receiptData: ReceiptData = {
         id: lastTransaction.id,
         timestamp: lastTransaction.timestamp,
@@ -106,20 +116,12 @@ const Success: React.FC<Props> = ({navigation, route}) => {
       </InnerWrapper>
       <BtnsWrapper>
         <PrimaryButton
-          icon="print"
-          btnText="Print"
+          icon={hasBeenPrinted ? 'refresh' : 'print'}
+          btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
           iconColor="#002118"
           textStyle={{color: '#002118'}}
           btnStyle={{backgroundColor: '#fff'}}
-          onPress={printSilently}
-        />
-        <SecondaryButton
-          icon="refresh"
-          btnText="Reprint"
-          iconColor="#fff"
-          textStyle={{color: '#fff'}}
-          btnStyle={{borderColor: '#fff', marginTop: 10}}
-          onPress={onReprintReceipt}
+          onPress={onPrintReceipt}
         />
         <SecondaryButton
           btnText="Done"
@@ -171,13 +173,6 @@ const PrimaryAmount = styled.Text`
   font-size: 40px;
   font-family: 'Outfit-Regular';
   color: #fff;
-`;
-
-const SecondaryAmount = styled.Text`
-  font-size: 26px;
-  font-family: 'Outfit-Regular';
-  color: #fff;
-  opacity: 0.8;
 `;
 
 const BtnsWrapper = styled.View`
