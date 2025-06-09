@@ -178,7 +178,8 @@ const Profile = () => {
         <Label>Account</Label>
         <Container
           activeOpacity={0.5}
-          onPress={() => Clipboard.setString(lnAddress)}>
+          onPress={() => Clipboard.setString(lnAddress)}
+          style={{marginBottom: 10}}>
           <Icon name={'at-outline'} type="ionicon" />
           <Column>
             <Key>Your Lightning address</Key>
@@ -214,7 +215,10 @@ const Profile = () => {
         {/* PIN Management */}
         {hasPin ? (
           <>
-            <Container activeOpacity={0.5} onPress={onChangePinPress}>
+            <Container
+              activeOpacity={0.5}
+              onPress={onChangePinPress}
+              style={{marginBottom: 10}}>
               <Icon name={'key-outline'} type="ionicon" />
               <Column>
                 <Key>Change PIN</Key>
