@@ -93,7 +93,6 @@ const Root = () => {
         name="Paycode"
         component={Paycode}
         options={{
-          headerShown: false,
           animation: 'slide_from_right',
         }}
       />
