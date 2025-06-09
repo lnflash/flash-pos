@@ -28,6 +28,8 @@ Welcome to the Flash POS documentation. This directory contains comprehensive do
 - ⚡ Bitcoin/Lightning Network payments
 - 📱 NFC flashcard integration
 - 🧾 Silent receipt printing
+- 🔄 Receipt reprinting system
+- 📜 Transaction history tracking
 - 💰 Multi-currency support
 - 🎁 Rewards system
 - 📊 Real-time price conversion

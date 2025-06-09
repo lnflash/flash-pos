@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 
@@ -7,7 +7,7 @@ import {Amount, Note, NumPad, PrimaryButton} from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
-import {useActivityIndicator, useSatPrice} from '../hooks';
+import {useActivityIndicator, useSatPrice, useRealtimePrice} from '../hooks';
 import {useNavigation} from '@react-navigation/native';
 import {useMutation} from '@apollo/client';
 
@@ -16,6 +16,7 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
+import {setIsPrimaryAmountSats} from '../store/slices/amountSlice';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -28,60 +29,122 @@ const Keypad = () => {
 
   const {toggleLoading} = useActivityIndicator();
   const {satsToUsd} = useSatPrice();
+  const {currencyToSats} = useRealtimePrice();
 
   const dispatch = useAppDispatch();
   const {walletId} = useAppSelector(state => state.user);
-  const {satAmount, memo} = useAppSelector(state => state.amount);
+  const {satAmount, memo, displayAmount, currency, isPrimaryAmountSats} =
+    useAppSelector(state => state.amount);
 
-  const onCreateInvoice = () => {
+  // Ensure currency is always shown as primary amount since toggle is hidden
+  useEffect(() => {
+    if (isPrimaryAmountSats) {
+      dispatch(setIsPrimaryAmountSats(false));
+    }
+  }, [isPrimaryAmountSats, dispatch]);
+
+  const onCreateInvoice = async () => {
     try {
+      // Validate amount before processing
+      const numericAmount = Number(displayAmount);
+
+      if (!numericAmount || numericAmount <= 0) {
+        toastShow({
+          message: 'Please enter a valid amount',
+          type: 'error',
+        });
+        return;
+      }
+
+      // Convert US$10,000 to local currency for comparison
+      // First convert 1 local currency unit to sats, then estimate USD equivalent
+      const {convertedCurrencyAmount: satsPerLocalUnit} = currencyToSats(1);
+      const usdPerSat = satsToUsd(1);
+      const usdPerLocalUnit = satsPerLocalUnit * usdPerSat;
+      const maxLocalAmount = Math.round(10000 / usdPerLocalUnit);
+
+      if (numericAmount > maxLocalAmount) {
+        toastShow({
+          message: `Amount too large. Maximum allowed is ${
+            currency.symbol
+          }${maxLocalAmount.toLocaleString()} (US$10,000 equivalent)`,
+          type: 'error',
+        });
+        return;
+      }
+
       toggleLoading(true);
       const usdAmount = satsToUsd(Number(satAmount));
       const cents = parseFloat(usdAmount.toFixed(2)) * 100;
       const amount = cents.toFixed();
 
-      createInvoice({
+      // Additional validation for converted amount
+      const convertedAmount = Number(amount);
+      if (isNaN(convertedAmount) || convertedAmount <= 0) {
+        toastShow({
+          message:
+            'Unable to process this amount. Please try a different value.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const result = await createInvoice({
         variables: {
           input: {
             recipientWalletId: walletId,
-            amount: Number(amount),
+            amount: convertedAmount,
             memo,
           },
         },
-      })
-        .then(({data}) => {
-          console.log(
-            'INVOICE DATA:',
-            data.lnUsdInvoiceCreateOnBehalfOfRecipient,
-          );
-          if (data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice) {
-            dispatch(
-              setInvoice(data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice),
-            );
-            navigation.navigate('Invoice');
-          } else {
-            toastShow({
-              message:
-                'Unexpected error occurred, please try again or contact support if it persists',
-              type: 'error',
-            });
-          }
-        })
-        .catch(err => {
-          console.error(err);
-        })
-        .finally(() => {
-          toggleLoading(false);
+      });
+
+      if (result.data?.lnUsdInvoiceCreateOnBehalfOfRecipient?.invoice) {
+        dispatch(
+          setInvoice(result.data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice),
+        );
+        navigation.navigate('Invoice');
+      } else {
+        const errorMessage =
+          result.data?.lnUsdInvoiceCreateOnBehalfOfRecipient?.errors?.[0]
+            ?.message;
+        toastShow({
+          message:
+            errorMessage ||
+            'Unable to create invoice. Please check your amount and try again.',
+          type: 'error',
         });
-    } catch (err) {
-      console.log('ERROR: ', err);
+      }
+    } catch (err: any) {
+      console.error('Invoice creation error:', err);
+      let errorMessage = 'Unable to create invoice. Please try again.';
+
+      if (err.message?.includes('amount')) {
+        errorMessage =
+          'The amount entered is invalid or too large. Please try a smaller amount.';
+      } else if (err.message?.includes('network')) {
+        errorMessage =
+          'Network error. Please check your connection and try again.';
+      }
+
+      toastShow({
+        message: errorMessage,
+        type: 'error',
+      });
+    } finally {
+      toggleLoading(false);
     }
   };
 
   return (
     <Wrapper>
       <BodyWrapper>
-        <Amount style={{marginHorizontal: 20}} />
+        <Amount
+          style={{marginHorizontal: 20}}
+          hideToggle={true}
+          hideCurrency={false}
+          hideSecondary={true}
+        />
         <Note />
         <NumPad />
       </BodyWrapper>

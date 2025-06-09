@@ -3,29 +3,31 @@ import {Dimensions} from 'react-native';
 import {BallIndicator} from 'react-native-indicators';
 import styled from 'styled-components/native';
 
-const width = Dimensions.get('screen').width;
+const {width} = Dimensions.get('screen');
 
 interface ActivityIndicatorInterface {
   toggleLoading: (loading: boolean) => void;
   loadableVisible: boolean;
 }
 
-export const ActivityIndicatorContext =
-  createContext<ActivityIndicatorInterface>({
-    toggleLoading: () => {},
-    loadableVisible: false,
-  });
+const defaultValue: ActivityIndicatorInterface = {
+  toggleLoading: () => {},
+  loadableVisible: false,
+};
+
+export const ActivityIndicatorContext = createContext(defaultValue);
 
 type Props = {
-  children: string | JSX.Element | JSX.Element[];
+  children: React.ReactNode;
 };
 
 export const ActivityIndicatorProvider = ({children}: Props) => {
-  const [visible, toggleLoading] = useState<boolean>(false);
+  const [visible, toggleLoading] = useState(false);
+
+  const value = {loadableVisible: visible, toggleLoading};
 
   return (
-    <ActivityIndicatorContext.Provider
-      value={{loadableVisible: visible, toggleLoading}}>
+    <ActivityIndicatorContext.Provider value={value}>
       {children}
       {visible && <ActivityIndicator />}
     </ActivityIndicatorContext.Provider>
@@ -34,7 +36,7 @@ export const ActivityIndicatorProvider = ({children}: Props) => {
 
 export const ActivityIndicator = () => (
   <Backdrop>
-    <BallIndicator size={width / 3} color={'#002118'} />
+    <BallIndicator size={width / 3} color="#002118" />
   </Backdrop>
 );
 
@@ -47,5 +49,5 @@ const Backdrop = styled.View`
   z-index: 1;
   align-items: center;
   justify-content: center;
-  background-color: rgba(0, 0, 0, 0);
+  background-color: transparent;
 `;

@@ -133,15 +133,4 @@ dependencies {
     }
 }
 
-afterEvaluate {
-    // Ensure vector icons are copied before lint-related tasks
-    tasks.named("generateDebugLintReportModel").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
-    }
-    tasks.named("generateReleaseLintReportModel").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
-    }
-    tasks.named("lintAnalyzeDebug").configure {
-        dependsOn("copyReactNativeVectorIconFonts")
-    }
-}
+// Vector icons are copied automatically by react-native-vector-icons plugin

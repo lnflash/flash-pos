@@ -59,7 +59,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
         console.error('Payment Status Error:', errors);
         setPaymentLoading(false);
         setErrMessage(
-          'Please try again. Either the invoice has expired or it hasn’t been paid.',
+          'Please try again. Either the invoice has expired or it has not been paid.',
         );
       }
     } else if (error) {
@@ -124,7 +124,12 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   return (
     <Wrapper>
       <InnerWrapper>
-        <Amount hideCurrency hideToggle />
+        <Amount
+          hideTransactionHistory={!!paymentRequest}
+          hideCurrency
+          hideToggle
+          hideSecondary
+        />
         <ExpireTime setErrMessage={setErrMessage} />
         <InvoiceQRCode errMessage={errMessage} />
         {!errMessage && (

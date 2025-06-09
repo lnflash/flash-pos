@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
 
@@ -15,20 +15,92 @@ import Check from '../assets/icons/check.svg';
 // store
 import {resetAmount} from '../store/slices/amountSlice';
 import {resetInvoice} from '../store/slices/invoiceSlice';
+import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const Success: React.FC<Props> = ({navigation, route}) => {
-  const {print, printSilently} = usePrint();
+  const {printSilently, printReceipt} = usePrint();
 
   const dispatch = useAppDispatch();
-  const {satAmount, displayAmount, currency, isPrimaryAmountSats} =
+  const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
     useAppSelector(state => state.amount);
+  const {username} = useAppSelector(state => state.user);
+  const {paymentHash, paymentRequest, paymentSecret} = useAppSelector(
+    state => state.invoice,
+  );
+  const {lastTransaction} = useAppSelector(state => state.transactionHistory);
+
+  // Track whether receipt has been printed
+  const [hasBeenPrinted, setHasBeenPrinted] = React.useState(false);
+
+  // Create and store transaction data when component mounts
+  useEffect(() => {
+    const transactionData: TransactionData = {
+      id: paymentHash || `tx_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      transactionType: 'standalone',
+      paymentMethod: undefined,
+      amount: {
+        satAmount: Number(satAmount) || 0,
+        displayAmount: displayAmount || '0',
+        currency,
+        isPrimaryAmountSats: isPrimaryAmountSats || false,
+      },
+      merchant: {
+        username: username || 'Unknown',
+      },
+      invoice: {
+        paymentHash: paymentHash || '',
+        paymentRequest: paymentRequest || '',
+        paymentSecret: paymentSecret || '',
+      },
+      memo,
+      status: 'completed',
+    };
+
+    dispatch(addTransaction(transactionData));
+  }, [
+    dispatch,
+    satAmount,
+    displayAmount,
+    currency,
+    isPrimaryAmountSats,
+    username,
+    paymentHash,
+    paymentRequest,
+    paymentSecret,
+    memo,
+  ]);
 
   const onDone = () => {
     dispatch(resetInvoice());
     dispatch(resetAmount());
     navigation.popToTop();
+  };
+
+  const onPrintReceipt = () => {
+    if (!hasBeenPrinted) {
+      // First print - use silent printing
+      printSilently();
+      setHasBeenPrinted(true);
+    } else if (lastTransaction) {
+      // Subsequent prints - use reprint functionality
+      const receiptData: ReceiptData = {
+        id: lastTransaction.id,
+        timestamp: lastTransaction.timestamp,
+        satAmount: lastTransaction.amount.satAmount,
+        displayAmount: lastTransaction.amount.displayAmount,
+        currency: lastTransaction.amount.currency,
+        isPrimaryAmountSats: lastTransaction.amount.isPrimaryAmountSats,
+        username: lastTransaction.merchant.username,
+        memo: lastTransaction.memo,
+        paymentHash: lastTransaction.invoice.paymentHash,
+        status: lastTransaction.status,
+      };
+
+      printReceipt(receiptData);
+    }
   };
 
   return (
@@ -38,30 +110,18 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           <Icon source={Check} />
         </IconWrapper>
         <Title>{route.params?.title || `The invoice has been paid`}</Title>
-        {isPrimaryAmountSats ? (
-          <>
-            <PrimaryAmount>{`${satAmount} sats`}</PrimaryAmount>
-            <SecondaryAmount>{`${currency.symbol} ${
-              displayAmount || 0
-            }`}</SecondaryAmount>
-          </>
-        ) : (
-          <>
-            <PrimaryAmount>{`${currency.symbol} ${
-              displayAmount || 0
-            }`}</PrimaryAmount>
-            <SecondaryAmount>{`≈ ${satAmount} sats`}</SecondaryAmount>
-          </>
-        )}
+        <PrimaryAmount>{`${currency.symbol} ${
+          displayAmount || 0
+        }`}</PrimaryAmount>
       </InnerWrapper>
       <BtnsWrapper>
         <PrimaryButton
-          icon="print"
-          btnText="Print"
+          icon={hasBeenPrinted ? 'refresh' : 'print'}
+          btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
           iconColor="#002118"
           textStyle={{color: '#002118'}}
           btnStyle={{backgroundColor: '#fff'}}
-          onPress={printSilently}
+          onPress={onPrintReceipt}
         />
         <SecondaryButton
           btnText="Done"
@@ -113,13 +173,6 @@ const PrimaryAmount = styled.Text`
   font-size: 40px;
   font-family: 'Outfit-Regular';
   color: #fff;
-`;
-
-const SecondaryAmount = styled.Text`
-  font-size: 26px;
-  font-family: 'Outfit-Regular';
-  color: #fff;
-  opacity: 0.8;
 `;
 
 const BtnsWrapper = styled.View`

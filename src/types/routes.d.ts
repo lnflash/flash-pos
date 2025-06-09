@@ -1,4 +1,5 @@
 type RootStackType = {
+  Welcome: undefined;
   Auth: undefined;
   Home: undefined;
   Keypad: undefined;
@@ -9,4 +10,5 @@ type RootStackType = {
   Success?: {title?: string};
   RewardsSuccess: {rewardSatAmount: number; balance?: string};
   FlashcardBalance: undefined;
+  TransactionHistory: undefined;
 };
