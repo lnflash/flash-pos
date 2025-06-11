@@ -75,8 +75,8 @@ const Keypad = () => {
 
       toggleLoading(true);
       const usdAmount = satsToUsd(Number(satAmount));
-      const cents = parseFloat(usdAmount.toFixed(2)) * 100;
-      const amount = cents.toFixed();
+      const cents = usdAmount * 100;
+      const amount = cents;
 
       // Additional validation for converted amount
       const convertedAmount = Number(amount);
