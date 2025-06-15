@@ -1,4 +1,5 @@
 import React, {useState} from 'react';
+import {Dimensions, ScrollView} from 'react-native';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -26,6 +27,8 @@ import {
 
 // env
 import {FLASH_LN_ADDRESS} from '@env';
+
+const {width: screenWidth} = Dimensions.get('window');
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -174,90 +177,85 @@ const Profile = () => {
 
   return (
     <Wrapper>
-      <InnerWrapper>
-        <Label>Account</Label>
-        <Container
-          activeOpacity={0.5}
-          onPress={() => Clipboard.setString(lnAddress)}
-          style={{marginBottom: 10}}>
-          <Icon name={'at-outline'} type="ionicon" />
-          <Column>
-            <Key>Your Lightning address</Key>
-            <Value>{lnAddress}</Value>
-          </Column>
-          <Icon name={'copy-outline'} type="ionicon" />
-        </Container>
-
-        {/* PayCode Navigation */}
-        <Container activeOpacity={0.5} onPress={onViewPaycode}>
-          <Icon name={'qr-code-outline'} type="ionicon" />
-          <Column>
-            <Key>PayCode</Key>
-            <Value>Merchant QR code</Value>
-          </Column>
-          <Icon name={'chevron-forward-outline'} type="ionicon" />
-        </Container>
-
-        <Label style={{marginTop: 20}}>Settings</Label>
-
-        {/* Reward Settings Navigation */}
-        <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
-          <Icon name={'diamond-outline'} type="ionicon" />
-          <Column>
-            <Key>Reward Settings</Key>
-            <Value>Configure reward rules</Value>
-          </Column>
-          <Icon name={'chevron-forward-outline'} type="ionicon" />
-        </Container>
-
-        <Label style={{marginTop: 20}}>Security</Label>
-
-        {/* PIN Management */}
-        {hasPin ? (
-          <>
-            <Container
-              activeOpacity={0.5}
-              onPress={onChangePinPress}
-              style={{marginBottom: 10}}>
-              <Icon name={'key-outline'} type="ionicon" />
-              <Column>
-                <Key>Change PIN</Key>
-                <Value>Modify your admin PIN</Value>
-              </Column>
-              <Icon name={'chevron-forward-outline'} type="ionicon" />
-            </Container>
-
-            <Container activeOpacity={0.5} onPress={onRemovePinPress}>
-              <Icon name={'trash-outline'} type="ionicon" />
-              <Column>
-                <Key>Remove PIN</Key>
-                <Value>Disable PIN protection</Value>
-              </Column>
-              <Icon name={'chevron-forward-outline'} type="ionicon" />
-            </Container>
-          </>
-        ) : (
-          <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
-            <Icon name={'lock-closed-outline'} type="ionicon" />
+      <ScrollWrapper showsVerticalScrollIndicator={false}>
+        <InnerWrapper>
+          <FirstLabel>Account</FirstLabel>
+          <Container
+            activeOpacity={0.5}
+            onPress={() => Clipboard.setString(lnAddress)}>
+            <Icon name={'at-outline'} type="ionicon" />
             <Column>
-              <Key>Set Admin PIN</Key>
-              <Value>Protect your settings</Value>
+              <Key>Your Lightning address</Key>
+              <Value>{lnAddress}</Value>
+            </Column>
+            <Icon name={'copy-outline'} type="ionicon" />
+          </Container>
+          {/* PayCode Navigation */}
+          <Container activeOpacity={0.5} onPress={onViewPaycode}>
+            <Icon name={'qr-code-outline'} type="ionicon" />
+            <Column>
+              <Key>PayCode</Key>
+              <Value>Merchant QR code</Value>
             </Column>
             <Icon name={'chevron-forward-outline'} type="ionicon" />
           </Container>
-        )}
+          <Label>Settings</Label>
+          {/* Reward Settings Navigation */}
+          <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
+            <Icon name={'diamond-outline'} type="ionicon" />
+            <Column>
+              <Key>Reward Settings</Key>
+              <Value>Configure reward rules</Value>
+            </Column>
+            <Icon name={'chevron-forward-outline'} type="ionicon" />
+          </Container>
+          <Label>Security</Label>
+          {/* PIN Management */}
+          {hasPin ? (
+            <>
+              <Container activeOpacity={0.5} onPress={onChangePinPress}>
+                <Icon name={'key-outline'} type="ionicon" />
+                <Column>
+                  <Key>Change PIN</Key>
+                  <Value>Modify your admin PIN</Value>
+                </Column>
+                <Icon name={'chevron-forward-outline'} type="ionicon" />
+              </Container>
 
-        <Label style={{marginTop: 20}}>Transactions</Label>
-        <Container activeOpacity={0.5} onPress={onViewTransactionHistory}>
-          <Icon name={'receipt-outline'} type="ionicon" />
-          <Column>
-            <Key>Transaction History</Key>
-            <Value>{transactions.length} transactions</Value>
-          </Column>
-          <Icon name={'chevron-forward-outline'} type="ionicon" />
-        </Container>
-      </InnerWrapper>
-      <TextButton title="Logout" onPress={onLogout} />
+              <Container activeOpacity={0.5} onPress={onRemovePinPress}>
+                <Icon name={'trash-outline'} type="ionicon" />
+                <Column>
+                  <Key>Remove PIN</Key>
+                  <Value>Disable PIN protection</Value>
+                </Column>
+                <Icon name={'chevron-forward-outline'} type="ionicon" />
+              </Container>
+            </>
+          ) : (
+            <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
+              <Icon name={'lock-closed-outline'} type="ionicon" />
+              <Column>
+                <Key>Set Admin PIN</Key>
+                <Value>Protect your settings</Value>
+              </Column>
+              <Icon name={'chevron-forward-outline'} type="ionicon" />
+            </Container>
+          )}
+          <Label>Transactions</Label>
+          <Container activeOpacity={0.5} onPress={onViewTransactionHistory}>
+            <Icon name={'receipt-outline'} type="ionicon" />
+            <Column>
+              <Key>Transaction History</Key>
+              <Value>{transactions.length} transactions</Value>
+            </Column>
+            <Icon name={'chevron-forward-outline'} type="ionicon" />
+          </Container>
+          {/* Logout Button */}
+          <LogoutButtonWrapper>
+            <TextButton title="Logout" onPress={onLogout} />
+          </LogoutButtonWrapper>
+        </InnerWrapper>
+      </ScrollWrapper>
 
       <PinModal
         visible={pinModalVisible}
@@ -297,20 +295,31 @@ export default Profile;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #ffffff;
-  padding-horizontal: 10px;
+`;
+
+const ScrollWrapper = styled.ScrollView`
+  flex: 1;
+  padding-horizontal: 16px;
   padding-top: 20px;
-  padding-bottom: 120px;
 `;
 
 const InnerWrapper = styled.View`
-  flex: 1;
+  max-width: 500px;
+  align-self: center;
+  width: 100%;
+  padding-bottom: 120px;
 `;
 
 const Label = styled.Text`
   font-size: 16px;
   font-family: 'Outfit-Bold';
   color: #000000;
-  margin-bottom: 5px;
+  margin-bottom: 8px;
+  margin-top: 20px;
+`;
+
+const FirstLabel = styled(Label)`
+  margin-top: 0px;
 `;
 
 const Container = styled.TouchableOpacity`
@@ -320,22 +329,34 @@ const Container = styled.TouchableOpacity`
   overflow: hidden;
   align-items: center;
   justify-content: space-between;
-  padding: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  min-height: 60px;
 `;
 
 const Column = styled.View`
   flex: 1;
-  margin-left: 5px;
+  margin-left: 8px;
+  margin-right: 12px;
 `;
 
 const Key = styled.Text`
   font-size: 16px;
   font-family: 'Outfit-Medium';
   color: #000000;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
 `;
 
 const Value = styled.Text`
-  font-size: 16px;
+  font-size: 14px;
   font-family: 'Outfit-Regular';
   color: #5a5a5a;
+  flex-wrap: wrap;
+  line-height: 18px;
+`;
+
+const LogoutButtonWrapper = styled.View`
+  margin-top: 32px;
+  margin-bottom: 40px;
 `;

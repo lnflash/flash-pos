@@ -14,6 +14,7 @@ import {
   RewardsSuccess,
   Success,
   TransactionHistory,
+  RegisteredRewardCards,
 } from '../screens';
 
 // hooks
@@ -96,6 +97,14 @@ const Root = () => {
           animation: 'slide_from_right',
         }}
       />
+      <Stack.Screen
+        name="RegisteredRewardCards"
+        component={RegisteredRewardCards}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      />
     </Stack.Navigator>
   );
 };
@@ -109,3 +118,4 @@ const Layout = () => {
 };
 
 export default Layout;
+export {navigationRef};

@@ -147,9 +147,9 @@ const usePrint = () => {
               <p style="padding: 0; margin: 0; font-size: 10">${
                 receiptData.currency.symbol
               } ${receiptData.displayAmount}</p>
-                             <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${
-                               receiptData.satAmount
-                             } points</p>
+              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${
+                receiptData.satAmount
+              } points</p>
             </div>
             <div>
               <div style="display: flex;justify-content: space-between; margin-bottom: 5px">

@@ -14,7 +14,7 @@ import {useAppDispatch, useAppSelector} from '../store/hooks';
 import Pos from '../assets/icons/pos.svg';
 
 // env
-import {BTC_PAY_SERVER, PULL_PAYMENT_ID} from '@env';
+import {BTC_PAY_SERVER} from '@env';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -28,7 +28,7 @@ import {
 } from '../utils/transactionHelpers';
 
 // selectors
-import {selectRewardConfig} from '../store/slices/rewardSlice';
+import {selectRewardConfig, selectMerchantRewardId} from '../store/slices/rewardSlice';
 import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 const width = Dimensions.get('screen').width;
@@ -49,6 +49,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   const {satsToCurrency} = useRealtimePrice();
   const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const merchantRewardId = useAppSelector(selectMerchantRewardId);
   const {username} = useAppSelector(state => state.user);
   const {currency} = useAppSelector(state => state.amount);
 
@@ -149,13 +150,24 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     setIsProcessingReward(true);
     lastRewardTime.current = currentTime;
 
+    // Validate merchant reward ID
+    if (!merchantRewardId || merchantRewardId.trim() === '') {
+      setIsProcessingReward(false);
+      toastShow({
+        message: 'Merchant Reward ID not configured. Please set it in Rewards Settings.',
+        type: 'error',
+      });
+      return;
+    }
+
     const requestBody = {
       destination: lnurl,
       amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
       payoutMethodId: 'BTC-LN',
     };
 
-    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${PULL_PAYMENT_ID}/payouts`;
+    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${merchantRewardId}/payouts`;
+
 
     try {
       const response = await axios.post(url, requestBody);
@@ -178,6 +190,24 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
               username: username || 'Unknown',
             },
             paymentMethod: paymentMethod || 'external',
+            reward: rewardData,
+          });
+
+          dispatch(addTransaction(transactionData));
+        } else if (!isExternalPayment && !purchaseAmount) {
+          // Create transaction data for standalone rewards (NFC card taps on Rewards screen)
+          const rewardData = createRewardData(rewardCalculation, true); // true for standalone
+          const transactionData = createRewardsOnlyTransaction({
+            amount: {
+              satAmount: 0, // No purchase amount for standalone
+              displayAmount: '0',
+              currency: currency,
+              isPrimaryAmountSats: false,
+            },
+            merchant: {
+              username: username || 'Unknown',
+            },
+            paymentMethod: 'lightning', // NFC card rewards use lightning
             reward: rewardData,
           });
 
@@ -211,7 +241,8 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         });
         setIsProcessingReward(false); // Reset on failure
       }
-    } catch (error) {
+    } catch (error: any) {
+
       console.error('Error redeeming rewards', error);
       toastShow({
         message: 'Reward is failed. Please try again.',
@@ -238,11 +269,14 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     dispatch,
     username,
     currency,
+    merchantRewardId,
   ]);
 
   useFocusEffect(
     useCallback(() => {
-      if (loading || !lnurl || !isRewardsEnabled) return;
+      if (loading || !lnurl || !isRewardsEnabled) {
+        return;
+      }
       onReward();
     }, [loading, lnurl, isRewardsEnabled, onReward]),
   );
@@ -264,25 +298,18 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   return (
     <Wrapper isExternalPayment={isExternalPayment}>
-      {/* Enhanced Header Section */}
+      {/* Simplified Header Section */}
       <HeaderSection>
         <Title>
           {isExternalPayment
-            ? 'Claim Bitcoin Rewards for Your Payment!'
-            : isPurchaseBased
-            ? 'Claim Your Purchase Reward!'
-            : 'Tap any Flashcard to receive rewards!'}
+            ? 'Claim Bitcoin Rewards!'
+            : 'Tap Flashcard for Rewards!'}
         </Title>
 
-        {/* Purchase Context Card */}
+        {/* Simplified Purchase Context */}
         {purchaseDisplayAmount && (
           <Animatable.View animation="fadeInDown" duration={800}>
             <PurchaseCard>
-              <PurchaseLabel>
-                {isExternalPayment
-                  ? 'External Payment Amount'
-                  : 'Purchase Amount'}
-              </PurchaseLabel>
               <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
               {rewardPercentage && (
                 <RewardRateBadge>
@@ -292,6 +319,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
             </PurchaseCard>
           </Animatable.View>
         )}
+
         {/* Animated Icon */}
         <IconSection>
           <Animatable.View
@@ -304,7 +332,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         </IconSection>
       </HeaderSection>
 
-      {/* Reward Information Section */}
+      {/* Simplified Reward Information */}
       <RewardSection>
         <Animatable.View animation="fadeInUp" duration={800} delay={200}>
           <RewardAmountCard>
@@ -312,39 +340,10 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
             <RewardAmountText>
               {rewardCalculation.rewardAmount} points
             </RewardAmountText>
-            <RewardCurrencyText>
-              (~
-              {satsToCurrency(rewardCalculation.rewardAmount).formattedCurrency}
-              )
-            </RewardCurrencyText>
           </RewardAmountCard>
         </Animatable.View>
 
-        {/* Reward Details */}
-        <RewardDetailsContainer>
-          <RewardDetailsText>{rewardDisplay.description}</RewardDetailsText>
-
-          {/* Constraint Indicators */}
-          {rewardCalculation.appliedMinimum && (
-            <ConstraintBadge type="minimum">
-              <ConstraintText>Minimum reward applied</ConstraintText>
-            </ConstraintBadge>
-          )}
-
-          {rewardCalculation.appliedMaximum && (
-            <ConstraintBadge type="maximum">
-              <ConstraintText>Maximum reward applied</ConstraintText>
-            </ConstraintBadge>
-          )}
-        </RewardDetailsContainer>
-
-        <ActionHint>
-          {isExternalPayment
-            ? 'Tap your flashcard to claim your Bitcoin reward'
-            : isPurchaseBased
-            ? 'Tap your flashcard to claim your purchase reward'
-            : 'Tap your flashcard to receive points'}
-        </ActionHint>
+        <ActionHint>Tap your flashcard to claim reward</ActionHint>
 
         {/* Cancel Button */}
         <CancelButtonContainer>

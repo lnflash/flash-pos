@@ -10,6 +10,7 @@ import {PrimaryButton} from '../components';
 
 // hooks
 import {useRealtimePrice} from '../hooks';
+import {useFlashcard} from '../hooks';
 
 // assets
 import Reward from '../assets/icons/reward.svg';
@@ -30,7 +31,17 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
   } = route.params;
 
   const {satsToCurrency} = useRealtimePrice();
+  const {setNfcEnabled} = useFlashcard();
   const {formattedCurrency} = satsToCurrency(rewardSatAmount);
+
+  // Disable NFC on mount and re-enable on unmount
+  useEffect(() => {
+    setNfcEnabled(false);
+    
+    return () => {
+      setNfcEnabled(true);
+    };
+  }, [setNfcEnabled]);
 
   const onDone = () => {
     navigation.reset({
@@ -91,21 +102,14 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
   return (
     <Wrapper>
       <InnerWrapper>
-        {/* Success Header */}
+        {/* Simplified Success Header */}
         <Animatable.View animation="bounceIn" duration={1000} delay={200}>
           <SuccessHeader>
             <SuccessTitle>🎉 Reward Earned!</SuccessTitle>
-            <SuccessSubtitle>
-              {isExternalPayment
-                ? 'Your Bitcoin reward for external payment has been added'
-                : isPurchaseBased
-                ? 'Your purchase reward has been added to your balance'
-                : 'Your flashcard reward has been added to your balance'}
-            </SuccessSubtitle>
           </SuccessHeader>
         </Animatable.View>
 
-        {/* Reward Amount Card */}
+        {/* Simplified Reward Amount Card */}
         <Animatable.View animation="zoomIn" duration={800} delay={400}>
           <RewardCard>
             <Image source={Reward} />
@@ -118,36 +122,16 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
           </RewardCard>
         </Animatable.View>
 
-        {/* External Payment Context Section */}
-        {isExternalPayment && isPurchaseBased && purchaseDisplayAmount && (
+        {/* Simplified Purchase Context for External Payments */}
+        {isExternalPayment && purchaseDisplayAmount && (
           <Animatable.View animation="fadeInUp" duration={800} delay={600}>
             <PurchaseContextCard>
-              <PurchaseContextHeader>
-                <PurchaseIcon>{paymentInfo.icon}</PurchaseIcon>
-                <PurchaseContextTitle>
-                  External Payment Reward Details
-                </PurchaseContextTitle>
-              </PurchaseContextHeader>
-
               <PurchaseDetailRow>
-                <PurchaseDetailLabel>Payment Method</PurchaseDetailLabel>
-                <PurchaseDetailValue>{paymentInfo.name}</PurchaseDetailValue>
-              </PurchaseDetailRow>
-
-              <PurchaseDetailRow>
-                <PurchaseDetailLabel>Payment Amount</PurchaseDetailLabel>
+                <PurchaseDetailLabel>Payment</PurchaseDetailLabel>
                 <PurchaseDetailValue>
                   {purchaseDisplayAmount}
                 </PurchaseDetailValue>
               </PurchaseDetailRow>
-
-              {rewardPercentage && (
-                <PurchaseDetailRow>
-                  <PurchaseDetailLabel>Bitcoin Reward Rate</PurchaseDetailLabel>
-                  <PurchaseDetailValue>{rewardPercentage}%</PurchaseDetailValue>
-                </PurchaseDetailRow>
-              )}
-
               <PurchaseDetailRow>
                 <PurchaseDetailLabel>Bitcoin Earned</PurchaseDetailLabel>
                 <PurchaseDetailValue highlight>
@@ -158,58 +142,10 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
           </Animatable.View>
         )}
 
-        {/* Lightning Purchase Context Section */}
-        {!isExternalPayment && isPurchaseBased && purchaseDisplayAmount && (
-          <Animatable.View animation="fadeInUp" duration={800} delay={600}>
-            <PurchaseContextCard>
-              <PurchaseContextHeader>
-                <PurchaseIcon>🛍️</PurchaseIcon>
-                <PurchaseContextTitle>
-                  Purchase Reward Details
-                </PurchaseContextTitle>
-              </PurchaseContextHeader>
-
-              <PurchaseDetailRow>
-                <PurchaseDetailLabel>Purchase Amount</PurchaseDetailLabel>
-                <PurchaseDetailValue>
-                  {purchaseDisplayAmount}
-                </PurchaseDetailValue>
-              </PurchaseDetailRow>
-
-              {rewardPercentage && (
-                <PurchaseDetailRow>
-                  <PurchaseDetailLabel>Reward Rate</PurchaseDetailLabel>
-                  <PurchaseDetailValue>{rewardPercentage}%</PurchaseDetailValue>
-                </PurchaseDetailRow>
-              )}
-
-              <PurchaseDetailRow>
-                <PurchaseDetailLabel>Earned</PurchaseDetailLabel>
-                <PurchaseDetailValue highlight>
-                  {rewardSatAmount} points
-                </PurchaseDetailValue>
-              </PurchaseDetailRow>
-            </PurchaseContextCard>
-          </Animatable.View>
-        )}
-
-        {/* Standalone Reward Message */}
-        {!isPurchaseBased && (
-          <Animatable.View animation="fadeInUp" duration={800} delay={600}>
-            <StandaloneCard>
-              <StandaloneIcon>⚡</StandaloneIcon>
-              <StandaloneTitle>Flashcard Reward</StandaloneTitle>
-              <StandaloneMessage>
-                You've received a standalone reward for using your flashcard!
-              </StandaloneMessage>
-            </StandaloneCard>
-          </Animatable.View>
-        )}
-
         {/* Updated Balance */}
         <Animatable.View animation="fadeIn" duration={800} delay={800}>
           <BalanceContainer>
-            <BalanceLabel>Your New Balance</BalanceLabel>
+            <BalanceLabel>New Balance</BalanceLabel>
             <BalanceAmount>{balance}</BalanceAmount>
           </BalanceContainer>
         </Animatable.View>
@@ -217,7 +153,7 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
 
       <Animatable.View animation="slideInUp" duration={600} delay={1000}>
         <PrimaryButton
-          btnText="Continue Shopping"
+          btnText="Continue"
           textStyle={{
             color: '#007856',
             fontSize: 18,

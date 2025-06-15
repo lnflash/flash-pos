@@ -12,6 +12,7 @@ type RootStackType = {
   FlashcardBalance: undefined;
   TransactionHistory: undefined;
   RewardsSettings: undefined;
+  RegisteredRewardCards: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility

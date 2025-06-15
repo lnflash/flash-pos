@@ -39,6 +39,8 @@ interface TransactionData {
     wasMaximumApplied: boolean; // Whether maximum constraint was applied
     isStandalone: boolean; // Whether this was a standalone reward (no purchase)
     timestamp: string; // When reward was calculated/awarded
+    sentToCard?: boolean; // Whether rewards were sent to NFC card
+    cardLnurl?: string; // LNURL of the card that received rewards
   };
 }
 
@@ -64,4 +66,12 @@ interface ReceiptData {
   paymentMethod?: PaymentMethod;
   rewardAmount?: number;
   rewardRate?: number;
+}
+
+// For card-based rewards and NFC storage
+interface StoredCardInfo {
+  tagId: string; // NFC tag identifier
+  lnurl: string; // Lightning URL for withdrawing rewards
+  lastSeen: string; // ISO timestamp of when this card was last scanned
+  balanceInSats?: number; // Last known card balance
 }

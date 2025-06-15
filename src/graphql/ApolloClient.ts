@@ -48,9 +48,6 @@ const errorLink = onError(({graphQLErrors, networkError}) => {
   if (graphQLErrors)
     graphQLErrors.forEach(({message, locations, path}) => {
       if (message === 'PersistedQueryNotFound') {
-        console.log(`[GraphQL info]: Message: ${message}, Path: ${path}}`, {
-          locations,
-        });
       } else {
         console.warn(`[GraphQL error]: Message: ${message}, Path: ${path}}`, {
           locations,
@@ -59,7 +56,6 @@ const errorLink = onError(({graphQLErrors, networkError}) => {
     });
   // only network error are managed globally
   if (networkError) {
-    console.log(`[Network error]: ${networkError}`);
   }
 });
 

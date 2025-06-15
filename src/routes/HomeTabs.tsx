@@ -32,16 +32,16 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
   const {buildHref} = useLinkBuilder();
   const rewardConfig = useAppSelector(selectRewardConfig);
 
-  // Create dynamic tabs array based on rewards enabled state
-  const dynamicTabs = rewardConfig.isEnabled
+  // Create dynamic tabs array based on standalone rewards setting
+  const dynamicTabs = rewardConfig.showStandaloneRewards
     ? tabs
     : tabs.filter(tab => tab.label !== 'Rewards');
 
   return (
     <Wrapper>
       {state.routes.map((route, index) => {
-        // Skip rendering Rewards tab if rewards are disabled
-        if (route.name === 'Rewards' && !rewardConfig.isEnabled) {
+        // Skip rendering Rewards tab if standalone rewards are disabled
+        if (route.name === 'Rewards' && !rewardConfig.showStandaloneRewards) {
           return null;
         }
 
@@ -120,7 +120,7 @@ export const HomeTabs = () => {
         animation: 'shift',
       }}>
       <Tab.Screen name="Keypad" component={Keypad} />
-      {rewardConfig.isEnabled && (
+      {rewardConfig.showStandaloneRewards && (
         <Tab.Screen
           name="Rewards"
           component={Rewards}

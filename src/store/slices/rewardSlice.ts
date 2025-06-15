@@ -5,7 +5,9 @@ interface RewardState {
   minimumReward: number; // Minimum sats to award
   maximumReward: number; // Maximum sats to award
   defaultReward: number; // Fallback for standalone rewards
+  merchantRewardId: string; // Pull Payment ID for BTCPay Server rewards
   isEnabled: boolean; // Global reward system toggle
+  showStandaloneRewards: boolean; // Show/hide standalone rewards navigation
   loading: boolean; // For async operations
   error: string; // Error messages
 }
@@ -20,6 +22,7 @@ const getDefaultConfiguration = () => {
       MAX_REWARD_SATS,
       STANDALONE_REWARD_SATS,
       REWARDS_ENABLED,
+      PULL_PAYMENT_ID,
     } = require('@env');
 
     return {
@@ -27,7 +30,9 @@ const getDefaultConfiguration = () => {
       minimumReward: parseInt(MIN_REWARD_SATS || '1', 10),
       maximumReward: parseInt(MAX_REWARD_SATS || '1000', 10),
       defaultReward: parseInt(STANDALONE_REWARD_SATS || '21', 10),
+      merchantRewardId: PULL_PAYMENT_ID || '',
       isEnabled: (REWARDS_ENABLED || 'true').toLowerCase() === 'true',
+      showStandaloneRewards: false, // Default to off
     };
   } catch (error) {
     // Fallback to hardcoded defaults if environment variables are not available
@@ -36,7 +41,9 @@ const getDefaultConfiguration = () => {
       minimumReward: 1, // Minimum 1 sat
       maximumReward: 1000, // Maximum 1000 sats
       defaultReward: 21, // Current fixed amount for standalone rewards
+      merchantRewardId: '', // Empty by default, user must configure
       isEnabled: true, // Rewards enabled by default
+      showStandaloneRewards: false, // Default to off
     };
   }
 };
@@ -89,6 +96,11 @@ export const rewardSlice = createSlice({
         error: '',
       };
     },
+    setMerchantRewardId: (state, action) => ({
+      ...state,
+      merchantRewardId: action.payload || '',
+      error: '',
+    }),
     setIsEnabled: (state, action) => ({
       ...state,
       isEnabled: action.payload,
@@ -108,7 +120,9 @@ export const rewardSlice = createSlice({
         minimumReward,
         maximumReward,
         defaultReward,
+        merchantRewardId,
         isEnabled,
+        showStandaloneRewards,
       } = action.payload;
 
       return {
@@ -129,7 +143,13 @@ export const rewardSlice = createSlice({
           defaultReward !== undefined
             ? Math.max(1, defaultReward)
             : state.defaultReward,
+        merchantRewardId:
+          merchantRewardId !== undefined ? merchantRewardId : state.merchantRewardId,
         isEnabled: isEnabled !== undefined ? isEnabled : state.isEnabled,
+        showStandaloneRewards:
+          showStandaloneRewards !== undefined
+            ? showStandaloneRewards
+            : state.showStandaloneRewards,
         error: '',
       };
     },
@@ -144,6 +164,7 @@ export const {
   setMinimumReward,
   setMaximumReward,
   setDefaultReward,
+  setMerchantRewardId,
   setIsEnabled,
   setLoading,
   setError,
@@ -158,7 +179,10 @@ export const selectRewardRate = (state: any) => state.reward.rewardRate;
 export const selectMinimumReward = (state: any) => state.reward.minimumReward;
 export const selectMaximumReward = (state: any) => state.reward.maximumReward;
 export const selectDefaultReward = (state: any) => state.reward.defaultReward;
+export const selectMerchantRewardId = (state: any) => state.reward.merchantRewardId;
 export const selectIsRewardEnabled = (state: any) => state.reward.isEnabled;
+export const selectShowStandaloneRewards = (state: any) =>
+  state.reward.showStandaloneRewards;
 
 // Memoized selector to prevent unnecessary re-renders
 export const selectRewardConfig = createSelector(
@@ -167,13 +191,25 @@ export const selectRewardConfig = createSelector(
     selectMinimumReward,
     selectMaximumReward,
     selectDefaultReward,
+    selectMerchantRewardId,
     selectIsRewardEnabled,
+    selectShowStandaloneRewards,
   ],
-  (rewardRate, minimumReward, maximumReward, defaultReward, isEnabled) => ({
+  (
     rewardRate,
     minimumReward,
     maximumReward,
     defaultReward,
+    merchantRewardId,
     isEnabled,
+    showStandaloneRewards,
+  ) => ({
+    rewardRate,
+    minimumReward,
+    maximumReward,
+    defaultReward,
+    merchantRewardId,
+    isEnabled,
+    showStandaloneRewards,
   }),
 );

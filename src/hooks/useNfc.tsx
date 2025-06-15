@@ -84,7 +84,6 @@ const useNfc = (paymentRequest: string) => {
               });
             }
           } catch (err) {
-            console.log('NFC ERROR:', err);
           }
         }
         toggleLoading(false);

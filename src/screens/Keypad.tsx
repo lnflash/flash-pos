@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
+import {useFocusEffect} from '@react-navigation/native';
 
 // components
 import {
@@ -22,7 +23,7 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
-import {setIsPrimaryAmountSats} from '../store/slices/amountSlice';
+import {setIsPrimaryAmountSats, resetAmount} from '../store/slices/amountSlice';
 import {selectRewardConfig} from '../store/slices/rewardSlice';
 
 // utils
@@ -50,6 +51,13 @@ const Keypad = () => {
       dispatch(setIsPrimaryAmountSats(false));
     }
   }, [isPrimaryAmountSats, dispatch]);
+
+  // Reset amount when returning to the keypad screen
+  useFocusEffect(
+    useCallback(() => {
+      dispatch(resetAmount());
+    }, [dispatch]),
+  );
 
   const isValidAmount =
     displayAmount && displayAmount !== '0' && Number(displayAmount) > 0;

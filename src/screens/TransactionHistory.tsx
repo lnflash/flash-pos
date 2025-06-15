@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {FlatList, RefreshControl} from 'react-native';
+import {RefreshControl, Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import {useNavigation} from '@react-navigation/native';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -19,6 +19,12 @@ import Refresh from '../assets/icons/refresh.svg';
 
 // store
 import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
+
+const {width: screenWidth} = Dimensions.get('window');
+
+// Responsive scaling functions
+const scale = (size: number) => (screenWidth / 375) * size;
+const isLargeDevice = screenWidth > 414;
 
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
 type NavigationProp = StackNavigationProp<RootStackType>;
@@ -148,122 +154,88 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
     return (
       <TransactionCard>
-        <TransactionHeader>
-          <StatusContainer>
-            <StatusIcon source={Check} />
-            <StatusText status={item.status}>
-              {item.status.toUpperCase()}
-            </StatusText>
+        {/* Compact header with amount and status/badges in one row */}
+        <CompactHeader>
+          <AmountAndMerchant>
+            <PrimaryAmount>
+              {item.amount.isPrimaryAmountSats
+                ? `${item.amount.satAmount} points`
+                : `${item.amount.currency.symbol} ${item.amount.displayAmount}`}
+            </PrimaryAmount>
+            <MerchantText>to {item.merchant.username}</MerchantText>
+          </AmountAndMerchant>
 
-            {/* Transaction Type Badge */}
+          <HeaderBadges>
+            <StatusIcon source={Check} />
             <TransactionTypeBadge color={typeBadge.color}>
               <TransactionTypeBadgeText>
                 {typeBadge.icon} {typeBadge.label}
               </TransactionTypeBadgeText>
             </TransactionTypeBadge>
-
-            {/* Reward Badge */}
             {item.reward && (
               <RewardBadge>
                 <RewardBadgeText>
-                  +{item.reward.rewardAmount} points
+                  +{item.reward.rewardAmount} sats
+                  {item.reward.sentToCard ? ' 💳' : ''}
                 </RewardBadgeText>
               </RewardBadge>
             )}
-          </StatusContainer>
-          <DateText>
-            {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
-          </DateText>
-        </TransactionHeader>
+          </HeaderBadges>
+        </CompactHeader>
 
-        <AmountContainer>
-          {item.amount.isPrimaryAmountSats ? (
-            <>
-              <PrimaryAmount>{`${item.amount.satAmount} points`}</PrimaryAmount>
-              <SecondaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</SecondaryAmount>
-            </>
-          ) : (
-            <>
-              <PrimaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</PrimaryAmount>
-              <SecondaryAmount>{`≈ ${item.amount.satAmount} points`}</SecondaryAmount>
-            </>
-          )}
-        </AmountContainer>
+        {/* Compact details section */}
+        <CompactDetails>
+          <DetailItem>
+            <DetailIcon>📅</DetailIcon>
+            <DetailText>
+              {moment(item.timestamp).format('MMM DD, HH:mm')}
+            </DetailText>
+          </DetailItem>
 
-        <TransactionDetails>
-          <DetailRow>
-            <DetailLabel>Paid to:</DetailLabel>
-            <DetailValue>{item.merchant.username}</DetailValue>
-          </DetailRow>
-
-          {/* Payment Method for External Payments */}
           {item.transactionType === 'rewards-only' && item.paymentMethod && (
-            <DetailRow>
-              <DetailLabel>Payment Method:</DetailLabel>
-              <DetailValue>
+            <DetailItem>
+              <DetailIcon>💳</DetailIcon>
+              <DetailText>
                 {getPaymentMethodDisplay(item.paymentMethod)}
-              </DetailValue>
-            </DetailRow>
+              </DetailText>
+            </DetailItem>
           )}
 
           {item.memo && (
-            <DetailRow>
-              <DetailLabel>Description:</DetailLabel>
-              <DetailValue>{item.memo}</DetailValue>
-            </DetailRow>
+            <DetailItem>
+              <DetailIcon>📝</DetailIcon>
+              <DetailText numberOfLines={1}>{item.memo}</DetailText>
+            </DetailItem>
           )}
 
-          {/* Enhanced Reward Information Section */}
           {item.reward && (
-            <>
-              <RewardSection>
-                <RewardSectionTitle>Reward Information</RewardSectionTitle>
-                <DetailRow>
-                  <DetailLabel>Reward Earned:</DetailLabel>
-                  <RewardValue>{item.reward.rewardAmount} points</RewardValue>
-                </DetailRow>
-                <DetailRow>
-                  <DetailLabel>Reward Rate:</DetailLabel>
-                  <DetailValue>
-                    {(item.reward.rewardRate * 100).toFixed(1)}%
-                  </DetailValue>
-                </DetailRow>
-                {item.reward.wasMinimumApplied && (
-                  <DetailRow>
-                    <DetailLabel>Constraint:</DetailLabel>
-                    <DetailValue>Minimum reward applied</DetailValue>
-                  </DetailRow>
-                )}
-                {item.reward.wasMaximumApplied && (
-                  <DetailRow>
-                    <DetailLabel>Constraint:</DetailLabel>
-                    <DetailValue>Maximum reward applied</DetailValue>
-                  </DetailRow>
-                )}
-                <DetailRow>
-                  <DetailLabel>Reward Type:</DetailLabel>
-                  <DetailValue>
-                    {item.reward.isStandalone ? 'Standalone' : 'Purchase-based'}
-                  </DetailValue>
-                </DetailRow>
-              </RewardSection>
-            </>
+            <DetailItem>
+              <DetailIcon>🎁</DetailIcon>
+              <DetailText>
+                {(item.reward.rewardRate * 100).toFixed(1)}% rate
+                {item.reward.wasMinimumApplied && ' (min applied)'}
+                {item.reward.wasMaximumApplied && ' (max applied)'}
+                {item.reward.sentToCard && ' • Sent to NFC card'}
+              </DetailText>
+            </DetailItem>
           )}
 
-          <DetailRow>
-            <DetailLabel>Transaction ID:</DetailLabel>
-            <DetailValue numberOfLines={1} ellipsizeMode="middle">
-              {item.invoice.paymentHash || item.id}
-            </DetailValue>
-          </DetailRow>
-        </TransactionDetails>
+          {/* Show NFC card reward transfer status */}
+          {item.reward?.sentToCard && (
+            <DetailItem>
+              <DetailIcon>💳</DetailIcon>
+              <DetailText>
+                Rewards automatically sent to customer's NFC card
+              </DetailText>
+            </DetailItem>
+          )}
+        </CompactDetails>
 
-        <ButtonContainer>
-          <ReprintButton onPress={() => onReprintTransaction(item)}>
-            <ButtonIcon source={Refresh} />
-            <ButtonText>Reprint Receipt</ButtonText>
-          </ReprintButton>
-        </ButtonContainer>
+        {/* Minimal reprint button */}
+        <ReprintButton onPress={() => onReprintTransaction(item)}>
+          <ButtonIcon source={Refresh} />
+          <ButtonText>Reprint</ButtonText>
+        </ReprintButton>
       </TransactionCard>
     );
   };
@@ -360,15 +332,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           </FilterContainer>
         )}
 
-        <FlatList
+        <StyledFlatList
           data={filteredTransactions}
           renderItem={renderTransactionItem}
-          keyExtractor={item => item.id}
+          keyExtractor={(item: TransactionData) => item.id}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{
-            paddingBottom: 100,
-            flexGrow: 1,
-          }}
           ListEmptyComponent={renderEmptyState}
           refreshControl={
             <RefreshControl
@@ -380,10 +348,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       </Container>
       <ButtonWrapper>
         {transactions.length > 0 && (
-          <SecondaryButton
+          <ClearHistoryButton
             btnText="Clear History"
-            textStyle={{color: '#FF6B6B'}}
-            btnStyle={{borderColor: '#FF6B6B'}}
             onPress={onClearHistory}
           />
         )}
@@ -395,9 +361,21 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
 export default TransactionHistory;
 
+const StyledFlatList = styled.FlatList.attrs({
+  contentContainerStyle: {
+    paddingBottom: scale(100),
+    flexGrow: 1,
+  },
+})`` as React.ComponentType<any>;
+
+const ClearHistoryButton = styled(SecondaryButton).attrs({
+  textStyle: {color: '#FF6B6B'},
+  btnStyle: {borderColor: '#FF6B6B'},
+})``;
+
 const ButtonWrapper = styled.View`
-  padding: 20px;
-  padding-bottom: 40px;
+  padding: ${scale(20)}px;
+  padding-bottom: ${scale(40)}px;
 `;
 
 const Wrapper = styled.View`
@@ -408,117 +386,106 @@ const Wrapper = styled.View`
 const Container = styled.View`
   flex: 1;
   background-color: #ffffff;
+  max-width: ${isLargeDevice ? '600px' : '500px'};
+  align-self: center;
+  width: 100%;
 `;
 
 const Header = styled.View`
-  padding: 20px;
+  padding: ${scale(20)}px ${scale(16)}px;
   background-color: #007856;
 `;
 
 const HeaderTitle = styled.Text`
-  font-size: 24px;
+  font-size: ${scale(20)}px;
   font-family: 'Outfit-Bold';
   color: #ffffff;
+  text-align: center;
 `;
 
 const HeaderSubtitle = styled.Text`
-  font-size: 14px;
+  font-size: ${scale(14)}px;
   font-family: 'Outfit-Regular';
   color: #ffffff;
   opacity: 0.8;
-  margin-top: 4px;
+  margin-top: ${scale(4)}px;
+  text-align: center;
 `;
 
 const TransactionCard = styled.View`
   background-color: #ffffff;
-  margin: 10px 20px;
-  border-radius: 12px;
-  padding: 16px;
+  margin: ${scale(8)}px ${scale(16)}px;
+  border-radius: ${scale(8)}px;
+  padding: ${scale(12)}px;
   shadow-color: #000;
-  shadow-offset: 0px 2px;
-  shadow-opacity: 0.1;
-  shadow-radius: 4px;
-  elevation: 3;
+  shadow-offset: 0px 1px;
+  shadow-opacity: 0.05;
+  shadow-radius: 2px;
+  elevation: 2;
 `;
 
-const TransactionHeader = styled.View`
+const CompactHeader = styled.View`
   flex-direction: row;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
+  align-items: flex-start;
+  margin-bottom: ${scale(8)}px;
 `;
 
-const StatusContainer = styled.View`
-  flex-direction: row;
-  align-items: center;
+const AmountAndMerchant = styled.View`
+  flex: 1;
+  margin-right: ${scale(12)}px;
+  min-width: 0;
 `;
 
-const StatusIcon = styled.Image`
-  width: 16px;
-  height: 16px;
-  margin-right: 6px;
-  tint-color: #007856;
-`;
-
-const StatusText = styled.Text<{status: string}>`
-  font-size: 12px;
-  font-family: 'Outfit-Medium';
-  color: ${props => (props.status === 'completed' ? '#007856' : '#FF6B6B')};
-`;
-
-const DateText = styled.Text`
-  font-size: 12px;
+const MerchantText = styled.Text`
+  font-size: ${scale(12)}px;
   font-family: 'Outfit-Regular';
   color: #666666;
+  margin-top: ${scale(2)}px;
 `;
 
-const AmountContainer = styled.View`
+const HeaderBadges = styled.View`
+  flex-direction: row;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  max-width: 40%;
+  justify-content: flex-end;
+`;
+
+const CompactDetails = styled.View`
+  margin-bottom: ${scale(8)}px;
+`;
+
+const DetailItem = styled.View`
+  flex-direction: row;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: ${scale(4)}px;
+`;
+
+const DetailIcon = styled.Text`
+  font-size: ${scale(12)}px;
+  margin-right: ${scale(6)}px;
+  width: ${scale(16)}px;
+`;
+
+const DetailText = styled.Text`
+  font-size: ${scale(12)}px;
+  font-family: 'Outfit-Regular';
+  color: #555555;
+  flex: 1;
 `;
 
 const PrimaryAmount = styled.Text`
-  font-size: 20px;
+  font-size: ${scale(16)}px;
   font-family: 'Outfit-Bold';
   color: #000000;
 `;
 
-const SecondaryAmount = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: #666666;
-  margin-top: 2px;
-`;
-
-const TransactionDetails = styled.View`
-  margin-bottom: 16px;
-`;
-
-const DetailRow = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  margin-bottom: 8px;
-`;
-
-const DetailLabel = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Medium';
-  color: #666666;
-`;
-
-const DetailValue = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: #000000;
-  flex: 1;
-  text-align: right;
-  margin-left: 16px;
-`;
-
-const ButtonContainer = styled.View`
-  border-top-width: 1px;
-  border-top-color: #f0f0f0;
-  padding-top: 12px;
+const StatusIcon = styled.Image`
+  width: ${scale(14)}px;
+  height: ${scale(14)}px;
+  margin-right: ${scale(4)}px;
+  tint-color: #007856;
 `;
 
 const ReprintButton = styled.TouchableOpacity`
@@ -526,19 +493,19 @@ const ReprintButton = styled.TouchableOpacity`
   align-items: center;
   justify-content: center;
   background-color: #f8f9fa;
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: ${scale(6)}px;
+  padding: ${scale(8)}px;
 `;
 
 const ButtonIcon = styled.Image`
-  width: 16px;
-  height: 16px;
-  margin-right: 8px;
+  width: ${scale(14)}px;
+  height: ${scale(14)}px;
+  margin-right: ${scale(6)}px;
   tint-color: #007856;
 `;
 
 const ButtonText = styled.Text`
-  font-size: 24px;
+  font-size: ${scale(12)}px;
   font-family: 'Outfit-Medium';
   color: #007856;
 `;
@@ -547,63 +514,44 @@ const EmptyContainer = styled.View`
   flex: 1;
   justify-content: center;
   align-items: center;
-  padding: 40px;
+  padding: ${scale(40)}px;
 `;
 
 const EmptyText = styled.Text`
-  font-size: 18px;
+  font-size: ${scale(18)}px;
   font-family: 'Outfit-Medium';
   color: #666666;
   text-align: center;
 `;
 
 const EmptySubtext = styled.Text`
-  font-size: 14px;
+  font-size: ${scale(14)}px;
   font-family: 'Outfit-Regular';
   color: #999999;
   text-align: center;
-  margin-top: 8px;
+  margin-top: ${scale(8)}px;
 `;
 
 const RewardBadge = styled.View`
   background-color: #007856;
-  border-radius: 12px;
-  padding-horizontal: 8px;
-  padding-vertical: 2px;
-  margin-left: 8px;
+  border-radius: ${scale(12)}px;
+  padding-horizontal: ${scale(6)}px;
+  padding-vertical: ${scale(2)}px;
+  margin-left: ${scale(4)}px;
+  margin-top: ${scale(2)}px;
+  max-width: ${scale(120)}px;
 `;
 
 const RewardBadgeText = styled.Text`
-  font-size: 10px;
+  font-size: ${scale(9)}px;
   font-family: 'Outfit-Medium';
   color: #ffffff;
-`;
-
-const RewardSection = styled.View`
-  background-color: #f8f9fa;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-`;
-
-const RewardSectionTitle = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  margin-bottom: 8px;
-`;
-
-const RewardValue = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Medium';
-  color: #007856;
-  text-align: right;
-  margin-left: 16px;
+  text-align: center;
 `;
 
 const FilterContainer = styled.View`
   flex-direction: row;
-  padding: 10px 20px;
+  padding: ${scale(10)}px ${scale(20)}px;
   background-color: #f8f9fa;
   border-bottom-width: 1px;
   border-bottom-color: #e9ecef;
@@ -614,14 +562,14 @@ const FilterScrollView = styled.ScrollView`
 `;
 
 const FilterButton = styled.TouchableOpacity<{active: boolean}>`
-  padding: 8px 16px;
-  border-radius: 8px;
-  margin-horizontal: 4px;
+  padding: ${scale(8)}px ${scale(16)}px;
+  border-radius: ${scale(8)}px;
+  margin-horizontal: ${scale(4)}px;
   background-color: ${props => (props.active ? '#007856' : 'transparent')};
 `;
 
 const FilterButtonText = styled.Text<{active: boolean}>`
-  font-size: 14px;
+  font-size: ${scale(14)}px;
   font-family: 'Outfit-Medium';
   color: ${props => (props.active ? '#ffffff' : '#666666')};
   text-align: center;
@@ -629,14 +577,15 @@ const FilterButtonText = styled.Text<{active: boolean}>`
 
 const TransactionTypeBadge = styled.View<{color: string}>`
   background-color: ${props => props.color};
-  border-radius: 12px;
-  padding-horizontal: 8px;
-  padding-vertical: 2px;
-  margin-left: 8px;
+  border-radius: ${scale(12)}px;
+  padding-horizontal: ${scale(6)}px;
+  padding-vertical: ${scale(2)}px;
+  margin-left: ${scale(4)}px;
+  margin-top: ${scale(2)}px;
 `;
 
 const TransactionTypeBadgeText = styled.Text`
-  font-size: 10px;
+  font-size: ${scale(9)}px;
   font-family: 'Outfit-Medium';
   color: #ffffff;
 `;
