@@ -15,6 +15,12 @@ const defaultValue: ActivityIndicatorInterface = {
 };
 
 export const ActivityIndicatorContext = createContext(defaultValue);
+const defaultValue: ActivityIndicatorInterface = {
+  toggleLoading: () => {},
+  loadableVisible: false,
+};
+
+export const ActivityIndicatorContext = createContext(defaultValue);
 
 type Props = {
   children: React.ReactNode;
@@ -24,8 +30,12 @@ export const ActivityIndicatorProvider = ({children}: Props) => {
   const [visible, toggleLoading] = useState(false);
 
   const value = {loadableVisible: visible, toggleLoading};
+  const [visible, toggleLoading] = useState(false);
+
+  const value = {loadableVisible: visible, toggleLoading};
 
   return (
+    <ActivityIndicatorContext.Provider value={value}>
     <ActivityIndicatorContext.Provider value={value}>
       {children}
       {visible && <ActivityIndicator />}
@@ -48,5 +58,6 @@ const Backdrop = styled.View`
   z-index: 1;
   align-items: center;
   justify-content: center;
+  background-color: transparent;
   background-color: transparent;
 `;

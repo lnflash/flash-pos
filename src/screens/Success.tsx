@@ -1,4 +1,5 @@
 import React, {useEffect} from 'react';
+import React, {useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
 
@@ -34,7 +35,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   // Disable NFC on mount and re-enable on unmount
   useEffect(() => {
     setNfcEnabled(false);
-    
+
     return () => {
       setNfcEnabled(true);
     };
@@ -42,7 +43,6 @@ const Success: React.FC<Props> = ({navigation, route}) => {
 
   // Note: Transaction creation is now handled in the Invoice screen to include reward information
   // This prevents duplicate transactions and ensures reward data is properly recorded
-
 
   const onDone = () => {
     dispatch(resetInvoice());

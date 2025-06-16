@@ -42,6 +42,7 @@ export const FlashcardContext = createContext(defaultValue);
 
 type Props = {
   children: React.ReactNode;
+  children: React.ReactNode;
 };
 
 export const FlashcardProvider = ({children}: Props) => {
@@ -81,7 +82,7 @@ export const FlashcardProvider = ({children}: Props) => {
     if (!isNfcEnabled) {
       return;
     }
-    
+
     const currentScreen = navigationRef.getCurrentRoute()?.name;
 
     if (scannedTag?.id) {
@@ -104,7 +105,8 @@ export const FlashcardProvider = ({children}: Props) => {
             await getHtml(payload, currentScreen, scannedTag);
           } else {
             toastShow({
-              message: 'Card scans only work on Keypad, Invoice, and Rewards screens',
+              message:
+                'Card scans only work on Keypad, Invoice, and Rewards screens',
               type: 'info',
             });
           }
@@ -118,7 +120,6 @@ export const FlashcardProvider = ({children}: Props) => {
 
   const getPayDetails = async (payload: string, currentTag: TagEvent) => {
     try {
-
       // First, get the payment details for Lightning payment
       const lnurlParams = await getParams(payload);
       if ('tag' in lnurlParams && lnurlParams.tag === 'withdrawRequest') {
@@ -147,7 +148,6 @@ export const FlashcardProvider = ({children}: Props) => {
         } else {
         }
       }
-
     } catch (err) {
       toastShow({
         message:
@@ -163,7 +163,6 @@ export const FlashcardProvider = ({children}: Props) => {
     currentTag?: TagEvent,
   ) => {
     try {
-
       // Extract the full URL from the payload instead of just the query parameters
       const urlMatch = payload.match(/lnurlw?:\/\/[^?]+/);
 
@@ -232,7 +231,6 @@ export const FlashcardProvider = ({children}: Props) => {
 
   // Helper functions that return values instead of setting state
   const getLnurlFromHtml = (html: string): string | undefined => {
-
     // Try various LNURL patterns that might appear in the HTML
     const patterns = [
       // Original pattern from working version
@@ -274,6 +272,7 @@ export const FlashcardProvider = ({children}: Props) => {
     const balanceMatch = html.match(/(\d{1,3}(?:,\d{3})*)\s*SATS<\/dt>/);
     if (balanceMatch) {
       const parsedBalance = balanceMatch[1].replace(/,/g, '');
+      const parsedBalance = balanceMatch[1].replace(/,/g, '');
       const satoshiAmount = parseInt(parsedBalance, 10);
       return satoshiAmount;
     }
@@ -314,7 +313,6 @@ export const FlashcardProvider = ({children}: Props) => {
     cardBalanceInSats?: number,
   ) => {
     try {
-
       // Get existing stored cards
       const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
       const existingCards: StoredCardInfo[] = existingCardsJson
@@ -341,15 +339,13 @@ export const FlashcardProvider = ({children}: Props) => {
         STORED_CARDS_KEY,
         JSON.stringify(limitedCards),
       );
-    } catch (err) {
-    }
+    } catch (err) {}
   };
 
   const getStoredCardInfo = async (
     tagId: string,
   ): Promise<StoredCardInfo | null> => {
     try {
-
       const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
       if (!existingCardsJson) {
         return null;

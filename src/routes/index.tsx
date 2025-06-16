@@ -74,37 +74,6 @@ const Root = () => {
           animation: 'fade_from_bottom',
         }}
       />
-      <Stack.Screen
-        name="TransactionHistory"
-        component={TransactionHistory}
-        options={{
-          headerShown: false,
-          animation: 'slide_from_right',
-        }}
-      />
-      <Stack.Screen
-        name="RewardsSettings"
-        component={RewardsSettings}
-        options={{
-          headerShown: false,
-          animation: 'slide_from_right',
-        }}
-      />
-      <Stack.Screen
-        name="Paycode"
-        component={Paycode}
-        options={{
-          animation: 'slide_from_right',
-        }}
-      />
-      <Stack.Screen
-        name="RegisteredRewardCards"
-        component={RegisteredRewardCards}
-        options={{
-          headerShown: false,
-          animation: 'slide_from_right',
-        }}
-      />
     </Stack.Navigator>
   );
 };

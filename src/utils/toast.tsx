@@ -23,12 +23,21 @@ interface ToastProps {
   position?: 'top' | 'bottom';
 }
 
+interface ToastProps {
+  message: string;
+  onHide?: () => void;
+  type?: 'error' | 'success' | 'info';
+  autoHide?: boolean;
+  position?: 'top' | 'bottom';
+}
+
 export const toastShow = ({
   message,
   onHide,
   type = 'success',
   autoHide,
   position = 'top',
+}: ToastProps): void => {
 }: ToastProps): void => {
   Toast.show({
     type,
