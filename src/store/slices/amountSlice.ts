@@ -123,5 +123,6 @@ export const updateAmount =
         dispatch(setDisplayAmount(currentAmount));
       }
     } catch (err) {
+      console.log('UPDATE AMOUNT ERROR: ', err);
     }
   };

@@ -1,5 +1,5 @@
-import React, {useState} from 'react';
-import {RefreshControl, Dimensions} from 'react-native';
+import React from 'react';
+import {FlatList, RefreshControl} from 'react-native';
 import styled from 'styled-components/native';
 import {useNavigation} from '@react-navigation/native';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -20,30 +20,14 @@ import Refresh from '../assets/icons/refresh.svg';
 // store
 import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
 
-const {width: screenWidth} = Dimensions.get('window');
-
-// Responsive scaling functions
-const scale = (size: number) => (screenWidth / 375) * size;
-const isLargeDevice = screenWidth > 414;
-
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
 type NavigationProp = StackNavigationProp<RootStackType>;
 
-type FilterType =
-  | 'all'
-  | 'with-rewards'
-  | 'lightning'
-  | 'external'
-  | 'standalone';
-
-const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
+const TransactionHistory: React.FC<Props> = ({navigation}) => {
   const navigations = useNavigation<NavigationProp>();
   const {printReceipt} = usePrint();
   const dispatch = useAppDispatch();
   const {transactions} = useAppSelector(state => state.transactionHistory);
-
-  // Enhanced filter state for transaction types
-  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
   const onClearHistory = () => {
     dispatch(clearTransactionHistory());
@@ -61,203 +45,71 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       memo: transaction.memo,
       paymentHash: transaction.invoice.paymentHash,
       status: transaction.status,
-      transactionType: transaction.transactionType,
-      paymentMethod: transaction.paymentMethod,
-      rewardAmount: transaction.reward?.rewardAmount,
-      rewardRate: transaction.reward?.rewardRate,
     };
 
     printReceipt(receiptData);
   };
 
-  // Enhanced transaction filtering
-  const filteredTransactions = React.useMemo(() => {
-    switch (activeFilter) {
-      case 'with-rewards':
-        return transactions.filter(transaction => transaction.reward);
-      case 'lightning':
-        return transactions.filter(
-          transaction => transaction.transactionType === 'lightning',
-        );
-      case 'external':
-        return transactions.filter(
-          transaction => transaction.transactionType === 'rewards-only',
-        );
-      case 'standalone':
-        return transactions.filter(
-          transaction => transaction.transactionType === 'standalone',
-        );
-      default:
-        return transactions;
-    }
-  }, [transactions, activeFilter]);
+  const renderTransactionItem = ({item}: {item: TransactionData}) => (
+    <TransactionCard>
+      <TransactionHeader>
+        <StatusContainer>
+          <StatusIcon source={Check} />
+          <StatusText status={item.status}>
+            {item.status.toUpperCase()}
+          </StatusText>
+        </StatusContainer>
+        <DateText>
+          {moment(item.timestamp).format('MMM DD, YYYY HH:mm')}
+        </DateText>
+      </TransactionHeader>
 
-  // Enhanced statistics calculation
-  const statistics = React.useMemo(() => {
-    const lightningCount = transactions.filter(
-      t => t.transactionType === 'lightning',
-    ).length;
-    const externalCount = transactions.filter(
-      t => t.transactionType === 'rewards-only',
-    ).length;
-    const standaloneCount = transactions.filter(
-      t => t.transactionType === 'standalone',
-    ).length;
-    const withRewardsCount = transactions.filter(t => t.reward).length;
-    const totalRewardsGiven = transactions.reduce(
-      (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
-      0,
-    );
+      <AmountContainer>
+        {item.amount.isPrimaryAmountSats ? (
+          <>
+            <PrimaryAmount>{`${item.amount.satAmount} sats`}</PrimaryAmount>
+            <SecondaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</SecondaryAmount>
+          </>
+        ) : (
+          <>
+            <PrimaryAmount>{`${item.amount.currency.symbol} ${item.amount.displayAmount}`}</PrimaryAmount>
+            <SecondaryAmount>{`≈ ${item.amount.satAmount} sats`}</SecondaryAmount>
+          </>
+        )}
+      </AmountContainer>
 
-    return {
-      total: transactions.length,
-      lightning: lightningCount,
-      external: externalCount,
-      standalone: standaloneCount,
-      withRewards: withRewardsCount,
-      totalRewards: totalRewardsGiven,
-    };
-  }, [transactions]);
+      <TransactionDetails>
+        <DetailRow>
+          <DetailLabel>Paid to:</DetailLabel>
+          <DetailValue>{item.merchant.username}</DetailValue>
+        </DetailRow>
+        {item.memo && (
+          <DetailRow>
+            <DetailLabel>Description:</DetailLabel>
+            <DetailValue>{item.memo}</DetailValue>
+          </DetailRow>
+        )}
+        <DetailRow>
+          <DetailLabel>Payment ID:</DetailLabel>
+          <DetailValue numberOfLines={1} ellipsizeMode="middle">
+            {item.invoice.paymentHash || item.id}
+          </DetailValue>
+        </DetailRow>
+      </TransactionDetails>
 
-  // Get transaction type badge info
-  const getTransactionTypeBadge = (transaction: TransactionData) => {
-    switch (transaction.transactionType) {
-      case 'lightning':
-        return {icon: '⚡', label: 'Lightning', color: '#007856'};
-      case 'rewards-only':
-        return {icon: '💳', label: 'External Payment', color: '#FF9500'};
-      case 'standalone':
-        return {icon: '🏷️', label: 'Reward Only', color: '#6C757D'};
-      default:
-        return {icon: '📄', label: 'Transaction', color: '#6C757D'};
-    }
-  };
-
-  // Get payment method display
-  const getPaymentMethodDisplay = (paymentMethod?: PaymentMethod) => {
-    switch (paymentMethod) {
-      case 'cash':
-        return 'Cash';
-      case 'card':
-        return 'Card';
-      case 'check':
-        return 'Check';
-      case 'lightning':
-        return 'Lightning';
-      default:
-        return 'External';
-    }
-  };
-
-  const renderTransactionItem = ({item}: {item: TransactionData}) => {
-    const typeBadge = getTransactionTypeBadge(item);
-
-    return (
-      <TransactionCard>
-        {/* Compact header with amount and status/badges in one row */}
-        <CompactHeader>
-          <AmountAndMerchant>
-            <PrimaryAmount>
-              {item.amount.isPrimaryAmountSats
-                ? `${item.amount.satAmount} points`
-                : `${item.amount.currency.symbol} ${item.amount.displayAmount}`}
-            </PrimaryAmount>
-            <MerchantText>to {item.merchant.username}</MerchantText>
-          </AmountAndMerchant>
-
-          <HeaderBadges>
-            <StatusIcon source={Check} />
-            <TransactionTypeBadge color={typeBadge.color}>
-              <TransactionTypeBadgeText>
-                {typeBadge.icon} {typeBadge.label}
-              </TransactionTypeBadgeText>
-            </TransactionTypeBadge>
-            {item.reward && (
-              <RewardBadge>
-                <RewardBadgeText>
-                  +{item.reward.rewardAmount} sats
-                  {item.reward.sentToCard ? ' 💳' : ''}
-                </RewardBadgeText>
-              </RewardBadge>
-            )}
-          </HeaderBadges>
-        </CompactHeader>
-
-        {/* Compact details section */}
-        <CompactDetails>
-          <DetailItem>
-            <DetailIcon>📅</DetailIcon>
-            <DetailText>
-              {moment(item.timestamp).format('MMM DD, HH:mm')}
-            </DetailText>
-          </DetailItem>
-
-          {item.transactionType === 'rewards-only' && item.paymentMethod && (
-            <DetailItem>
-              <DetailIcon>💳</DetailIcon>
-              <DetailText>
-                {getPaymentMethodDisplay(item.paymentMethod)}
-              </DetailText>
-            </DetailItem>
-          )}
-
-          {item.memo && (
-            <DetailItem>
-              <DetailIcon>📝</DetailIcon>
-              <DetailText numberOfLines={1}>{item.memo}</DetailText>
-            </DetailItem>
-          )}
-
-          {item.reward && (
-            <DetailItem>
-              <DetailIcon>🎁</DetailIcon>
-              <DetailText>
-                {(item.reward.rewardRate * 100).toFixed(1)}% rate
-                {item.reward.wasMinimumApplied && ' (min applied)'}
-                {item.reward.wasMaximumApplied && ' (max applied)'}
-                {item.reward.sentToCard && ' • Sent to NFC card'}
-              </DetailText>
-            </DetailItem>
-          )}
-
-          {/* Show NFC card reward transfer status */}
-          {item.reward?.sentToCard && (
-            <DetailItem>
-              <DetailIcon>💳</DetailIcon>
-              <DetailText>
-                Rewards automatically sent to customer's NFC card
-              </DetailText>
-            </DetailItem>
-          )}
-        </CompactDetails>
-
-        {/* Minimal reprint button */}
+      <ButtonContainer>
         <ReprintButton onPress={() => onReprintTransaction(item)}>
           <ButtonIcon source={Refresh} />
-          <ButtonText>Reprint</ButtonText>
+          <ButtonText>Reprint Receipt</ButtonText>
         </ReprintButton>
-      </TransactionCard>
-    );
-  };
+      </ButtonContainer>
+    </TransactionCard>
+  );
 
   const renderEmptyState = () => (
     <EmptyContainer>
-      <EmptyText>
-        {activeFilter === 'with-rewards'
-          ? 'No transactions with rewards found'
-          : activeFilter === 'lightning'
-          ? 'No Lightning transactions found'
-          : activeFilter === 'external'
-          ? 'No external payment transactions found'
-          : activeFilter === 'standalone'
-          ? 'No standalone reward transactions found'
-          : 'No transactions found'}
-      </EmptyText>
-      <EmptySubtext>
-        {activeFilter === 'all'
-          ? 'Completed transactions will appear here'
-          : 'Matching transactions will appear here'}
-      </EmptySubtext>
+      <EmptyText>No transactions found</EmptyText>
+      <EmptySubtext>Completed transactions will appear here</EmptySubtext>
     </EmptyContainer>
   );
 
@@ -266,77 +118,18 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       <Container>
         <Header>
           <HeaderTitle>Transaction History</HeaderTitle>
-          <HeaderSubtitle>
-            {statistics.total} transactions
-            {statistics.totalRewards > 0 && (
-              <>
-                {' • '}
-                {statistics.totalRewards} points rewarded
-              </>
-            )}
-          </HeaderSubtitle>
+          <HeaderSubtitle>{transactions.length} transactions</HeaderSubtitle>
         </Header>
 
-        {/* Enhanced Filter Controls */}
-        {statistics.total > 0 && (
-          <FilterContainer>
-            <FilterScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <FilterButton
-                active={activeFilter === 'all'}
-                onPress={() => setActiveFilter('all')}>
-                <FilterButtonText active={activeFilter === 'all'}>
-                  All ({statistics.total})
-                </FilterButtonText>
-              </FilterButton>
-
-              {statistics.withRewards > 0 && (
-                <FilterButton
-                  active={activeFilter === 'with-rewards'}
-                  onPress={() => setActiveFilter('with-rewards')}>
-                  <FilterButtonText active={activeFilter === 'with-rewards'}>
-                    With Rewards ({statistics.withRewards})
-                  </FilterButtonText>
-                </FilterButton>
-              )}
-
-              {statistics.lightning > 0 && (
-                <FilterButton
-                  active={activeFilter === 'lightning'}
-                  onPress={() => setActiveFilter('lightning')}>
-                  <FilterButtonText active={activeFilter === 'lightning'}>
-                    ⚡ Lightning ({statistics.lightning})
-                  </FilterButtonText>
-                </FilterButton>
-              )}
-
-              {statistics.external > 0 && (
-                <FilterButton
-                  active={activeFilter === 'external'}
-                  onPress={() => setActiveFilter('external')}>
-                  <FilterButtonText active={activeFilter === 'external'}>
-                    💳 External ({statistics.external})
-                  </FilterButtonText>
-                </FilterButton>
-              )}
-
-              {statistics.standalone > 0 && (
-                <FilterButton
-                  active={activeFilter === 'standalone'}
-                  onPress={() => setActiveFilter('standalone')}>
-                  <FilterButtonText active={activeFilter === 'standalone'}>
-                    🏷️ Rewards ({statistics.standalone})
-                  </FilterButtonText>
-                </FilterButton>
-              )}
-            </FilterScrollView>
-          </FilterContainer>
-        )}
-
-        <StyledFlatList
-          data={filteredTransactions}
+        <FlatList
+          data={transactions}
           renderItem={renderTransactionItem}
-          keyExtractor={(item: TransactionData) => item.id}
+          keyExtractor={item => item.id}
           showsVerticalScrollIndicator={false}
+          contentContainerStyle={{
+            paddingBottom: 100,
+            flexGrow: 1,
+          }}
           ListEmptyComponent={renderEmptyState}
           refreshControl={
             <RefreshControl
@@ -348,8 +141,10 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       </Container>
       <ButtonWrapper>
         {transactions.length > 0 && (
-          <ClearHistoryButton
+          <SecondaryButton
             btnText="Clear History"
+            textStyle={{color: '#FF6B6B'}}
+            btnStyle={{borderColor: '#FF6B6B'}}
             onPress={onClearHistory}
           />
         )}
@@ -361,21 +156,9 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
 export default TransactionHistory;
 
-const StyledFlatList = styled.FlatList.attrs({
-  contentContainerStyle: {
-    paddingBottom: scale(100),
-    flexGrow: 1,
-  },
-})`` as React.ComponentType<any>;
-
-const ClearHistoryButton = styled(SecondaryButton).attrs({
-  textStyle: {color: '#FF6B6B'},
-  btnStyle: {borderColor: '#FF6B6B'},
-})``;
-
 const ButtonWrapper = styled.View`
-  padding: ${scale(20)}px;
-  padding-bottom: ${scale(40)}px;
+  padding: 20px;
+  padding-bottom: 40px;
 `;
 
 const Wrapper = styled.View`
@@ -386,106 +169,117 @@ const Wrapper = styled.View`
 const Container = styled.View`
   flex: 1;
   background-color: #ffffff;
-  max-width: ${isLargeDevice ? '600px' : '500px'};
-  align-self: center;
-  width: 100%;
 `;
 
 const Header = styled.View`
-  padding: ${scale(20)}px ${scale(16)}px;
+  padding: 20px;
   background-color: #007856;
 `;
 
 const HeaderTitle = styled.Text`
-  font-size: ${scale(20)}px;
+  font-size: 24px;
   font-family: 'Outfit-Bold';
   color: #ffffff;
-  text-align: center;
 `;
 
 const HeaderSubtitle = styled.Text`
-  font-size: ${scale(14)}px;
+  font-size: 14px;
   font-family: 'Outfit-Regular';
   color: #ffffff;
   opacity: 0.8;
-  margin-top: ${scale(4)}px;
-  text-align: center;
+  margin-top: 4px;
 `;
 
 const TransactionCard = styled.View`
   background-color: #ffffff;
-  margin: ${scale(8)}px ${scale(16)}px;
-  border-radius: ${scale(8)}px;
-  padding: ${scale(12)}px;
+  margin: 10px 20px;
+  border-radius: 12px;
+  padding: 16px;
   shadow-color: #000;
-  shadow-offset: 0px 1px;
-  shadow-opacity: 0.05;
-  shadow-radius: 2px;
-  elevation: 2;
+  shadow-offset: 0px 2px;
+  shadow-opacity: 0.1;
+  shadow-radius: 4px;
+  elevation: 3;
 `;
 
-const CompactHeader = styled.View`
+const TransactionHeader = styled.View`
   flex-direction: row;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: ${scale(8)}px;
+  align-items: center;
+  margin-bottom: 12px;
 `;
 
-const AmountAndMerchant = styled.View`
-  flex: 1;
-  margin-right: ${scale(12)}px;
-  min-width: 0;
-`;
-
-const MerchantText = styled.Text`
-  font-size: ${scale(12)}px;
-  font-family: 'Outfit-Regular';
-  color: #666666;
-  margin-top: ${scale(2)}px;
-`;
-
-const HeaderBadges = styled.View`
-  flex-direction: row;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  max-width: 40%;
-  justify-content: flex-end;
-`;
-
-const CompactDetails = styled.View`
-  margin-bottom: ${scale(8)}px;
-`;
-
-const DetailItem = styled.View`
+const StatusContainer = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-bottom: ${scale(4)}px;
 `;
 
-const DetailIcon = styled.Text`
-  font-size: ${scale(12)}px;
-  margin-right: ${scale(6)}px;
-  width: ${scale(16)}px;
+const StatusIcon = styled.Image`
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  tint-color: #007856;
 `;
 
-const DetailText = styled.Text`
-  font-size: ${scale(12)}px;
+const StatusText = styled.Text<{status: string}>`
+  font-size: 12px;
+  font-family: 'Outfit-Medium';
+  color: ${props => (props.status === 'completed' ? '#007856' : '#FF6B6B')};
+`;
+
+const DateText = styled.Text`
+  font-size: 12px;
   font-family: 'Outfit-Regular';
-  color: #555555;
-  flex: 1;
+  color: #666666;
+`;
+
+const AmountContainer = styled.View`
+  align-items: center;
+  margin-bottom: 16px;
 `;
 
 const PrimaryAmount = styled.Text`
-  font-size: ${scale(16)}px;
+  font-size: 20px;
   font-family: 'Outfit-Bold';
   color: #000000;
 `;
 
-const StatusIcon = styled.Image`
-  width: ${scale(14)}px;
-  height: ${scale(14)}px;
-  margin-right: ${scale(4)}px;
-  tint-color: #007856;
+const SecondaryAmount = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Regular';
+  color: #666666;
+  margin-top: 2px;
+`;
+
+const TransactionDetails = styled.View`
+  margin-bottom: 16px;
+`;
+
+const DetailRow = styled.View`
+  flex-direction: row;
+  justify-content: space-between;
+  margin-bottom: 8px;
+`;
+
+const DetailLabel = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: #666666;
+`;
+
+const DetailValue = styled.Text`
+  font-size: 14px;
+  font-family: 'Outfit-Regular';
+  color: #000000;
+  flex: 1;
+  text-align: right;
+  margin-left: 16px;
+`;
+
+const ButtonContainer = styled.View`
+  border-top-width: 1px;
+  border-top-color: #f0f0f0;
+  padding-top: 12px;
 `;
 
 const ReprintButton = styled.TouchableOpacity`
@@ -493,19 +287,19 @@ const ReprintButton = styled.TouchableOpacity`
   align-items: center;
   justify-content: center;
   background-color: #f8f9fa;
-  border-radius: ${scale(6)}px;
-  padding: ${scale(8)}px;
+  border-radius: 8px;
+  padding: 12px;
 `;
 
 const ButtonIcon = styled.Image`
-  width: ${scale(14)}px;
-  height: ${scale(14)}px;
-  margin-right: ${scale(6)}px;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
   tint-color: #007856;
 `;
 
 const ButtonText = styled.Text`
-  font-size: ${scale(12)}px;
+  font-size: 24px;
   font-family: 'Outfit-Medium';
   color: #007856;
 `;
@@ -514,78 +308,35 @@ const EmptyContainer = styled.View`
   flex: 1;
   justify-content: center;
   align-items: center;
-  padding: ${scale(40)}px;
+  padding: 40px;
 `;
 
 const EmptyText = styled.Text`
-  font-size: ${scale(18)}px;
+  font-size: 18px;
   font-family: 'Outfit-Medium';
   color: #666666;
   text-align: center;
 `;
 
 const EmptySubtext = styled.Text`
-  font-size: ${scale(14)}px;
+  font-size: 14px;
   font-family: 'Outfit-Regular';
   color: #999999;
   text-align: center;
-  margin-top: ${scale(8)}px;
+  margin-top: 8px;
 `;
 
-const RewardBadge = styled.View`
-  background-color: #007856;
-  border-radius: ${scale(12)}px;
-  padding-horizontal: ${scale(6)}px;
-  padding-vertical: ${scale(2)}px;
-  margin-left: ${scale(4)}px;
-  margin-top: ${scale(2)}px;
-  max-width: ${scale(120)}px;
-`;
-
-const RewardBadgeText = styled.Text`
-  font-size: ${scale(9)}px;
-  font-family: 'Outfit-Medium';
-  color: #ffffff;
-  text-align: center;
-`;
-
-const FilterContainer = styled.View`
-  flex-direction: row;
-  padding: ${scale(10)}px ${scale(20)}px;
-  background-color: #f8f9fa;
-  border-bottom-width: 1px;
-  border-bottom-color: #e9ecef;
-`;
-
-const FilterScrollView = styled.ScrollView`
-  flex: 1;
-`;
-
-const FilterButton = styled.TouchableOpacity<{active: boolean}>`
-  padding: ${scale(8)}px ${scale(16)}px;
-  border-radius: ${scale(8)}px;
-  margin-horizontal: ${scale(4)}px;
-  background-color: ${props => (props.active ? '#007856' : 'transparent')};
-`;
-
-const FilterButtonText = styled.Text<{active: boolean}>`
-  font-size: ${scale(14)}px;
-  font-family: 'Outfit-Medium';
-  color: ${props => (props.active ? '#ffffff' : '#666666')};
-  text-align: center;
-`;
-
-const TransactionTypeBadge = styled.View<{color: string}>`
-  background-color: ${props => props.color};
-  border-radius: ${scale(12)}px;
-  padding-horizontal: ${scale(6)}px;
-  padding-vertical: ${scale(2)}px;
-  margin-left: ${scale(4)}px;
-  margin-top: ${scale(2)}px;
-`;
-
-const TransactionTypeBadgeText = styled.Text`
-  font-size: ${scale(9)}px;
-  font-family: 'Outfit-Medium';
-  color: #ffffff;
+const FooterContainer = styled.View`
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  right: 20px;
+  background-color: #ffffff;
+  padding: 16px;
+  border-radius: 12px;
+  shadow-color: #000;
+  shadow-offset: 0px -2px;
+  shadow-opacity: 0.1;
+  shadow-radius: 4px;
+  elevation: 5;
 `;

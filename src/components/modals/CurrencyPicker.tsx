@@ -9,14 +9,10 @@ import {CurrencyList} from '../../graphql/queries';
 // hooks
 import {useQuery} from '@apollo/client';
 import {useAppDispatch, useAppSelector} from '../../store/hooks';
-import {useActivityIndicator, useRealtimePrice} from '../../hooks';
+import {useActivityIndicator} from '../../hooks';
 
 // store
-import {
-  setCurrency,
-  setDisplayAmount,
-  setSatAmount,
-} from '../../store/slices/amountSlice';
+import {setCurrency} from '../../store/slices/amountSlice';
 
 type Props = {
   btnStyle?: ViewStyle;
@@ -24,51 +20,17 @@ type Props = {
 };
 
 const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
-  const {loading, data} = useQuery<CurrencyList>(CurrencyList);
+  const {loading, error, data} = useQuery<CurrencyList>(CurrencyList);
 
   const dispatch = useAppDispatch();
-  const {currency, displayAmount} = useAppSelector(state => state.amount);
+  const {currency} = useAppSelector(state => state.amount);
   const {toggleLoading} = useActivityIndicator();
-  const {satsToCurrency, currencyToSats} = useRealtimePrice();
 
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
     toggleLoading(loading);
-  }, [loading, toggleLoading]);
-
-  const handleCurrencyChange = async (newCurrency: CurrencyItem) => {
-    const currentDisplayAmount = displayAmount;
-
-    // First update the currency
-    dispatch(setCurrency(newCurrency));
-
-    // If there's an existing amount, convert it to the new currency
-    if (currentDisplayAmount && Number(currentDisplayAmount) > 0) {
-      try {
-        // Convert current display amount to sats first
-        const {convertedCurrencyAmount: satsFromCurrentCurrency} =
-          currencyToSats(Number(currentDisplayAmount));
-
-        // Then convert sats to new currency amount
-        const {formattedCurrency: newDisplayAmount} = satsToCurrency(
-          satsFromCurrentCurrency,
-        );
-
-        // Extract just the number part for display amount
-        const numericAmount = newDisplayAmount.replace(/[^0-9.]/g, '');
-
-        // Update both display and sat amounts
-        dispatch(setDisplayAmount(numericAmount));
-        dispatch(setSatAmount(satsFromCurrentCurrency.toString()));
-      } catch (error) {
-        // Currency conversion failed, keeping current amounts
-        // If conversion fails, keep the current amounts
-      }
-    }
-
-    setVisible(false);
-  };
+  }, [loading]);
 
   return (
     <Wrapper>
@@ -95,11 +57,14 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
               </Close>
             </RowWrapper>
             <ScrollWrapper>
-              {data?.currencyList.map(currencyItem => (
+              {data?.currencyList.map(currency => (
                 <ItemBtn
-                  key={currencyItem.id}
-                  onPress={() => handleCurrencyChange(currencyItem)}>
-                  <ItemText>{`${currencyItem.id} - ${currencyItem.name} ${currencyItem.flag}`}</ItemText>
+                  key={currency.id}
+                  onPress={() => {
+                    setVisible(false);
+                    dispatch(setCurrency(currency));
+                  }}>
+                  <ItemText>{`${currency.id} - ${currency.name} ${currency.flag}`}</ItemText>
                 </ItemBtn>
               ))}
             </ScrollWrapper>

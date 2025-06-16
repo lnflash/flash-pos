@@ -1,16 +1,14 @@
-import React, {useEffect} from 'react';
-import {Dimensions, BackHandler} from 'react-native';
+import React from 'react';
+import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
-import * as Animatable from 'react-native-animatable';
 import {StackScreenProps} from '@react-navigation/stack';
-import {useFocusEffect} from '@react-navigation/native';
 
 // components
 import {PrimaryButton} from '../components';
 
 // hooks
+import {useAppSelector} from '../store/hooks';
 import {useRealtimePrice} from '../hooks';
-import {useFlashcard} from '../hooks';
 
 // assets
 import Reward from '../assets/icons/reward.svg';
@@ -20,28 +18,12 @@ const width = Dimensions.get('screen').width;
 type Props = StackScreenProps<RootStackType, 'RewardsSuccess'>;
 
 const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
-  const {
-    rewardSatAmount,
-    balance,
-    purchaseDisplayAmount,
-    rewardRate,
-    calculationType,
-    isExternalPayment,
-    paymentMethod,
-  } = route.params;
+  const {rewardSatAmount, balance} = route.params;
+  const {currency} = useAppSelector(state => state.amount);
 
   const {satsToCurrency} = useRealtimePrice();
-  const {setNfcEnabled} = useFlashcard();
-  const {formattedCurrency} = satsToCurrency(rewardSatAmount);
 
-  // Disable NFC on mount and re-enable on unmount
-  useEffect(() => {
-    setNfcEnabled(false);
-    
-    return () => {
-      setNfcEnabled(true);
-    };
-  }, [setNfcEnabled]);
+  const {formattedCurrency} = satsToCurrency(rewardSatAmount);
 
   const onDone = () => {
     navigation.reset({
@@ -50,128 +32,21 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
     });
   };
 
-  // Determine reward context
-  const isPurchaseBased = calculationType === 'purchase-based';
-  const rewardPercentage =
-    isPurchaseBased && rewardRate ? (rewardRate * 100).toFixed(1) : null;
-
-  // Get payment method display info
-  const getPaymentMethodInfo = () => {
-    switch (paymentMethod) {
-      case 'cash':
-        return {icon: '💵', name: 'Cash Payment'};
-      case 'card':
-        return {icon: '💳', name: 'Card Payment'};
-      case 'check':
-        return {icon: '📄', name: 'Check Payment'};
-      default:
-        return {icon: '🏪', name: 'External Payment'};
-    }
-  };
-
-  const paymentInfo = getPaymentMethodInfo();
-
-  useEffect(() => {
-    const backHandler = BackHandler.addEventListener(
-      'hardwareBackPress',
-      () => {
-        return true;
-      },
-    );
-
-    return () => {
-      backHandler.remove();
-    };
-  }, []);
-
-  useFocusEffect(
-    React.useCallback(() => {
-      const backHandler = BackHandler.addEventListener(
-        'hardwareBackPress',
-        () => {
-          return true;
-        },
-      );
-
-      return () => {
-        backHandler.remove();
-      };
-    }, []),
-  );
-
   return (
     <Wrapper>
       <InnerWrapper>
-        {/* Simplified Success Header */}
-        <Animatable.View animation="bounceIn" duration={1000} delay={200}>
-          <SuccessHeader>
-            <SuccessTitle>🎉 Reward Earned!</SuccessTitle>
-          </SuccessHeader>
-        </Animatable.View>
-
-        {/* Simplified Reward Amount Card */}
-        <Animatable.View animation="zoomIn" duration={800} delay={400}>
-          <RewardCard>
-            <Image source={Reward} />
-            <RewardAmountContainer>
-              <RewardAmountText>{rewardSatAmount} points</RewardAmountText>
-              <RewardCurrencyText>
-                {formattedCurrency || '0'}
-              </RewardCurrencyText>
-            </RewardAmountContainer>
-          </RewardCard>
-        </Animatable.View>
-
-        {/* Simplified Purchase Context for External Payments */}
-        {isExternalPayment && purchaseDisplayAmount && (
-          <Animatable.View animation="fadeInUp" duration={800} delay={600}>
-            <PurchaseContextCard>
-              <PurchaseDetailRow>
-                <PurchaseDetailLabel>Payment</PurchaseDetailLabel>
-                <PurchaseDetailValue>
-                  {purchaseDisplayAmount}
-                </PurchaseDetailValue>
-              </PurchaseDetailRow>
-              <PurchaseDetailRow>
-                <PurchaseDetailLabel>Bitcoin Earned</PurchaseDetailLabel>
-                <PurchaseDetailValue highlight>
-                  {rewardSatAmount} points
-                </PurchaseDetailValue>
-              </PurchaseDetailRow>
-            </PurchaseContextCard>
-          </Animatable.View>
-        )}
-
-        {/* Updated Balance */}
-        <Animatable.View animation="fadeIn" duration={800} delay={800}>
-          <BalanceContainer>
-            <BalanceLabel>New Balance</BalanceLabel>
-            <BalanceAmount>{balance}</BalanceAmount>
-          </BalanceContainer>
-        </Animatable.View>
+        <Title>{balance}</Title>
+        <Image source={Reward} />
+        <Subtitle>The Reward has been given!</Subtitle>
+        <PrimaryAmount>{`${formattedCurrency || 0}`}</PrimaryAmount>
+        <SecondaryAmount>{`≈ ${rewardSatAmount || 0} sats`}</SecondaryAmount>
       </InnerWrapper>
-
-      <Animatable.View animation="slideInUp" duration={600} delay={1000}>
-        <PrimaryButton
-          btnText="Continue"
-          textStyle={{
-            color: '#007856',
-            fontSize: 18,
-            fontFamily: 'Outfit-Bold',
-          }}
-          btnStyle={{
-            backgroundColor: '#fff',
-            borderRadius: 16,
-            paddingVertical: 16,
-            shadowColor: '#000',
-            shadowOffset: {width: 0, height: 4},
-            shadowOpacity: 0.2,
-            shadowRadius: 8,
-            elevation: 8,
-          }}
-          onPress={onDone}
-        />
-      </Animatable.View>
+      <PrimaryButton
+        btnText="Done"
+        textStyle={{color: '#002118'}}
+        btnStyle={{backgroundColor: '#fff'}}
+        onPress={onDone}
+      />
     </Wrapper>
   );
 };
@@ -181,175 +56,46 @@ export default RewardsSuccess;
 const Wrapper = styled.View`
   flex: 1;
   background-color: #007856;
-  padding: 20px;
-  padding-top: 60px;
+  padding-bottom: 20px;
+  padding-horizontal: 20px;
 `;
 
 const InnerWrapper = styled.View`
   flex: 1;
   align-items: center;
   justify-content: center;
-  padding-bottom: 40px;
 `;
 
-const SuccessHeader = styled.View`
-  align-items: center;
-  margin-bottom: 30px;
-`;
-
-const SuccessTitle = styled.Text`
-  font-size: 32px;
-  font-family: 'Outfit-Bold';
+const Title = styled.Text`
+  font-size: 40px;
+  font-family: 'Outfit-Medium';
   text-align: center;
   color: #fff;
-  margin-bottom: 12px;
+  margin-bottom: 20px;
 `;
 
-const SuccessSubtitle = styled.Text`
-  font-size: 16px;
+const Subtitle = styled.Text`
+  font-size: 26px;
   font-family: 'Outfit-Regular';
   text-align: center;
-  color: rgba(255, 255, 255, 0.9);
-  line-height: 22px;
-  max-width: 300px;
+  color: #fff;
+  margin-top: 20px;
 `;
 
-const RewardCard = styled.View`
-  background-color: rgba(255, 255, 255, 0.95);
-  border-radius: 24px;
-  padding: 32px;
-  align-items: center;
-  shadow-color: #000;
-  shadow-offset: 0px 8px;
-  shadow-opacity: 0.3;
-  shadow-radius: 16px;
-  elevation: 12;
-  margin-bottom: 24px;
-  min-width: 280px;
+const PrimaryAmount = styled.Text`
+  font-size: 40px;
+  font-family: 'Outfit-Regular';
+  color: #fff;
+`;
+
+const SecondaryAmount = styled.Text`
+  font-size: 26px;
+  font-family: 'Outfit-Regular';
+  color: #fff;
+  opacity: 0.8;
 `;
 
 const Image = styled.Image`
-  width: ${Math.min(width - 200, 120)}px;
-  height: ${Math.min(width - 200, 120)}px;
-  margin-bottom: 16px;
-`;
-
-const RewardAmountContainer = styled.View`
-  align-items: center;
-`;
-
-const RewardAmountText = styled.Text`
-  font-size: 36px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  margin-bottom: 4px;
-`;
-
-const RewardCurrencyText = styled.Text`
-  font-size: 18px;
-  font-family: 'Outfit-Medium';
-  color: #666666;
-`;
-
-const PurchaseContextCard = styled.View`
-  background-color: rgba(255, 255, 255, 0.9);
-  border-radius: 20px;
-  padding: 20px;
-  margin-bottom: 20px;
-  shadow-color: #000;
-  shadow-offset: 0px 4px;
-  shadow-opacity: 0.2;
-  shadow-radius: 8px;
-  elevation: 6;
-  min-width: 300px;
-`;
-
-const PurchaseContextHeader = styled.View`
-  flex-direction: row;
-  align-items: center;
-  margin-bottom: 16px;
-`;
-
-const PurchaseIcon = styled.Text`
-  font-size: 24px;
-  margin-right: 8px;
-`;
-
-const PurchaseContextTitle = styled.Text`
-  font-size: 18px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  flex: 1;
-`;
-
-const PurchaseDetailRow = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-`;
-
-const PurchaseDetailLabel = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Medium';
-  color: #666666;
-`;
-
-const PurchaseDetailValue = styled.Text<{highlight?: boolean}>`
-  font-size: 14px;
-  font-family: 'Outfit-Bold';
-  color: ${props => (props.highlight ? '#007856' : '#000000')};
-`;
-
-const StandaloneCard = styled.View`
-  background-color: rgba(255, 255, 255, 0.9);
-  border-radius: 20px;
-  padding: 24px;
-  align-items: center;
-  margin-bottom: 20px;
-  shadow-color: #000;
-  shadow-offset: 0px 4px;
-  shadow-opacity: 0.2;
-  shadow-radius: 8px;
-  elevation: 6;
-  min-width: 280px;
-`;
-
-const StandaloneIcon = styled.Text`
-  font-size: 48px;
-  margin-bottom: 12px;
-`;
-
-const StandaloneTitle = styled.Text`
-  font-size: 20px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  margin-bottom: 8px;
-`;
-
-const StandaloneMessage = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: #666666;
-  text-align: center;
-  line-height: 20px;
-`;
-
-const BalanceContainer = styled.View`
-  align-items: center;
-  margin-top: 20px;
-  margin-bottom: 40px;
-`;
-
-const BalanceLabel = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Medium';
-  color: rgba(255, 255, 255, 0.9);
-  margin-bottom: 4px;
-`;
-
-const BalanceAmount = styled.Text`
-  font-size: 24px;
-  font-family: 'Outfit-Bold';
-  color: #fff;
+  width: ${width - 80}px;
+  height: ${width - 80}px;
 `;

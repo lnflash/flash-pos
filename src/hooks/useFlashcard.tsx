@@ -11,13 +11,7 @@ interface ContextProps {
   transactions?: TransactionList;
   loading?: boolean;
   error?: string;
-  isNfcEnabled?: boolean;
   resetFlashcard: () => void;
-  setNfcEnabled: (enabled: boolean) => void;
-  getCardRewardLnurl: () => string | undefined;
-  getAllStoredCards: () => Promise<StoredCardInfo[]>;
-  deleteStoredCard: (tagId: string) => Promise<boolean>;
-  clearAllStoredCards: () => Promise<boolean>;
 }
 
 export const useFlashcard = () => {

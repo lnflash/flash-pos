@@ -21,7 +21,7 @@ const usePrint = () => {
     PrinterModule.setTextBold(true);
     PrinterModule.printText(`Sale completed\n`);
     PrinterModule.printText(`${currency.symbol} ${displayAmount}\n`);
-    PrinterModule.printText(`≈ ${satAmount} points\n`);
+    PrinterModule.printText(`≈ ${satAmount} sats\n`);
     PrinterModule.setTextBold(false);
     PrinterModule.printText(`========================\n`);
     PrinterModule.printText(`Paid to:   ${username}\n`);
@@ -47,7 +47,7 @@ const usePrint = () => {
               <p style="padding: 0; margin: 0; font-size: 10">${
                 currency.symbol
               } ${displayAmount}</p>
-              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${satAmount} points</p>
+              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${satAmount} sats</p>
             </div>
             <div>
               <div style="display: flex;justify-content: space-between; margin-bottom: 5px">
@@ -114,19 +114,13 @@ const usePrint = () => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
     PrinterModule.printText(`Sale completed\n`);
-    PrinterModule.printText(
-      `${receiptData.currency.symbol} ${receiptData.displayAmount}\n`,
-    );
-    PrinterModule.printText(`≈ ${receiptData.satAmount} points\n`);
+    PrinterModule.printText(`${receiptData.currency.symbol} ${receiptData.displayAmount}\n`);
+    PrinterModule.printText(`≈ ${receiptData.satAmount} sats\n`);
     PrinterModule.setTextBold(false);
     PrinterModule.printText(`========================\n`);
     PrinterModule.printText(`Paid to:   ${receiptData.username}\n`);
-    PrinterModule.printText(
-      `Date:   ${moment(receiptData.timestamp).format('L')}\n`,
-    );
-    PrinterModule.printText(
-      `Time:   ${moment(receiptData.timestamp).format('LTS')}\n`,
-    );
+    PrinterModule.printText(`Date:   ${moment(receiptData.timestamp).format('L')}\n`);
+    PrinterModule.printText(`Time:   ${moment(receiptData.timestamp).format('LTS')}\n`);
     PrinterModule.printText(`Status:   ${receiptData.status}\n`);
     PrinterModule.printText(`Description:   ${receiptData.memo || 'none'}\n`);
     PrinterModule.printText('========================\n');
@@ -144,43 +138,29 @@ const usePrint = () => {
           <div style="display: flex;flex-direction: column;">
             <div style="display: flex;flex-direction: column;align-items: center;">
               <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 13; font-weight: 600">Sale completed</p>
-              <p style="padding: 0; margin: 0; font-size: 10">${
-                receiptData.currency.symbol
-              } ${receiptData.displayAmount}</p>
-              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${
-                receiptData.satAmount
-              } points</p>
+              <p style="padding: 0; margin: 0; font-size: 10">${receiptData.currency.symbol} ${receiptData.displayAmount}</p>
+              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 10">≈ ${receiptData.satAmount} sats</p>
             </div>
             <div>
               <div style="display: flex;justify-content: space-between; margin-bottom: 5px">
                 <p style="padding: 0; margin: 0; font-size: 10">Paid to: </p>
-                <p style="padding: 0; margin: 0; font-size: 10">${
-                  receiptData.username
-                }</p>
+                <p style="padding: 0; margin: 0; font-size: 10">${receiptData.username}</p>
               </div>
               <div style="display: flex; justify-content: space-between; padding: 0; margin: 0; margin-bottom: 5px">
                 <p style="padding: 0; margin: 0; font-size: 10">Date: </p>
-                <p style="padding: 0; margin: 0; font-size: 10">${moment(
-                  receiptData.timestamp,
-                ).format('L')}</p>
+                <p style="padding: 0; margin: 0; font-size: 10">${moment(receiptData.timestamp).format('L')}</p>
               </div>
               <div style="display: flex; justify-content: space-between; padding: 0; margin: 0; margin-bottom: 5px">
                 <p style="padding: 0; margin: 0; font-size: 10">Time: </p>
-                <p style="padding: 0; margin: 0; font-size: 10">${moment(
-                  receiptData.timestamp,
-                ).format('LTS')}</p>
+                <p style="padding: 0; margin: 0; font-size: 10">${moment(receiptData.timestamp).format('LTS')}</p>
               </div>
               <div style="display: flex;justify-content: space-between; margin-bottom: 5px">
                 <p style="padding: 0; margin: 0; font-size: 10">Status: </p>
-                <p style="padding: 0; margin: 0; font-size: 10">${
-                  receiptData.status
-                }</p>
+                <p style="padding: 0; margin: 0; font-size: 10">${receiptData.status}</p>
               </div>
               <div style="display: flex;justify-content: space-between; margin-bottom: 20px">
                 <p style="padding: 0; margin: 0; font-size: 10">Description: </p>
-                <p style="padding: 0; margin: 0; font-size: 10">${
-                  receiptData.memo || 'none'
-                }</p>
+                <p style="padding: 0; margin: 0; font-size: 10">${receiptData.memo || 'none'}</p>
               </div>
             </div>
             <div style="padding-bottom: 40px; display: flex; flex-direction: column; align-items: center;">
