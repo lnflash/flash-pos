@@ -74,7 +74,7 @@ const useNfc = (paymentRequest: string) => {
               } else if (lnurlResponse.status == 'OK') {
                 navigation.navigate('Success', {title: lnurlResponse.reason});
               }
-              console.log('RESPONSE>>>>>>>>>>>>>>>>>>', lnurlResponse);
+              // LNURL response received successfully
             } else {
               toastShow({
                 message: `not a properly configured lnurl withdraw tag\n\n${payload}\n\n${
@@ -84,7 +84,6 @@ const useNfc = (paymentRequest: string) => {
               });
             }
           } catch (err) {
-            console.log('NFC ERROR:', err);
           }
         }
         toggleLoading(false);

@@ -4,7 +4,7 @@ import Toast, {
   BaseToastProps,
 } from 'react-native-toast-message';
 
-const toastStyle = {fontSize: 16};
+const toastStyle = {fontSize: 14};
 
 export const toastConfig = {
   success: (props: BaseToastProps) => (
