@@ -34,7 +34,7 @@ const RecentActivity: React.FC<Props> = ({transactions}) => {
           <DisplayAmount>
             {satsToCurrency(sats).formattedCurrency}
           </DisplayAmount>
-          <Sats>{`${item.sats} SATS`}</Sats>
+          <Sats>{`${item.sats} POINTS`}</Sats>
         </ColumnWrapper>
       </RowWrapper>
     );

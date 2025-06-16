@@ -1,9 +1,16 @@
-import React, {useEffect} from 'react';
+import React, {useCallback, useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
+import {useFocusEffect} from '@react-navigation/native';
 
 // components
-import {Amount, Note, NumPad, PrimaryButton} from '../components';
+import {
+  Amount,
+  Note,
+  NumPad,
+  PrimaryButton,
+  SecondaryButton,
+} from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -16,7 +23,8 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
-import {setIsPrimaryAmountSats} from '../store/slices/amountSlice';
+import {setIsPrimaryAmountSats, resetAmount} from '../store/slices/amountSlice';
+import {selectRewardConfig} from '../store/slices/rewardSlice';
 
 // utils
 import {toastShow} from '../utils/toast';
@@ -35,6 +43,7 @@ const Keypad = () => {
   const {walletId} = useAppSelector(state => state.user);
   const {satAmount, memo, displayAmount, currency, isPrimaryAmountSats} =
     useAppSelector(state => state.amount);
+  const rewardConfig = useAppSelector(selectRewardConfig);
 
   // Ensure currency is always shown as primary amount since toggle is hidden
   useEffect(() => {
@@ -42,6 +51,35 @@ const Keypad = () => {
       dispatch(setIsPrimaryAmountSats(false));
     }
   }, [isPrimaryAmountSats, dispatch]);
+
+  // Reset amount when returning to the keypad screen
+  useFocusEffect(
+    useCallback(() => {
+      dispatch(resetAmount());
+    }, [dispatch]),
+  );
+
+  const isValidAmount =
+    displayAmount && displayAmount !== '0' && Number(displayAmount) > 0;
+
+  // External Payment Rewards - "Give Points" functionality
+  const onGivePoints = useCallback(() => {
+    if (!satAmount || !displayAmount || !isValidAmount) {
+      toastShow({
+        message: 'Please enter a valid amount',
+        type: 'error',
+      });
+      return;
+    }
+
+    navigation.navigate('Rewards', {
+      purchaseAmount: Number(satAmount),
+      purchaseCurrency: currency.id,
+      purchaseDisplayAmount: `${currency.symbol}${displayAmount}`,
+      isExternalPayment: true,
+      paymentMethod: 'external',
+    });
+  }, [satAmount, displayAmount, currency, navigation, isValidAmount]);
 
   const onCreateInvoice = async () => {
     try {
@@ -149,7 +187,29 @@ const Keypad = () => {
         <NumPad />
       </BodyWrapper>
       <BtnsWrapper>
-        <PrimaryButton btnText="Next" onPress={onCreateInvoice} />
+        <ButtonRow>
+          {rewardConfig.isEnabled && (
+            <SecondaryButton
+              btnText="Give Points"
+              onPress={isValidAmount ? onGivePoints : () => {}}
+              btnStyle={{
+                flex: 1,
+                marginRight: rewardConfig.isEnabled ? 8 : 0,
+                marginBottom: 0,
+                paddingVertical: 15,
+              }}
+            />
+          )}
+          <PrimaryButton
+            btnText="Next"
+            onPress={isValidAmount ? onCreateInvoice : () => {}}
+            btnStyle={{
+              flex: 1,
+              marginLeft: rewardConfig.isEnabled ? 8 : 0,
+              paddingVertical: 15,
+            }}
+          />
+        </ButtonRow>
       </BtnsWrapper>
     </Wrapper>
   );
@@ -169,4 +229,11 @@ const BodyWrapper = styled.View`
 
 const BtnsWrapper = styled.View`
   padding-horizontal: 20px;
+`;
+
+const ButtonRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0px;
 `;

@@ -8,6 +8,7 @@ import {PrimaryButton, SecondaryButton} from '../components';
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {usePrint} from '../hooks';
+import {useFlashcard} from '../hooks';
 
 // assets
 import Check from '../assets/icons/check.svg';
@@ -21,57 +22,26 @@ type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const Success: React.FC<Props> = ({navigation, route}) => {
   const {printSilently, printReceipt} = usePrint();
+  const {setNfcEnabled} = useFlashcard();
 
   const dispatch = useAppDispatch();
-  const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
-    useAppSelector(state => state.amount);
-  const {username} = useAppSelector(state => state.user);
-  const {paymentHash, paymentRequest, paymentSecret} = useAppSelector(
-    state => state.invoice,
-  );
+  const {displayAmount, currency} = useAppSelector(state => state.amount);
   const {lastTransaction} = useAppSelector(state => state.transactionHistory);
 
   // Track whether receipt has been printed
   const [hasBeenPrinted, setHasBeenPrinted] = React.useState(false);
 
-  // Create and store transaction data when component mounts
+  // Disable NFC on mount and re-enable on unmount
   useEffect(() => {
-    const transactionData: TransactionData = {
-      id: paymentHash || `tx_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      transactionType: 'standalone',
-      paymentMethod: undefined,
-      amount: {
-        satAmount: Number(satAmount) || 0,
-        displayAmount: displayAmount || '0',
-        currency,
-        isPrimaryAmountSats: isPrimaryAmountSats || false,
-      },
-      merchant: {
-        username: username || 'Unknown',
-      },
-      invoice: {
-        paymentHash: paymentHash || '',
-        paymentRequest: paymentRequest || '',
-        paymentSecret: paymentSecret || '',
-      },
-      memo,
-      status: 'completed',
-    };
+    setNfcEnabled(false);
 
-    dispatch(addTransaction(transactionData));
-  }, [
-    dispatch,
-    satAmount,
-    displayAmount,
-    currency,
-    isPrimaryAmountSats,
-    username,
-    paymentHash,
-    paymentRequest,
-    paymentSecret,
-    memo,
-  ]);
+    return () => {
+      setNfcEnabled(true);
+    };
+  }, [setNfcEnabled]);
+
+  // Note: Transaction creation is now handled in the Invoice screen to include reward information
+  // This prevents duplicate transactions and ensures reward data is properly recorded
 
   const onDone = () => {
     dispatch(resetInvoice());
