@@ -293,7 +293,7 @@ export const rewardSlice = createSlice({
     setEventModeEnabled: (state, action) => ({
       ...state,
       eventModeEnabled: action.payload,
-      eventActive: action.payload && state.eventActive, // Deactivate if disabling
+      eventActive: action.payload, // Explicitly set based on action.payload
       error: '',
     }),
     setEventRewardLimit: (state, action) => ({
