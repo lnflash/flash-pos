@@ -13,6 +13,7 @@ type RootStackType = {
   TransactionHistory: undefined;
   RewardsSettings: undefined;
   RegisteredRewardCards: undefined;
+  EventSettings: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility

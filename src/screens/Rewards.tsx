@@ -28,7 +28,17 @@ import {
 } from '../utils/transactionHelpers';
 
 // selectors
-import {selectRewardConfig, selectMerchantRewardId} from '../store/slices/rewardSlice';
+import {
+  selectRewardConfig,
+  selectMerchantRewardId,
+  selectEventConfig,
+  selectEventActive,
+  selectEventMinPurchaseAmount,
+  selectEventCustomerRewardLimit,
+  selectEventRewardedCustomers,
+  selectEventMerchantRewardId,
+  trackEventReward,
+} from '../store/slices/rewardSlice';
 import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 const width = Dimensions.get('screen').width;
@@ -53,6 +63,22 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   const {username} = useAppSelector(state => state.user);
   const {currency} = useAppSelector(state => state.amount);
 
+  // Event mode configuration
+  const eventConfig = useAppSelector(selectEventConfig);
+  const eventActive = useAppSelector(selectEventActive);
+  const eventMinPurchaseAmount = useAppSelector(selectEventMinPurchaseAmount);
+  const eventCustomerRewardLimit = useAppSelector(
+    selectEventCustomerRewardLimit,
+  );
+  const eventRewardedCustomers = useAppSelector(selectEventRewardedCustomers);
+  const eventMerchantRewardId = useAppSelector(selectEventMerchantRewardId);
+
+  // Use event merchant ID if event is active, otherwise use regular merchant ID
+  const effectiveMerchantRewardId =
+    eventActive && eventMerchantRewardId
+      ? eventMerchantRewardId
+      : merchantRewardId;
+
   // Security: Cooldown protection against duplicate rewards
   const [isProcessingReward, setIsProcessingReward] = useState(false);
   const lastRewardTime = useRef<number>(0);
@@ -60,8 +86,13 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   // Calculate reward based on purchase context or standalone
   const rewardCalculation = useMemo(
-    () => calculateReward(purchaseAmount, rewardConfig),
-    [purchaseAmount, rewardConfig],
+    () =>
+      calculateReward(purchaseAmount, {
+        ...rewardConfig,
+        eventActive,
+        eventRewardRate: eventConfig.eventRewardRate,
+      }),
+    [purchaseAmount, rewardConfig, eventActive, eventConfig.eventRewardRate],
   );
 
   // Format reward information for display with external payment context
@@ -124,6 +155,32 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       return;
     }
 
+    // Event mode validations
+    if (eventActive) {
+      // Check minimum purchase amount for event
+      if (purchaseAmount && purchaseAmount < eventMinPurchaseAmount) {
+        toastShow({
+          message: `Minimum purchase of ${eventMinPurchaseAmount} sats required for event rewards.`,
+          type: 'error',
+        });
+        return;
+      }
+
+      // Check customer reward limit
+      if (lnurl && eventRewardedCustomers.includes(lnurl)) {
+        const customerRewardCount = eventRewardedCustomers.filter(
+          (id: string) => id === lnurl,
+        ).length;
+        if (customerRewardCount >= eventCustomerRewardLimit) {
+          toastShow({
+            message: 'You have reached the maximum rewards for this event.',
+            type: 'info',
+          });
+          return;
+        }
+      }
+    }
+
     // Security: Check cooldown period to prevent duplicate rewards
     const currentTime = Date.now();
     const timeSinceLastReward = currentTime - lastRewardTime.current;
@@ -151,10 +208,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     lastRewardTime.current = currentTime;
 
     // Validate merchant reward ID
-    if (!merchantRewardId || merchantRewardId.trim() === '') {
+    if (!effectiveMerchantRewardId || effectiveMerchantRewardId.trim() === '') {
       setIsProcessingReward(false);
       toastShow({
-        message: 'Merchant Reward ID not configured. Please set it in Rewards Settings.',
+        message:
+          'Merchant Reward ID not configured. Please set it in Rewards Settings.',
         type: 'error',
       });
       return;
@@ -166,8 +224,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       payoutMethodId: 'BTC-LN',
     };
 
-    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${merchantRewardId}/payouts`;
-
+    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${effectiveMerchantRewardId}/payouts`;
 
     try {
       const response = await axios.post(url, requestBody);
@@ -214,6 +271,16 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
           dispatch(addTransaction(transactionData));
         }
 
+        // Track event reward if event is active
+        if (eventActive && lnurl) {
+          dispatch(
+            trackEventReward({
+              rewardAmount: rewardCalculation.rewardAmount,
+              customerId: lnurl,
+            }),
+          );
+        }
+
         const displayAmount =
           balanceInSats !== undefined &&
           satsToCurrency(balanceInSats + rewardCalculation.rewardAmount)
@@ -242,7 +309,6 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         setIsProcessingReward(false); // Reset on failure
       }
     } catch (error: any) {
-
       console.error('Error redeeming rewards', error);
       toastShow({
         message: 'Reward is failed. Please try again.',
@@ -269,7 +335,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     dispatch,
     username,
     currency,
-    merchantRewardId,
+    effectiveMerchantRewardId,
+    eventActive,
+    eventCustomerRewardLimit,
+    eventMinPurchaseAmount,
+    eventRewardedCustomers,
   ]);
 
   useFocusEffect(

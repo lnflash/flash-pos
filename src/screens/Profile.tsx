@@ -1,5 +1,4 @@
 import React, {useState} from 'react';
-import {Dimensions, ScrollView} from 'react-native';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackNavigationProp} from '@react-navigation/stack';
@@ -24,11 +23,10 @@ import {
   clearResults,
   verifyPinOnly,
 } from '../store/slices/pinSlice';
+import {selectEventModeEnabled} from '../store/slices/rewardSlice';
 
 // env
 import {FLASH_LN_ADDRESS} from '@env';
-
-const {width: screenWidth} = Dimensions.get('window');
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -38,6 +36,7 @@ const Profile = () => {
   const dispatch = useAppDispatch();
   const {username} = useAppSelector(state => state.user);
   const {transactions} = useAppSelector(state => state.transactionHistory);
+  const eventModeEnabled = useAppSelector(selectEventModeEnabled);
 
   // PIN management
   const hasPin = useAppSelector(selectHasPin);
@@ -173,6 +172,10 @@ const Profile = () => {
     navigation.navigate('Paycode');
   };
 
+  const onViewEventSettings = () => {
+    navigation.navigate('EventSettings');
+  };
+
   const lnAddress = `${username}@${FLASH_LN_ADDRESS}`;
 
   return (
@@ -209,6 +212,17 @@ const Profile = () => {
             </Column>
             <Icon name={'chevron-forward-outline'} type="ionicon" />
           </Container>
+          {/* Event Settings Navigation - Only show when Event Mode is enabled */}
+          {eventModeEnabled && (
+            <Container activeOpacity={0.5} onPress={onViewEventSettings}>
+              <Icon name={'calendar-outline'} type="ionicon" />
+              <Column>
+                <Key>Event Settings</Key>
+                <Value>Configure event rewards</Value>
+              </Column>
+              <Icon name={'chevron-forward-outline'} type="ionicon" />
+            </Container>
+          )}
           <Label>Security</Label>
           {/* PIN Management */}
           {hasPin ? (
