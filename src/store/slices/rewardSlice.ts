@@ -255,6 +255,9 @@ export const rewardSlice = createSlice({
         showStandaloneRewards,
       } = action.payload;
 
+      const newIsEnabled =
+        isEnabled !== undefined ? isEnabled : state.isEnabled;
+
       return {
         ...state,
         rewardRate:
@@ -277,11 +280,14 @@ export const rewardSlice = createSlice({
           merchantRewardId !== undefined
             ? merchantRewardId
             : state.merchantRewardId,
-        isEnabled: isEnabled !== undefined ? isEnabled : state.isEnabled,
+        isEnabled: newIsEnabled,
         showStandaloneRewards:
           showStandaloneRewards !== undefined
             ? showStandaloneRewards
             : state.showStandaloneRewards,
+        // If rewards are being disabled, also disable event mode and deactivate events
+        eventModeEnabled: newIsEnabled ? state.eventModeEnabled : false,
+        eventActive: newIsEnabled ? state.eventActive : false,
         error: '',
       };
     },
@@ -292,8 +298,8 @@ export const rewardSlice = createSlice({
     // Event Mode reducers
     setEventModeEnabled: (state, action) => ({
       ...state,
-      eventModeEnabled: action.payload,
-      eventActive: action.payload, // Explicitly set based on action.payload
+      eventModeEnabled: action.payload && state.isEnabled, // Only allow if rewards are enabled
+      eventActive: action.payload && state.isEnabled, // Only activate if rewards are enabled
       error: '',
     }),
     setEventRewardLimit: (state, action) => ({
@@ -377,7 +383,7 @@ export const rewardSlice = createSlice({
     },
     activateEvent: state => ({
       ...state,
-      eventActive: state.eventModeEnabled, // Only activate if enabled
+      eventActive: state.eventModeEnabled && state.isEnabled, // Only activate if both enabled and rewards enabled
       eventTotalRewardsGiven: 0, // Reset counters
       eventCustomersRewarded: 0,
       eventRewardedCustomers: [],

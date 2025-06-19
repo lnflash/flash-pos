@@ -238,6 +238,15 @@ const EventSettings = () => {
   }, [eventMerchantRewardId]);
 
   const handleActivateEvent = () => {
+    // Check if rewards are enabled before activating event
+    if (!rewardConfig.isEnabled) {
+      toastShow({
+        message: 'Rewards must be enabled before activating events',
+        type: 'error',
+      });
+      return;
+    }
+
     dispatch(activateEvent());
     toastShow({
       message: 'Event activated successfully',
@@ -296,6 +305,17 @@ const EventSettings = () => {
 
       <ScrollWrapper showsVerticalScrollIndicator={false}>
         <ContentWrapper>
+          {/* Rewards Required Warning */}
+          {!rewardConfig.isEnabled && (
+            <WarningContainer>
+              <WarningIcon>⚠️</WarningIcon>
+              <WarningText>
+                Rewards must be enabled in Reward Settings before events can be
+                activated.
+              </WarningText>
+            </WarningContainer>
+          )}
+
           {/* Event Status Display */}
           {eventConfig.eventModeEnabled && (
             <StatusContainer>
@@ -350,8 +370,14 @@ const EventSettings = () => {
 
               <ActionRow>
                 {!eventConfig.eventActive ? (
-                  <ActionButton onPress={handleActivateEvent}>
-                    <ActionButtonText>Activate Event</ActionButtonText>
+                  <ActionButton
+                    onPress={handleActivateEvent}
+                    disabled={!rewardConfig.isEnabled}>
+                    <ActionButtonText disabled={!rewardConfig.isEnabled}>
+                      {!rewardConfig.isEnabled
+                        ? 'Rewards Required'
+                        : 'Activate Event'}
+                    </ActionButtonText>
                   </ActionButton>
                 ) : (
                   <DeactivateButton onPress={handleDeactivateEvent}>
@@ -712,18 +738,19 @@ const ActionRow = styled.View`
   gap: 8px;
 `;
 
-const ActionButton = styled.TouchableOpacity`
+const ActionButton = styled.TouchableOpacity<{disabled?: boolean}>`
   flex: 1;
-  background-color: #007856;
+  background-color: ${props => (props.disabled ? '#e0e0e0' : '#007856')};
   padding: 12px;
   border-radius: 8px;
   align-items: center;
+  opacity: ${props => (props.disabled ? 0.6 : 1)};
 `;
 
-const ActionButtonText = styled.Text`
+const ActionButtonText = styled.Text<{disabled?: boolean}>`
   font-size: 14px;
   font-family: 'Outfit-Bold';
-  color: #ffffff;
+  color: ${props => (props.disabled ? '#888888' : '#ffffff')};
 `;
 
 const DeactivateButton = styled(ActionButton)`
@@ -780,6 +807,29 @@ const ConfigHint = styled.Text`
   font-family: 'Outfit-Regular';
   color: #6c757d;
   line-height: 16px;
+`;
+
+const WarningContainer = styled.View`
+  background-color: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  flex-direction: row;
+  align-items: center;
+`;
+
+const WarningIcon = styled.Text`
+  font-size: 18px;
+  margin-right: 12px;
+`;
+
+const WarningText = styled.Text`
+  flex: 1;
+  font-size: 14px;
+  font-family: 'Outfit-Medium';
+  color: #856404;
+  line-height: 18px;
 `;
 
 const MerchantIdLabelRow = styled.View`

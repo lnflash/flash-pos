@@ -277,6 +277,15 @@ const RewardsSettings = () => {
 
     setIsEnabled(value);
     autoSaveField('isEnabled', value);
+
+    // If disabling rewards, also disable event mode
+    if (!value && eventModeEnabled) {
+      dispatch(setEventModeEnabled(false));
+      toastShow({
+        message: 'Event mode automatically disabled when rewards are disabled',
+        type: 'info',
+      });
+    }
   };
 
   const handleShowStandaloneRewardsChange = (value: boolean) => {
@@ -285,6 +294,15 @@ const RewardsSettings = () => {
   };
 
   const handleEventModeChange = (value: boolean) => {
+    // Check if trying to enable event mode without rewards enabled
+    if (value && !isEnabled) {
+      toastShow({
+        message: 'Rewards must be enabled before activating Event Mode',
+        type: 'error',
+      });
+      return;
+    }
+
     dispatch(setEventModeEnabled(value));
     toastShow({
       message: value ? 'Event mode enabled' : 'Event mode disabled',
@@ -368,12 +386,16 @@ const RewardsSettings = () => {
             <Icon name={'calendar-outline'} type="ionicon" />
             <Column>
               <Key>Event Mode</Key>
-              <Value>{eventModeEnabled ? 'Enabled' : 'Disabled'}</Value>
+              <Value>
+                {eventModeEnabled ? 'Enabled' : 'Disabled'}
+                {!isEnabled && ' (Requires rewards enabled)'}
+              </Value>
             </Column>
             <Switch
               value={eventModeEnabled}
               onValueChange={handleEventModeChange}
               color="#007856"
+              disabled={!isEnabled}
             />
           </Container>
 
