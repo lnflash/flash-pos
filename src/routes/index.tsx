@@ -15,6 +15,7 @@ import {
   Success,
   TransactionHistory,
   RegisteredRewardCards,
+  EventSettings,
 } from '../screens';
 
 // hooks
@@ -100,6 +101,14 @@ const Root = () => {
       <Stack.Screen
         name="RegisteredRewardCards"
         component={RegisteredRewardCards}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="EventSettings"
+        component={EventSettings}
         options={{
           headerShown: false,
           animation: 'slide_from_right',

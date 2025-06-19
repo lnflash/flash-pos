@@ -11,6 +11,8 @@ import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {
   selectRewardConfig,
   updateRewardConfig,
+  selectEventModeEnabled,
+  setEventModeEnabled,
 } from '../store/slices/rewardSlice';
 
 // utils
@@ -29,6 +31,7 @@ const RewardsSettings = () => {
   const navigation = useNavigation<Props>();
   const dispatch = useAppDispatch();
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const eventModeEnabled = useAppSelector(selectEventModeEnabled);
 
   // Local state for reward configuration
   const [rewardRate, setRewardRate] = useState(
@@ -220,16 +223,17 @@ const RewardsSettings = () => {
 
     try {
       const sanitizedId = sanitizeMerchantRewardId(merchantRewardId);
-      
+
       if (!sanitizedId) {
         toastShow({
-          message: 'Invalid Merchant Reward ID format. Only letters, numbers, hyphens, and underscores are allowed.',
+          message:
+            'Invalid Merchant Reward ID format. Only letters, numbers, hyphens, and underscores are allowed.',
           type: 'error',
         });
         setIsTestingMerchantId(false);
         return;
       }
-      
+
       const response = await axios.get(
         `${BTC_PAY_SERVER}/pull-payments/${sanitizedId}`,
       );
@@ -278,6 +282,14 @@ const RewardsSettings = () => {
   const handleShowStandaloneRewardsChange = (value: boolean) => {
     setShowStandaloneRewards(value);
     autoSaveField('showStandaloneRewards', value);
+  };
+
+  const handleEventModeChange = (value: boolean) => {
+    dispatch(setEventModeEnabled(value));
+    toastShow({
+      message: value ? 'Event mode enabled' : 'Event mode disabled',
+      type: 'success',
+    });
   };
 
   const onGoBack = () => {
@@ -348,6 +360,20 @@ const RewardsSettings = () => {
               type="ionicon"
               color="#007856"
               size={20}
+            />
+          </Container>
+
+          {/* Event Mode Toggle */}
+          <Container activeOpacity={0.7}>
+            <Icon name={'calendar-outline'} type="ionicon" />
+            <Column>
+              <Key>Event Mode</Key>
+              <Value>{eventModeEnabled ? 'Enabled' : 'Disabled'}</Value>
+            </Column>
+            <Switch
+              value={eventModeEnabled}
+              onValueChange={handleEventModeChange}
+              color="#007856"
             />
           </Container>
 
