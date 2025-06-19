@@ -18,12 +18,16 @@ Welcome to the Flash POS documentation. This directory contains comprehensive do
 - **[11. Deployment](./11-deployment.md)** - Build and deployment process
 - **[12. Security](./12-security.md)** - Security features including PIN protection and fraud prevention
 
+### Configuration
+- **[Environment Configuration](./environment-configuration.md)** - Complete `.env` setup guide with Event Mode
+
 ## Quick Start
 
-1. Read the [Development Setup](./02-development-setup.md) guide
-2. Review the [Project Overview](./01-project-overview.md) for context
-3. Check the [Architecture](./03-architecture.md) for technical details
-4. Follow screen-specific documentation for feature implementation
+1. Copy the [Environment Configuration](./environment-configuration.md) template to create your `.env` file
+2. Read the [Development Setup](./02-development-setup.md) guide
+3. Review the [Project Overview](./01-project-overview.md) for context
+4. Check the [Architecture](./03-architecture.md) for technical details
+5. Follow screen-specific documentation for feature implementation
 
 ## Key Features
 
