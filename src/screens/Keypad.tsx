@@ -2,6 +2,7 @@ import React, {useCallback, useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {useFocusEffect} from '@react-navigation/native';
+import {Dimensions} from 'react-native';
 
 // components
 import {
@@ -24,10 +25,17 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
 import {setIsPrimaryAmountSats, resetAmount} from '../store/slices/amountSlice';
-import {selectRewardConfig} from '../store/slices/rewardSlice';
+import {
+  selectRewardConfig,
+  selectEventConfig,
+} from '../store/slices/rewardSlice';
 
 // utils
 import {toastShow} from '../utils/toast';
+
+// Responsive font size calculation
+const {width: screenWidth} = Dimensions.get('window');
+const responsiveFontSize = screenWidth < 375 ? 14 : screenWidth > 414 ? 18 : 16;
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -44,6 +52,10 @@ const Keypad = () => {
   const {satAmount, memo, displayAmount, currency, isPrimaryAmountSats} =
     useAppSelector(state => state.amount);
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const eventConfig = useAppSelector(selectEventConfig);
+
+  // Check if event mode is enabled and active
+  const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
 
   // Ensure currency is always shown as primary amount since toggle is hidden
   useEffect(() => {
@@ -186,6 +198,16 @@ const Keypad = () => {
         <Note />
         <NumPad />
       </BodyWrapper>
+
+      {/* Event Message Display */}
+      {isEventActive && eventConfig.eventDisplayMessage && (
+        <EventMessageWrapper>
+          <EventMessageContainer>
+            <EventMessage>{eventConfig.eventDisplayMessage}</EventMessage>
+          </EventMessageContainer>
+        </EventMessageWrapper>
+      )}
+
       <BtnsWrapper>
         <ButtonRow>
           {rewardConfig.isEnabled && (
@@ -227,8 +249,42 @@ const BodyWrapper = styled.View`
   flex: 1;
 `;
 
+const EventMessageWrapper = styled.View`
+  padding: 0 0 8px 0;
+  align-items: stretch;
+  justify-content: center;
+`;
+
+const EventMessageContainer = styled.View`
+  background-color: #f8f9fa;
+  border-radius: 12px;
+  margin: 0 20px 20px 20px;
+  padding: 16px 20px;
+  border-left-width: 4px;
+  border-left-color: #007856;
+  shadow-color: #000;
+  shadow-offset: 0px 2px;
+  shadow-opacity: 0.1;
+  shadow-radius: 4px;
+  elevation: 3;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+`;
+
+const EventMessage = styled.Text`
+  font-size: ${responsiveFontSize}px;
+  font-family: 'Outfit-SemiBold';
+  color: #007856;
+  text-align: center;
+  line-height: ${responsiveFontSize * 1.5}px;
+  letter-spacing: 0.2px;
+  max-width: 100%;
+  flex-shrink: 1;
+`;
+
 const BtnsWrapper = styled.View`
-  padding-horizontal: 20px;
+  padding: 8px 20px 0 20px;
 `;
 
 const ButtonRow = styled.View`

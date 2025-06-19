@@ -21,6 +21,9 @@ import {
 // hooks
 import {useAppSelector} from '../store/hooks';
 
+// store
+import {selectEventConfig} from '../store/slices/rewardSlice';
+
 // navigation
 import {navigationRef} from '../navigation/navigationRef';
 
@@ -28,6 +31,14 @@ const Stack = createNativeStackNavigator<RootStackType>();
 
 const Root = () => {
   const {username} = useAppSelector(state => state.user);
+  const eventConfig = useAppSelector(selectEventConfig);
+
+  // Determine header title based on event mode
+  const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
+  const headerTitle =
+    isEventActive && eventConfig.eventDisplayName
+      ? eventConfig.eventDisplayName
+      : `Pay to ${username}`;
 
   const initialRouteName = username ? 'Home' : 'Auth';
 
@@ -36,7 +47,7 @@ const Root = () => {
       initialRouteName={initialRouteName}
       screenOptions={{
         headerShadowVisible: false,
-        headerTitle: `Pay to ${username}`,
+        headerTitle: headerTitle,
         headerTitleStyle: {fontFamily: 'Outfit-Bold'},
         headerTitleAlign: 'center',
       }}>
