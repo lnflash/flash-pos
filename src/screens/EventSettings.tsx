@@ -32,34 +32,34 @@ const EventSettings = () => {
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
 
-  // Local state for event configuration
+  // Local state for event configuration with safe defaults
   // Note: eventRewardLimit is handled by eventBudgetSats in this implementation
   // const [eventRewardLimit, setEventRewardLimit] = useState(
   //   eventConfig.eventRewardLimit.toString(),
   // );
   const [eventRewardRate, setEventRewardRate] = useState(
-    (eventConfig.eventRewardRate * 100).toString(),
+    ((eventConfig.eventRewardRate ?? 0.05) * 100).toString(),
   );
   const [eventCustomerLimit, setEventCustomerLimit] = useState(
-    eventConfig.eventCustomerLimit.toString(),
+    (eventConfig.eventCustomerLimit ?? 100).toString(),
   );
   const [eventMerchantRewardId, setEventMerchantRewardId] = useState(
     eventConfig.eventMerchantRewardId || '',
   );
   const [eventCustomerRewardLimit, setEventCustomerRewardLimit] = useState(
-    eventConfig.eventCustomerRewardLimit.toString(),
+    (eventConfig.eventCustomerRewardLimit ?? 1).toString(),
   );
   const [eventMinPurchaseAmount, setEventMinPurchaseAmount] = useState(
-    eventConfig.eventMinPurchaseAmount.toString(),
+    (eventConfig.eventMinPurchaseAmount ?? 500).toString(),
   );
   const [eventBudgetSats, setEventBudgetSats] = useState(
-    eventConfig.eventBudgetSats.toString(),
+    (eventConfig.eventBudgetSats ?? 100000).toString(),
   );
   const [eventDisplayName, setEventDisplayName] = useState(
-    eventConfig.eventDisplayName,
+    eventConfig.eventDisplayName || 'Special Event',
   );
   const [eventDisplayMessage, setEventDisplayMessage] = useState(
-    eventConfig.eventDisplayMessage,
+    eventConfig.eventDisplayMessage || 'Earn extra rewards!',
   );
 
   const [isEventMerchantIdValid, setIsEventMerchantIdValid] = useState(false);
@@ -79,14 +79,14 @@ const EventSettings = () => {
             newConfig.eventRewardLimit < 1
           ) {
             toastShow({
-              message: 'Event reward limit must be at least 1 sat',
+              message: 'Event reward limit must be at least 1 point',
               type: 'error',
             });
             return;
           }
           if (newConfig.eventRewardLimit > 1000000) {
             toastShow({
-              message: 'Event reward limit cannot exceed 1,000,000 sats',
+              message: 'Event reward limit cannot exceed 1,000,000 points',
               type: 'error',
             });
             return;
@@ -164,7 +164,7 @@ const EventSettings = () => {
             newConfig.eventBudgetSats < 1
           ) {
             toastShow({
-              message: 'Event budget must be at least 1 sat',
+              message: 'Event budget must be at least 1 point',
               type: 'error',
             });
             return;
@@ -265,14 +265,17 @@ const EventSettings = () => {
     navigation.goBack();
   };
 
-  // Calculate progress percentages
+  // Calculate progress percentages with safe defaults
   const rewardProgress =
-    eventConfig.eventBudgetSats > 0
-      ? (eventConfig.eventTotalRewardsGiven / eventConfig.eventBudgetSats) * 100
+    (eventConfig.eventBudgetSats ?? 0) > 0
+      ? ((eventConfig.eventTotalRewardsGiven ?? 0) /
+          (eventConfig.eventBudgetSats ?? 1)) *
+        100
       : 0;
   const customerProgress =
-    eventConfig.eventCustomerLimit > 0
-      ? (eventConfig.eventCustomersRewarded / eventConfig.eventCustomerLimit) *
+    (eventConfig.eventCustomerLimit ?? 0) > 0
+      ? ((eventConfig.eventCustomersRewarded ?? 0) /
+          (eventConfig.eventCustomerLimit ?? 1)) *
         100
       : 0;
 
@@ -314,8 +317,12 @@ const EventSettings = () => {
                   <ProgressRow>
                     <ProgressLabel>Rewards Given:</ProgressLabel>
                     <ProgressValue>
-                      {eventConfig.eventTotalRewardsGiven.toLocaleString()} /{' '}
-                      {eventConfig.eventBudgetSats.toLocaleString()} sats
+                      {(
+                        eventConfig.eventTotalRewardsGiven ?? 0
+                      ).toLocaleString()}{' '}
+                      /{' '}
+                      {(eventConfig.eventBudgetSats ?? 100000).toLocaleString()}{' '}
+                      points
                     </ProgressValue>
                   </ProgressRow>
                   <ProgressBar>
@@ -328,8 +335,8 @@ const EventSettings = () => {
                   <ProgressRow>
                     <ProgressLabel>Customers Rewarded:</ProgressLabel>
                     <ProgressValue>
-                      {eventConfig.eventCustomersRewarded} /{' '}
-                      {eventConfig.eventCustomerLimit}
+                      {eventConfig.eventCustomersRewarded ?? 0} /{' '}
+                      {eventConfig.eventCustomerLimit ?? 100}
                     </ProgressValue>
                   </ProgressRow>
                   <ProgressBar>
@@ -353,8 +360,8 @@ const EventSettings = () => {
                     </DeactivateButtonText>
                   </DeactivateButton>
                 )}
-                {(eventConfig.eventTotalRewardsGiven > 0 ||
-                  eventConfig.eventCustomersRewarded > 0) && (
+                {((eventConfig.eventTotalRewardsGiven ?? 0) > 0 ||
+                  (eventConfig.eventCustomersRewarded ?? 0) > 0) && (
                   <ResetButton onPress={handleResetEvent}>
                     <ResetButtonText>Reset Tracking</ResetButtonText>
                   </ResetButton>
@@ -413,8 +420,9 @@ const EventSettings = () => {
               />
             </ConfigRow>
             <ConfigHint>
-              Overrides normal {(rewardConfig.rewardRate * 100).toFixed(1)}%
-              rate (0-100%)
+              Overrides normal{' '}
+              {((rewardConfig.rewardRate ?? 0.02) * 100).toFixed(1)}% rate
+              (0-100%)
               {'\n'}Default: 5%
             </ConfigHint>
           </ConfigContainer>
@@ -471,7 +479,7 @@ const EventSettings = () => {
           {/* Event Budget */}
           <ConfigContainer>
             <ConfigRow>
-              <ConfigLabel>Event Budget (sats)</ConfigLabel>
+              <ConfigLabel>Event Budget (points)</ConfigLabel>
               <ConfigInput
                 value={eventBudgetSats}
                 onChangeText={setEventBudgetSats}
@@ -483,9 +491,12 @@ const EventSettings = () => {
             </ConfigRow>
             <ConfigHint>
               Total budget before auto-deactivation
-              {'\n'}Default: 100,000 sats
-              {'\n'}Warning at{' '}
-              {(eventConfig.eventBudgetWarningPercent * 100).toFixed(0)}%
+              {'\n'}Default: 100,000 points
+              {'\n'} Warning at{' '}
+              {((eventConfig.eventBudgetWarningPercent ?? 0.8) * 100).toFixed(
+                0,
+              )}
+              %
             </ConfigHint>
           </ConfigContainer>
 
@@ -494,7 +505,7 @@ const EventSettings = () => {
           {/* Minimum Purchase Amount */}
           <ConfigContainer>
             <ConfigRow>
-              <ConfigLabel>Minimum Purchase (sats)</ConfigLabel>
+              <ConfigLabel>Minimum Purchase (points)</ConfigLabel>
               <ConfigInput
                 value={eventMinPurchaseAmount}
                 onChangeText={setEventMinPurchaseAmount}
@@ -511,7 +522,7 @@ const EventSettings = () => {
             </ConfigRow>
             <ConfigHint>
               Minimum purchase to qualify for rewards
-              {'\n'}Default: 500 sats (0 = no minimum)
+              {'\n'}Default: 500 points (0 = no minimum)
             </ConfigHint>
           </ConfigContainer>
 
