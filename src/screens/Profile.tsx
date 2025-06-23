@@ -165,7 +165,7 @@ const Profile = () => {
       <Transactions />
       <TextButton
         title="Logout"
-        btnStyle={{marginTop: 20}}
+        btnStyle={{marginTop: 20, marginBottom: 150}}
         onPress={onLogout}
       />
       <PinModal
