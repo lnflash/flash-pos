@@ -1,6 +1,9 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
-import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import {
+  CardStyleInterpolators,
+  createStackNavigator,
+} from '@react-navigation/stack';
 
 // screens
 import {HomeTabs} from './HomeTabs';
@@ -15,6 +18,7 @@ import {
   Success,
   TransactionHistory,
   RegisteredRewardCards,
+  SupportChat,
 } from '../screens';
 
 // hooks
@@ -23,7 +27,7 @@ import {useAppSelector} from '../store/hooks';
 // navigation
 import {navigationRef} from '../navigation/navigationRef';
 
-const Stack = createNativeStackNavigator<RootStackType>();
+const Stack = createStackNavigator<RootStackType>();
 
 const Root = () => {
   const {username} = useAppSelector(state => state.user);
@@ -103,6 +107,14 @@ const Root = () => {
         options={{
           headerShown: false,
           animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="SupportChat"
+        component={SupportChat}
+        options={{
+          headerShown: false,
+          cardStyleInterpolator: CardStyleInterpolators.forModalPresentationIOS,
         }}
       />
     </Stack.Navigator>
