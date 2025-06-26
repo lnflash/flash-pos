@@ -10,7 +10,7 @@ type Props = {
 const FloatingButton: React.FC<Props> = ({icon, onPress}) => {
   return (
     <Wrapper onPress={onPress}>
-      <Icon name={icon} size={30} solid color={'#fff'} />
+      <Icon name={icon} size={25} solid color={'#fff'} />
     </Wrapper>
   );
 };
@@ -21,7 +21,7 @@ const Wrapper = styled.TouchableOpacity`
   position: absolute;
   bottom: 150;
   right: 20;
-  padding: 20px;
+  padding: 15px;
   background-color: #007856;
   border-radius: 100px;
 `;
