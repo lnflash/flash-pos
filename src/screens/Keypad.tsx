@@ -6,7 +6,6 @@ import {useFocusEffect} from '@react-navigation/native';
 // components
 import {
   Amount,
-  FloatingButton,
   Note,
   NumPad,
   PrimaryButton,
@@ -212,10 +211,6 @@ const Keypad = () => {
           />
         </ButtonRow>
       </BtnsWrapper>
-      <FloatingButton
-        icon="message"
-        onPress={() => navigation.navigate('SupportChat')}
-      />
     </Wrapper>
   );
 };
