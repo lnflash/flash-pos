@@ -1,7 +1,5 @@
 import React, {useState, useRef} from 'react';
-import {StackScreenProps} from '@react-navigation/stack';
 import {WebView, WebViewMessageEvent} from 'react-native-webview';
-import {Icon} from '@rneui/themed';
 import {
   SafeAreaView,
   ActivityIndicator,
@@ -11,9 +9,7 @@ import {
   StyleSheet,
 } from 'react-native';
 
-type Props = StackScreenProps<RootStackType, 'SupportChat'>;
-
-const SupportChat: React.FC<Props> = ({navigation}) => {
+const SupportChat = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chatReady, setChatReady] = useState(false);
@@ -152,15 +148,6 @@ const SupportChat: React.FC<Props> = ({navigation}) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Support Chat</Text>
-        <TouchableOpacity
-          onPress={navigation.goBack}
-          style={styles.closeButton}>
-          <Icon type="ionicons" name={'close'} size={40} color={'#000'} />
-        </TouchableOpacity>
-      </View>
-
       {/* Error display */}
       {error && (
         <View style={styles.errorContainer}>
@@ -209,24 +196,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: 'white',
-  },
-  header: {
-    backgroundColor: '#f8f9fa',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e9ecef',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingLeft: 15,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontFamily: 'Outfit-Bold',
-    color: '#000',
-  },
-  closeButton: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
+    paddingBottom: 70,
   },
   errorContainer: {
     backgroundColor: '#f8d7da',

@@ -1,9 +1,6 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
-import {
-  CardStyleInterpolators,
-  createStackNavigator,
-} from '@react-navigation/stack';
+import {createStackNavigator} from '@react-navigation/stack';
 
 // screens
 import {HomeTabs} from './HomeTabs';
@@ -18,7 +15,6 @@ import {
   Success,
   TransactionHistory,
   RegisteredRewardCards,
-  SupportChat,
 } from '../screens';
 
 // hooks
@@ -107,14 +103,6 @@ const Root = () => {
         options={{
           headerShown: false,
           animation: 'slide_from_right',
-        }}
-      />
-      <Stack.Screen
-        name="SupportChat"
-        component={SupportChat}
-        options={{
-          headerShown: false,
-          cardStyleInterpolator: CardStyleInterpolators.forModalPresentationIOS,
         }}
       />
     </Stack.Navigator>
