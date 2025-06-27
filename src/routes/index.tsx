@@ -1,6 +1,6 @@
 import React from 'react';
 import {NavigationContainer} from '@react-navigation/native';
-import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import {createStackNavigator} from '@react-navigation/stack';
 
 // screens
 import {HomeTabs} from './HomeTabs';
@@ -23,7 +23,7 @@ import {useAppSelector} from '../store/hooks';
 // navigation
 import {navigationRef} from '../navigation/navigationRef';
 
-const Stack = createNativeStackNavigator<RootStackType>();
+const Stack = createStackNavigator<RootStackType>();
 
 const Root = () => {
   const {username} = useAppSelector(state => state.user);
