@@ -15,7 +15,7 @@ const SupportChat = () => {
   const [chatReady, setChatReady] = useState(false);
   const webViewRef = useRef<any>(null);
 
-  const chatUrl = 'https://nodirbek75.github.io/tidio-widget/tidio.html';
+  const chatUrl = 'https://getflash.io/app/tidio.html';
 
   const handleLoadStart = () => {
     console.log('WebView started loading');
