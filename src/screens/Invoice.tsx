@@ -91,10 +91,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const sendRewardsToCard = useCallback(
     async (cardLnurl: string, rewardAmount: number) => {
       try {
-
         // Validate merchant reward ID
         if (!merchantRewardId || merchantRewardId.trim() === '') {
-          throw new Error('Merchant Reward ID not configured. Please set it in Rewards Settings.');
+          throw new Error(
+            'Merchant Reward ID not configured. Please set it in Rewards Settings.',
+          );
         }
 
         // Use the BTCPay Server API to send rewards to the card
@@ -126,7 +127,6 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   );
 
   const handleSuccessfulPayment = useCallback(async () => {
-
     // Calculate reward information if rewards are enabled
     let rewardInfo;
     let rewardSentToCard = false;
@@ -289,8 +289,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     if (!errMessage) {
       try {
         await Share.share({message: paymentRequest});
-      } catch (err) {
-      }
+      } catch (err) {}
     }
   };
 

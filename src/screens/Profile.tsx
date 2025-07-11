@@ -1,10 +1,7 @@
 import React, {useState} from 'react';
-import {Dimensions, ScrollView} from 'react-native';
 import styled from 'styled-components/native';
-import Clipboard from '@react-native-clipboard/clipboard';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {useNavigation} from '@react-navigation/native';
-import {Icon} from '@rneui/themed';
 
 // components
 import {TextButton, PinModal} from '../components';
@@ -26,9 +23,10 @@ import {
 } from '../store/slices/pinSlice';
 
 // env
-import {FLASH_LN_ADDRESS} from '@env';
 
-const {width: screenWidth} = Dimensions.get('window');
+import {Account, Security, Settings, Transactions} from '../components/profile';
+
+export type PinMode = 'setup' | 'verify' | 'change' | 'remove';
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -36,17 +34,12 @@ const Profile = () => {
   const navigation = useNavigation<Props>();
 
   const dispatch = useAppDispatch();
-  const {username} = useAppSelector(state => state.user);
-  const {transactions} = useAppSelector(state => state.transactionHistory);
-
-  // PIN management
   const hasPin = useAppSelector(selectHasPin);
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
-  const [pinModalMode, setPinModalMode] = useState<
-    'setup' | 'verify' | 'change' | 'remove'
-  >('verify');
   const [pinError, setPinError] = useState('');
+  const [pinModalMode, setPinModalMode] = useState<PinMode>('verify');
+  const [isViewRewardSettings, setIsViewRewardSettings] = useState(false);
 
   const onLogout = () => {
     dispatch(resetUserData());
@@ -54,12 +47,9 @@ const Profile = () => {
     navigation.replace('Auth');
   };
 
-  const onViewTransactionHistory = () => {
-    navigation.navigate('TransactionHistory');
-  };
-
   const onViewRewardSettings = () => {
     setPinError('');
+    setIsViewRewardSettings(true);
     dispatch(clearResults());
 
     if (!hasPin) {
@@ -92,7 +82,10 @@ const Profile = () => {
     if (pinModalMode === 'setup') {
       dispatch(setPin(pin));
       setPinModalVisible(false);
-      navigation.navigate('RewardsSettings');
+      if (isViewRewardSettings) {
+        setIsViewRewardSettings(false);
+        navigation.navigate('RewardsSettings');
+      }
     } else if (pinModalMode === 'change') {
       if (oldPin) {
         dispatch(changePin({oldPin, newPin: pin}));
@@ -140,7 +133,10 @@ const Profile = () => {
         if (currentState.pin.isAuthenticated) {
           setPinModalVisible(false);
           setPinError('');
-          navigation.navigate('RewardsSettings');
+          if (isViewRewardSettings) {
+            setIsViewRewardSettings(false);
+            navigation.navigate('RewardsSettings');
+          }
         } else {
           setPinError('Incorrect PIN. Please try again.');
         }
@@ -149,114 +145,29 @@ const Profile = () => {
   };
 
   const handlePinCancel = () => {
+    setPinError('');
+    dispatch(clearResults());
     setPinModalVisible(false);
-    setPinError('');
-    dispatch(clearResults());
   };
 
-  const onChangePinPress = () => {
+  const handlePinActions = (mode: PinMode) => {
     setPinError('');
     dispatch(clearResults());
-    setPinModalMode('change');
+    setPinModalMode(mode);
     setPinModalVisible(true);
   };
-
-  const onRemovePinPress = () => {
-    // Show PIN verification modal before removing PIN
-    setPinError('');
-    dispatch(clearResults());
-    setPinModalMode('remove');
-    setPinModalVisible(true);
-  };
-
-  const onViewPaycode = () => {
-    navigation.navigate('Paycode');
-  };
-
-  const lnAddress = `${username}@${FLASH_LN_ADDRESS}`;
 
   return (
-    <Wrapper>
-      <ScrollWrapper showsVerticalScrollIndicator={false}>
-        <InnerWrapper>
-          <FirstLabel>Account</FirstLabel>
-          <Container
-            activeOpacity={0.5}
-            onPress={() => Clipboard.setString(lnAddress)}>
-            <Icon name={'at-outline'} type="ionicon" />
-            <Column>
-              <Key>Your Lightning address</Key>
-              <Value>{lnAddress}</Value>
-            </Column>
-            <Icon name={'copy-outline'} type="ionicon" />
-          </Container>
-          {/* PayCode Navigation */}
-          <Container activeOpacity={0.5} onPress={onViewPaycode}>
-            <Icon name={'qr-code-outline'} type="ionicon" />
-            <Column>
-              <Key>PayCode</Key>
-              <Value>Merchant QR code</Value>
-            </Column>
-            <Icon name={'chevron-forward-outline'} type="ionicon" />
-          </Container>
-          <Label>Settings</Label>
-          {/* Reward Settings Navigation */}
-          <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
-            <Icon name={'diamond-outline'} type="ionicon" />
-            <Column>
-              <Key>Reward Settings</Key>
-              <Value>Configure reward rules</Value>
-            </Column>
-            <Icon name={'chevron-forward-outline'} type="ionicon" />
-          </Container>
-          <Label>Security</Label>
-          {/* PIN Management */}
-          {hasPin ? (
-            <>
-              <Container activeOpacity={0.5} onPress={onChangePinPress}>
-                <Icon name={'key-outline'} type="ionicon" />
-                <Column>
-                  <Key>Change PIN</Key>
-                  <Value>Modify your admin PIN</Value>
-                </Column>
-                <Icon name={'chevron-forward-outline'} type="ionicon" />
-              </Container>
-
-              <Container activeOpacity={0.5} onPress={onRemovePinPress}>
-                <Icon name={'trash-outline'} type="ionicon" />
-                <Column>
-                  <Key>Remove PIN</Key>
-                  <Value>Disable PIN protection</Value>
-                </Column>
-                <Icon name={'chevron-forward-outline'} type="ionicon" />
-              </Container>
-            </>
-          ) : (
-            <Container activeOpacity={0.5} onPress={onViewRewardSettings}>
-              <Icon name={'lock-closed-outline'} type="ionicon" />
-              <Column>
-                <Key>Set Admin PIN</Key>
-                <Value>Protect your settings</Value>
-              </Column>
-              <Icon name={'chevron-forward-outline'} type="ionicon" />
-            </Container>
-          )}
-          <Label>Transactions</Label>
-          <Container activeOpacity={0.5} onPress={onViewTransactionHistory}>
-            <Icon name={'receipt-outline'} type="ionicon" />
-            <Column>
-              <Key>Transaction History</Key>
-              <Value>{transactions.length} transactions</Value>
-            </Column>
-            <Icon name={'chevron-forward-outline'} type="ionicon" />
-          </Container>
-          {/* Logout Button */}
-          <LogoutButtonWrapper>
-            <TextButton title="Logout" onPress={onLogout} />
-          </LogoutButtonWrapper>
-        </InnerWrapper>
-      </ScrollWrapper>
-
+    <ScrollWrapper showsVerticalScrollIndicator={false}>
+      <Account />
+      <Settings onViewRewardSettings={onViewRewardSettings} />
+      <Security hasPin={hasPin} handlePinActions={handlePinActions} />
+      <Transactions />
+      <TextButton
+        title="Logout"
+        btnStyle={{marginTop: 20, marginBottom: 150}}
+        onPress={onLogout}
+      />
       <PinModal
         visible={pinModalVisible}
         mode={pinModalMode}
@@ -286,77 +197,15 @@ const Profile = () => {
           pinModalMode === 'change' ? handleVerifyOldPin : undefined
         }
       />
-    </Wrapper>
+    </ScrollWrapper>
   );
 };
 
 export default Profile;
 
-const Wrapper = styled.View`
-  flex: 1;
-  background-color: #ffffff;
-`;
-
 const ScrollWrapper = styled.ScrollView`
-  flex: 1;
-  padding-horizontal: 16px;
+  flex-grow: 1;
+  background-color: #ffffff;
   padding-top: 20px;
-`;
-
-const InnerWrapper = styled.View`
-  max-width: 500px;
-  align-self: center;
-  width: 100%;
-  padding-bottom: 120px;
-`;
-
-const Label = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Bold';
-  color: #000000;
-  margin-bottom: 8px;
-  margin-top: 20px;
-`;
-
-const FirstLabel = styled(Label)`
-  margin-top: 0px;
-`;
-
-const Container = styled.TouchableOpacity`
-  flex-direction: row;
-  background-color: #f2f2f4;
-  border-radius: 12px;
-  overflow: hidden;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  margin-bottom: 12px;
-  min-height: 60px;
-`;
-
-const Column = styled.View`
-  flex: 1;
-  margin-left: 8px;
-  margin-right: 12px;
-`;
-
-const Key = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Medium';
-  color: #000000;
-  flex-wrap: wrap;
-  margin-bottom: 2px;
-`;
-
-const Value = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: #5a5a5a;
-  flex-wrap: wrap;
-  line-height: 18px;
-`;
-
-const LogoutButtonWrapper = styled.View`
-  margin-top: 32px;
-  margin-bottom: 40px;
+  padding-horizontal: 16px;
 `;
