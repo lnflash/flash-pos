@@ -3,7 +3,7 @@ import {useSubscription} from '@apollo/client';
 import {PriceSubscription} from '../graphql/subscriptions';
 
 const useSatPrice = () => {
-  const priceRef = React.useRef<number>(0);
+  const [price, setPrice] = React.useState<number>(0);
 
   const {data} = useSubscription(PriceSubscription, {
     variables: {
@@ -13,20 +13,23 @@ const useSatPrice = () => {
     },
   });
 
+  // Update price when subscription data changes
+  React.useEffect(() => {
+    if (data?.price?.price) {
+      const {base, offset} = data.price.price;
+      setPrice(base / 10 ** offset);
+    }
+  }, [data]);
+
   const conversions = React.useMemo(
     () => ({
-      satsToUsd: (sats: number) => (sats * priceRef.current) / 100,
-      usdToSats: (usd: number) => (100 * usd) / priceRef.current,
+      satsToUsd: (sats: number) => (sats * price) / 100,
+      usdToSats: (usd: number) => (100 * usd) / price,
     }),
-    [],
+    [price], // Now properly depends on price
   );
 
-  if (data?.price?.price) {
-    const {base, offset} = data.price.price;
-    priceRef.current = base / 10 ** offset;
-  }
-
-  if (priceRef.current === 0) {
+  if (price === 0) {
     return {
       satsToUsd: () => NaN,
       usdToSats: () => NaN,
