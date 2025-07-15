@@ -10,7 +10,7 @@ import {RealtimePriceSubscription} from '../graphql/subscriptions';
 import {RealtimePrice} from '../graphql/queries';
 
 const useRealtimePrice = () => {
-  const priceRef = React.useRef<number>(0);
+  const [price, setPrice] = React.useState<number>(0);
   const {currency} = useAppSelector(state => state.amount);
   const {formatCurrency} = useDisplayCurrency();
 
@@ -19,7 +19,7 @@ const useRealtimePrice = () => {
     onCompleted(initData) {
       if (initData?.realtimePrice?.btcSatPrice) {
         const {base, offset} = initData.realtimePrice.btcSatPrice;
-        priceRef.current = base / 10 ** offset;
+        setPrice(base / 10 ** offset);
       }
     },
   });
@@ -30,7 +30,7 @@ const useRealtimePrice = () => {
       if (data.data.realtimePrice.realtimePrice.btcSatPrice) {
         const {base, offset} =
           data.data.realtimePrice.realtimePrice.btcSatPrice;
-        priceRef.current = base / 10 ** offset;
+        setPrice(base / 10 ** offset);
       }
     },
   });
@@ -39,9 +39,7 @@ const useRealtimePrice = () => {
     () => ({
       satsToCurrency: (sats: number) => {
         const convertedCurrencyAmount =
-          currency.fractionDigits === 2
-            ? (sats * priceRef.current) / 100
-            : sats * priceRef.current;
+          currency.fractionDigits === 2 ? (sats * price) / 100 : sats * price;
         const formattedCurrency = formatCurrency({
           amountInMajorUnits: convertedCurrencyAmount,
           currency: currency.id,
@@ -55,8 +53,8 @@ const useRealtimePrice = () => {
       currencyToSats: (currencyAmount: number) => {
         const convertedCurrencyAmount =
           currency.fractionDigits === 2
-            ? (100 * currencyAmount) / priceRef.current
-            : currencyAmount / priceRef.current;
+            ? (100 * currencyAmount) / price
+            : currencyAmount / price;
         const formattedCurrency = formatCurrency({
           amountInMajorUnits: convertedCurrencyAmount,
           currency: currency.id,
@@ -69,27 +67,24 @@ const useRealtimePrice = () => {
       },
       loading: loading || initLoading,
     }),
-    [priceRef, formatCurrency, loading, initLoading, currency],
+    [price, formatCurrency, loading, initLoading, currency],
   );
 
-  if (priceRef.current === 0) {
+  if (price === 0) {
     return {
-      satsToCurrency: () => {
-        return {
-          convertedCurrencyAmount: NaN,
-          formattedCurrency: '0',
-        };
-      },
-      currencyToSats: () => {
-        return {
-          convertedCurrencyAmount: NaN,
-          formattedCurrency: '0',
-        };
-      },
+      satsToCurrency: () => ({
+        convertedCurrencyAmount: NaN,
+        formattedCurrency: '0',
+      }),
+      currencyToSats: () => ({
+        convertedCurrencyAmount: NaN,
+        formattedCurrency: '0',
+      }),
       loading: loading || initLoading,
     };
   }
 
   return conversions;
 };
+
 export default useRealtimePrice;
