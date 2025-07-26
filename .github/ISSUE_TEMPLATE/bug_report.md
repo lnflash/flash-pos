@@ -22,3 +22,34 @@ assignees: ''
 
 <!-- If applicable, add screenshots, logs, or console errors -->
 
+
+## 📱 Environment
+
+| Detail        | Info                     |
+|--------------|--------------------------|
+| Platform      | Web / Android / iOS      |
+| App Version   | v1.x.x                   |
+| Device/OS     | iPhone 14, Pixel 7, etc. |
+| Network       | Wi-Fi / LTE              |
+
+## 🚦 Expected vs Actual Behavior
+
+**Expected:**  
+<!-- What did you expect to happen? -->
+
+**Actual:**  
+<!-- What actually happened? -->
+
+## 🔐 Security or Data Risk?
+
+- [ ] This bug could leak user data
+- [ ] This bug allows invalid financial transactions
+- [ ] Not a security risk
+
+## 🧪 Testing Notes
+
+<!-- Mention how this can be tested or reproduced locally -->
+
+## 🙋 Additional Context
+
+<!-- Anything else the developer should know? Links? Related issues? -->
