@@ -18,7 +18,7 @@ import {
 } from '../store/slices/rewardSlice';
 
 // screens
-import {Keypad, Profile, Rewards} from '../screens';
+import {Keypad, Profile, Rewards, SupportChat} from '../screens';
 
 // assets
 import Background from '../assets/icons/background.png';
@@ -28,6 +28,7 @@ const Tab = createBottomTabNavigator();
 const tabs = [
   {label: 'POS', icon: 'apps-outline', iconActive: 'apps'},
   {label: 'Rewards', icon: 'diamond-outline', iconActive: 'diamond'},
+  {label: 'Support', icon: 'chatbox-outline', iconActive: 'chatbox'},
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
@@ -55,6 +56,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
         const tabConfig = dynamicTabs.find(tab => {
           if (route.name === 'Keypad') return tab.label === 'POS';
           if (route.name === 'Rewards') return tab.label === 'Rewards';
+          if (route.name === 'Support') return tab.label === 'Support';
           if (route.name === 'Profile') return tab.label === 'Profile';
           return false;
         });
@@ -138,6 +140,11 @@ export const HomeTabs = () => {
           options={{headerShown: false}}
         />
       )}
+      <Tab.Screen
+        name="Support"
+        component={SupportChat}
+        options={{headerShown: false}}
+      />
       <Tab.Screen
         name="Profile"
         component={Profile}

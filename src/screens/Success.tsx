@@ -46,7 +46,10 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   const onDone = () => {
     dispatch(resetInvoice());
     dispatch(resetAmount());
-    navigation.popToTop();
+    navigation.reset({
+      index: 0,
+      routes: [{name: 'Home'}],
+    });
   };
 
   const onPrintReceipt = () => {

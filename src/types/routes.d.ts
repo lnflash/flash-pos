@@ -14,6 +14,7 @@ type RootStackType = {
   RewardsSettings: undefined;
   RegisteredRewardCards: undefined;
   EventSettings: undefined;
+  SupportChat: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility
