@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links: []
+issue_templates:
+  - name: 🚀 Feature Request
+    description: Suggest a new idea or product improvement
+    file: feature_request.md
+  - name: 🐛 Bug Report
+    description: Report something that isn’t working as expected
+    file: bug_report.md
