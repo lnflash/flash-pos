@@ -1,0 +1,36 @@
+name: Check PR Template Completion
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  check-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR description
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const requiredSections = [
+              '🧪 **Testing Coverage**',
+              '📚 **Documentation Updates**',
+              '🚀 **Deployment Notes**',
+              '🎯 **Success Metrics**',
+              '📋 **Testing Checklist**',
+              '**Branch**:',
+              '**Reviewer Notes**:',
+              '**Deployment Instructions**:'
+            ];
+
+            const prBody = context.payload.pull_request.body || '';
+
+            const missing = requiredSections.filter(section => !prBody.includes(section));
+
+            if (missing.length > 0) {
+              core.setFailed(`Missing required PR template sections: \n${missing.join('\n')}`);
+            }
+            else {
+              core.info('✅ All required sections found in PR body.');
+            }
