@@ -7,3 +7,6 @@ issue_templates:
   - name: 🐛 Bug Report
     description: Report something that isn’t working as expected
     file: bug_report.md
+  - name: 🛠 Internal Task
+    description: Internal dev, infra, or coordination task
+    file: internal_task.md
