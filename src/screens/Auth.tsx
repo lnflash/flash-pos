@@ -26,7 +26,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
     try {
       const res = await client.query({
         query: AccountDefaultWallets,
-        variables: {username: value},
+        variables: {username: value.trim()},
       });
 
       dispatch(
