@@ -15,10 +15,14 @@ import {
   Success,
   TransactionHistory,
   RegisteredRewardCards,
+  EventSettings,
 } from '../screens';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
+
+// store
+import {selectEventConfig} from '../store/slices/rewardSlice';
 
 // navigation
 import {navigationRef} from '../navigation/navigationRef';
@@ -27,6 +31,14 @@ const Stack = createStackNavigator<RootStackType>();
 
 const Root = () => {
   const {username} = useAppSelector(state => state.user);
+  const eventConfig = useAppSelector(selectEventConfig);
+
+  // Determine header title based on event mode
+  const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
+  const headerTitle =
+    isEventActive && eventConfig.eventDisplayName
+      ? eventConfig.eventDisplayName
+      : `Pay to ${username}`;
 
   const initialRouteName = username ? 'Home' : 'Auth';
 
@@ -35,7 +47,7 @@ const Root = () => {
       initialRouteName={initialRouteName}
       screenOptions={{
         headerShadowVisible: false,
-        headerTitle: `Pay to ${username}`,
+        headerTitle: headerTitle,
         headerTitleStyle: {fontFamily: 'Outfit-Bold'},
         headerTitleAlign: 'center',
       }}>
@@ -100,6 +112,14 @@ const Root = () => {
       <Stack.Screen
         name="RegisteredRewardCards"
         component={RegisteredRewardCards}
+        options={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="EventSettings"
+        component={EventSettings}
         options={{
           headerShown: false,
           animation: 'slide_from_right',

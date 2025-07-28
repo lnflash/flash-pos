@@ -12,6 +12,11 @@ interface RewardConfig {
   minimumReward: number;
   maximumReward: number;
   defaultReward: number;
+  // Event mode fields
+  eventActive?: boolean;
+  eventRewardRate?: number;
+  eventMerchantRewardId?: string;
+  merchantRewardId?: string;
 }
 
 /**
@@ -29,6 +34,12 @@ export const calculateReward = (
     defaultReward: 21,
   },
 ): RewardCalculation => {
+  // Use event reward rate if event is active
+  const effectiveRewardRate =
+    config.eventActive && config.eventRewardRate !== undefined
+      ? config.eventRewardRate
+      : config.rewardRate;
+
   // Standalone reward when no purchase amount provided
   if (!purchaseAmount || purchaseAmount <= 0) {
     return {
@@ -37,8 +48,8 @@ export const calculateReward = (
     };
   }
 
-  // Calculate percentage-based reward
-  const calculatedReward = Math.floor(purchaseAmount * config.rewardRate);
+  // Calculate percentage-based reward with effective rate
+  const calculatedReward = Math.floor(purchaseAmount * effectiveRewardRate);
 
   // Apply minimum and maximum constraints
   let finalReward = calculatedReward;
@@ -55,7 +66,7 @@ export const calculateReward = (
 
   return {
     rewardAmount: finalReward,
-    rewardRate: config.rewardRate,
+    rewardRate: effectiveRewardRate,
     purchaseAmount,
     calculationType: 'purchase-based',
     appliedMinimum,

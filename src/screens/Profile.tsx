@@ -21,10 +21,12 @@ import {
   clearResults,
   verifyPinOnly,
 } from '../store/slices/pinSlice';
+import {selectEventModeEnabled} from '../store/slices/rewardSlice';
 
 // env
 
 import {Account, Security, Settings, Transactions} from '../components/profile';
+
 
 export type PinMode = 'setup' | 'verify' | 'change' | 'remove';
 
@@ -34,6 +36,13 @@ const Profile = () => {
   const navigation = useNavigation<Props>();
 
   const dispatch = useAppDispatch();
+
+  const {username} = useAppSelector(state => state.user);
+  const {transactions} = useAppSelector(state => state.transactionHistory);
+  const eventModeEnabled = useAppSelector(selectEventModeEnabled);
+
+  // PIN management
+
   const hasPin = useAppSelector(selectHasPin);
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
@@ -157,10 +166,16 @@ const Profile = () => {
     setPinModalVisible(true);
   };
 
+
+  const onViewEventSettings = () => {
+    navigation.navigate('EventSettings');
+  };
+
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
       <Account />
-      <Settings onViewRewardSettings={onViewRewardSettings} />
+      <Settings onViewRewardSettings={onViewRewardSettings} eventModeEnabled={eventModeEnabled} onViewEventSettings={onViewEventSettings} />
+
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />
       <Transactions />
       <TextButton

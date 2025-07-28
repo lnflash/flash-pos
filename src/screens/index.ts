@@ -10,6 +10,7 @@ import RewardsSuccess from './RewardsSuccess';
 import FlashcardBalance from './FlashcardBalance';
 import TransactionHistory from './TransactionHistory';
 import RegisteredRewardCards from './RegisteredRewardCards';
+import EventSettings from './EventSettings';
 import SupportChat from './SupportChat';
 
 export {
@@ -25,5 +26,6 @@ export {
   FlashcardBalance,
   TransactionHistory,
   RegisteredRewardCards,
+  EventSettings,
   SupportChat,
 };

@@ -4,9 +4,13 @@ import {Column, Container, Key, Label, Value, Wrapper} from './styled';
 
 type Props = {
   onViewRewardSettings: () => void;
+
+  eventModeEnabled?: boolean;
+  onViewEventSettings?: () => void;
 };
 
-const Settings: React.FC<Props> = ({onViewRewardSettings}) => {
+const Settings: React.FC<Props> = ({onViewRewardSettings, eventModeEnabled, onViewEventSettings}) => {
+
   return (
     <Wrapper>
       <Label>Settings</Label>
@@ -18,6 +22,18 @@ const Settings: React.FC<Props> = ({onViewRewardSettings}) => {
         </Column>
         <Icon name={'chevron-forward-outline'} type="ionicon" />
       </Container>
+
+      {eventModeEnabled && onViewEventSettings && (
+        <Container activeOpacity={0.5} onPress={onViewEventSettings}>
+          <Icon name={'calendar-outline'} type="ionicon" />
+          <Column>
+            <Key>Event Settings</Key>
+            <Value>Configure event rewards</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+      )}
+
     </Wrapper>
   );
 };

@@ -12,7 +12,10 @@ import {useAppSelector} from '../store/hooks';
 import {useLinkBuilder} from '@react-navigation/native';
 
 // store
-import {selectRewardConfig} from '../store/slices/rewardSlice';
+import {
+  selectRewardConfig,
+  selectEventConfig,
+} from '../store/slices/rewardSlice';
 
 // screens
 import {Keypad, Profile, Rewards, SupportChat} from '../screens';
@@ -110,13 +113,21 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
 export const HomeTabs = () => {
   const {username} = useAppSelector(state => state.user);
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const eventConfig = useAppSelector(selectEventConfig);
+
+  // Determine header title based on event mode
+  const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
+  const headerTitle =
+    isEventActive && eventConfig.eventDisplayName
+      ? eventConfig.eventDisplayName
+      : `Pay to ${username}`;
 
   return (
     <Tab.Navigator
       tabBar={props => <MyTabBar {...props} />}
       screenOptions={{
         headerShadowVisible: false,
-        headerTitle: `Pay to ${username}`,
+        headerTitle: headerTitle,
         headerTitleStyle: {fontFamily: 'Outfit-Bold'},
         headerTitleAlign: 'center',
         animation: 'shift',
