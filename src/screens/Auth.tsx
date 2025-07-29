@@ -23,15 +23,16 @@ const Auth: React.FC<Props> = ({navigation}) => {
     if (!value) return;
 
     toggleLoading(true);
+    const username = value.trim();
     try {
       const res = await client.query({
         query: AccountDefaultWallets,
-        variables: {username: value.trim()},
+        variables: {username},
       });
 
       dispatch(
         setUserData({
-          username: value,
+          username,
           walletId: res.data.accountDefaultWallet.id,
           walletCurrency: res.data.accountDefaultWallet.walletCurrency,
         }),
