@@ -58,6 +58,11 @@
 		<string>Outfit-Regular.ttf</string>
 		<string>Outfit-SemiBold.ttf</string>
 		<string>Outfit-Thin.ttf</string>
+		<string>Ionicons.ttf</string>
+		<string>FontAwesome.ttf</string>
+		<string>FontAwesome6_Brands.ttf</string>
+  		<string>FontAwesome6_Regular.ttf</string>
+  		<string>FontAwesome6_Solid.ttf</string>
 	</array>
 </dict>
 </plist>
