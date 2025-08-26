@@ -64,5 +64,9 @@
   		<string>FontAwesome6_Regular.ttf</string>
   		<string>FontAwesome6_Solid.ttf</string>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+	  <string>about</string>
+	</array>
 </dict>
 </plist>
