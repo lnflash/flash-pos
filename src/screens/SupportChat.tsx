@@ -175,7 +175,7 @@ const SupportChat = () => {
         domStorageEnabled={true}
         startInLoadingState={false} // We handle loading manually
         mixedContentMode="compatibility"
-        allowsInlineMediaPlaybook={true}
+        allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
         onLoadStart={handleLoadStart}
         onLoadEnd={handleLoadEnd}
@@ -187,6 +187,7 @@ const SupportChat = () => {
         allowsBackForwardNavigationGestures={false}
         webviewDebuggingEnabled={__DEV__}
         userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
+        originWhitelist={['*']}
       />
     </SafeAreaView>
   );
@@ -196,7 +197,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: 'white',
-    paddingBottom: 70,
   },
   errorContainer: {
     backgroundColor: '#f8d7da',
@@ -243,6 +243,7 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
+    marginBottom: 70,
   },
 });
 

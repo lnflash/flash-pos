@@ -1,5 +1,6 @@
 import React, {createContext, useEffect, useState} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
+import {Platform} from 'react-native';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -405,15 +406,16 @@ export const FlashcardProvider = ({children}: Props) => {
     }
   };
 
-  NfcManager.setEventListener(NfcEvents.DiscoverTag, handleTag);
+  if (Platform.OS !== 'ios') {
+    NfcManager.setEventListener(NfcEvents.DiscoverTag, handleTag);
 
-  NfcManager.setEventListener(NfcEvents.SessionClosed, () => {
-    NfcManager.cancelTechnologyRequest();
-    NfcManager.unregisterTagEvent();
-  });
+    NfcManager.setEventListener(NfcEvents.SessionClosed, () => {
+      NfcManager.cancelTechnologyRequest();
+      NfcManager.unregisterTagEvent();
+    });
 
-  NfcManager.registerTagEvent();
-
+    NfcManager.registerTagEvent();
+  }
   const getCardRewardLnurl = () => {
     // Return the LNURL that can receive rewards
     return lnurl;
@@ -429,6 +431,7 @@ export const FlashcardProvider = ({children}: Props) => {
     loading,
     error,
     isNfcEnabled,
+    handleTag,
     resetFlashcard,
     setNfcEnabled,
     getCardRewardLnurl,

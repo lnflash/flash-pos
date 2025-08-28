@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {Share} from 'react-native';
+import {Platform, Share} from 'react-native';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {StackScreenProps} from '@react-navigation/stack';
@@ -12,6 +12,7 @@ import {
   Amount,
   ExpireTime,
   InvoiceQRCode,
+  NfcButton,
   PrimaryButton,
   TextButton,
 } from '../components';
@@ -299,6 +300,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
   return (
     <Wrapper>
+      {Platform.OS === 'ios' && <NfcButton />}
       <InnerWrapper>
         <Amount
           hideTransactionHistory={!!paymentRequest}

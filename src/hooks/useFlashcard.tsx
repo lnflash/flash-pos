@@ -12,6 +12,7 @@ interface ContextProps {
   loading?: boolean;
   error?: string;
   isNfcEnabled?: boolean;
+  handleTag: (tag: TagEvent) => void;
   resetFlashcard: () => void;
   setNfcEnabled: (enabled: boolean) => void;
   getCardRewardLnurl: () => string | undefined;

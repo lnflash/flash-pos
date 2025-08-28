@@ -50,6 +50,9 @@ const Root = () => {
         headerTitle: headerTitle,
         headerTitleStyle: {fontFamily: 'Outfit-Bold'},
         headerTitleAlign: 'center',
+        headerBackTitle: 'Back',
+        headerBackTitleStyle: {fontFamily: 'Outfit-Regular', color: '#000'},
+        headerTintColor: '#000',
       }}>
       <Stack.Screen
         name="Auth"
