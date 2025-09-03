@@ -1,6 +1,6 @@
 import React, {useRef} from 'react';
 import {bech32} from 'bech32';
-import {Dimensions, Platform} from 'react-native';
+import {Dimensions} from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import styled from 'styled-components/native';
 import {usePrint} from '../hooks';
@@ -32,10 +32,12 @@ const Paycode = () => {
   const qrCode = `${FLASH_LN_ADDRESS_URL}/${username}?lightning=${lnurl}`;
 
   const handleQRRef = (c: any) => {
-    if (Platform.OS !== 'ios' && c?.toDataURL) {
-      c.toDataURL((base64Image: string) => {
-        qrCodeRef.current = base64Image;
-      });
+    if (c?.toDataURL) {
+      setTimeout(() => {
+        c.toDataURL((base64Image: string) => {
+          qrCodeRef.current = base64Image;
+        });
+      }, 100);
     }
   };
 
