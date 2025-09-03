@@ -1,4 +1,5 @@
 import React, {useEffect} from 'react';
+import {Platform} from 'react-native';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
 
@@ -88,21 +89,33 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         }`}</PrimaryAmount>
       </InnerWrapper>
       <BtnsWrapper>
-        <PrimaryButton
-          icon={hasBeenPrinted ? 'refresh' : 'print'}
-          btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
-          iconColor="#002118"
-          textStyle={{color: '#002118'}}
-          btnStyle={{backgroundColor: '#fff'}}
-          onPress={onPrintReceipt}
-        />
-        <SecondaryButton
-          btnText="Done"
-          iconColor="#fff"
-          textStyle={{color: '#fff'}}
-          btnStyle={{borderColor: '#fff', marginTop: 10}}
-          onPress={onDone}
-        />
+        {Platform.OS !== 'ios' ? (
+          <>
+            <PrimaryButton
+              icon={hasBeenPrinted ? 'refresh' : 'print'}
+              btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
+              iconColor="#002118"
+              textStyle={{color: '#002118'}}
+              btnStyle={{backgroundColor: '#fff'}}
+              onPress={onPrintReceipt}
+            />
+            <SecondaryButton
+              btnText="Done"
+              iconColor="#fff"
+              textStyle={{color: '#fff'}}
+              btnStyle={{borderColor: '#fff', marginTop: 10}}
+              onPress={onDone}
+            />
+          </>
+        ) : (
+          <PrimaryButton
+            btnText="Done"
+            iconColor="#002118"
+            textStyle={{color: '#002118'}}
+            btnStyle={{backgroundColor: '#fff'}}
+            onPress={onDone}
+          />
+        )}
       </BtnsWrapper>
     </Wrapper>
   );
