@@ -11,6 +11,7 @@ import {Provider} from 'react-redux';
 import {ApolloProvider} from '@apollo/client';
 import Toast from 'react-native-toast-message';
 import {PersistGate} from 'redux-persist/integration/react';
+import {SafeAreaView} from 'react-native-safe-area-context';
 
 // store
 import {store, persistor} from './src/store';
@@ -30,19 +31,21 @@ import {toastConfig} from './src/utils/toast';
 
 function App(): React.JSX.Element {
   return (
-    <Provider store={store}>
-      <PersistGate loading={null} persistor={persistor}>
-        <StatusBar barStyle={'light-content'} backgroundColor={'#000'} />
-        <ApolloProvider client={client}>
-          <ActivityIndicatorProvider>
-            <FlashcardProvider>
-              <Layout />
-            </FlashcardProvider>
-            <Toast config={toastConfig} />
-          </ActivityIndicatorProvider>
-        </ApolloProvider>
-      </PersistGate>
-    </Provider>
+    <SafeAreaView style={{flex: 1}}>
+      <Provider store={store}>
+        <PersistGate loading={null} persistor={persistor}>
+          <StatusBar barStyle={'light-content'} backgroundColor={'#000'} />
+          <ApolloProvider client={client}>
+            <ActivityIndicatorProvider>
+              <FlashcardProvider>
+                <Layout />
+              </FlashcardProvider>
+              <Toast config={toastConfig} />
+            </ActivityIndicatorProvider>
+          </ApolloProvider>
+        </PersistGate>
+      </Provider>
+    </SafeAreaView>
   );
 }
 

@@ -33,9 +33,11 @@ const Paycode = () => {
 
   const handleQRRef = (c: any) => {
     if (c?.toDataURL) {
-      c.toDataURL((base64Image: string) => {
-        qrCodeRef.current = base64Image;
-      });
+      setTimeout(() => {
+        c.toDataURL((base64Image: string) => {
+          qrCodeRef.current = base64Image;
+        });
+      }, 100);
     }
   };
 

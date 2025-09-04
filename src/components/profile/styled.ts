@@ -1,7 +1,7 @@
 import styled from 'styled-components/native';
 
 export const Wrapper = styled.View`
-  margin-bottom: 20;
+  margin-bottom: 20px;
 `;
 
 export const Label = styled.Text`
@@ -19,7 +19,7 @@ export const Container = styled.TouchableOpacity`
   justify-content: space-between;
   padding: 16px;
   min-height: 60px;
-  margin-top: 8;
+  margin-top: 8px;
 `;
 
 export const Column = styled.View`
