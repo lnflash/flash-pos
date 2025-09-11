@@ -21,6 +21,7 @@ interface FlashcardInterface {
   loading?: boolean;
   error?: string;
   isNfcEnabled?: boolean;
+  handleTag: (tag: TagEvent) => void;
   resetFlashcard: () => void;
   setNfcEnabled: (enabled: boolean) => void;
   getCardRewardLnurl: () => string | undefined;
@@ -31,6 +32,7 @@ interface FlashcardInterface {
 
 const defaultValue: FlashcardInterface = {
   isNfcEnabled: true,
+  handleTag: (tag: TagEvent) => {},
   resetFlashcard: () => {},
   setNfcEnabled: () => {},
   getCardRewardLnurl: () => undefined,

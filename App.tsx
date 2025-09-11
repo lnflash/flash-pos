@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import {StatusBar} from 'react-native';
+import {Platform, StatusBar} from 'react-native';
 import {Provider} from 'react-redux';
 import {ApolloProvider} from '@apollo/client';
 import Toast from 'react-native-toast-message';
@@ -34,7 +34,10 @@ function App(): React.JSX.Element {
     <SafeAreaView style={{flex: 1}}>
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
-          <StatusBar barStyle={'light-content'} backgroundColor={'#000'} />
+          <StatusBar
+            barStyle={Platform.OS === 'ios' ? 'dark-content' : 'light-content'}
+            backgroundColor={'#000'}
+          />
           <ApolloProvider client={client}>
             <ActivityIndicatorProvider>
               <FlashcardProvider>
