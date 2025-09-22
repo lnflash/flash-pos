@@ -5,6 +5,9 @@ import * as Animatable from 'react-native-animatable';
 import {StackScreenProps} from '@react-navigation/stack';
 import axios from 'axios';
 
+// components
+import {PrimaryButton, SecondaryButton} from '../components';
+
 // hooks
 import {useFlashcard, useRealtimePrice} from '../hooks';
 import {useFocusEffect} from '@react-navigation/native';
@@ -18,6 +21,7 @@ import {BTC_PAY_SERVER} from '@env';
 
 // utils
 import {toastShow} from '../utils/toast';
+import {readFlashcard} from '../utils/flashcard';
 import {
   calculateReward,
   formatRewardForDisplay,
@@ -57,11 +61,12 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   const dispatch = useAppDispatch();
   const {satsToCurrency} = useRealtimePrice();
-  const {loading, balanceInSats, lnurl, resetFlashcard} = useFlashcard();
   const rewardConfig = useAppSelector(selectRewardConfig);
   const merchantRewardId = useAppSelector(selectMerchantRewardId);
   const {username} = useAppSelector(state => state.user);
   const {currency} = useAppSelector(state => state.amount);
+  const {loading, balanceInSats, lnurl, resetFlashcard, handleTag} =
+    useFlashcard();
 
   // Event mode configuration
   const eventConfig = useAppSelector(selectEventConfig);
@@ -351,6 +356,11 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     }, [loading, lnurl, isRewardsEnabled, onReward]),
   );
 
+  const onPressActivateNFC = async () => {
+    const tag = await readFlashcard();
+    if (tag) handleTag(tag);
+  };
+
   // Don't render if rewards are disabled
   if (!isRewardsEnabled) {
     return (
@@ -368,60 +378,44 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   return (
     <Wrapper isExternalPayment={isExternalPayment}>
-      {/* Simplified Header Section */}
-      <HeaderSection>
-        <Title>
-          {isExternalPayment
-            ? 'Claim Bitcoin Rewards!'
-            : 'Tap Flashcard for Rewards!'}
-        </Title>
+      <Title>
+        {isExternalPayment
+          ? 'Claim Bitcoin Rewards!'
+          : 'Tap Flashcard for Rewards!'}
+      </Title>
+      {purchaseDisplayAmount && (
+        <PurchaseCard animation="fadeInDown" duration={800}>
+          <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
+          {rewardPercentage && (
+            <RewardRateBadge>
+              <RewardRateText>{rewardPercentage}% Reward</RewardRateText>
+            </RewardRateBadge>
+          )}
+        </PurchaseCard>
+      )}
+      <Image
+        animation="pulse"
+        easing="ease-out"
+        iterationCount="infinite"
+        duration={2000}
+        source={Pos}
+      />
 
-        {/* Simplified Purchase Context */}
-        {purchaseDisplayAmount && (
-          <Animatable.View animation="fadeInDown" duration={800}>
-            <PurchaseCard>
-              <PurchaseAmount>{purchaseDisplayAmount}</PurchaseAmount>
-              {rewardPercentage && (
-                <RewardRateBadge>
-                  <RewardRateText>{rewardPercentage}% Reward</RewardRateText>
-                </RewardRateBadge>
-              )}
-            </PurchaseCard>
-          </Animatable.View>
-        )}
+      <RewardAmountCard animation="fadeInUp" duration={800} delay={200}>
+        <RewardAmountLabel>You'll Earn</RewardAmountLabel>
+        <RewardAmountText>
+          {rewardCalculation.rewardAmount} points
+        </RewardAmountText>
+      </RewardAmountCard>
 
-        {/* Animated Icon */}
-        <IconSection>
-          <Animatable.View
-            animation="pulse"
-            easing="ease-out"
-            iterationCount="infinite"
-            duration={2000}>
-            <Image source={Pos} />
-          </Animatable.View>
-        </IconSection>
-      </HeaderSection>
+      <ActionHint>Tap your flashcard to claim reward</ActionHint>
 
-      {/* Simplified Reward Information */}
-      <RewardSection>
-        <Animatable.View animation="fadeInUp" duration={800} delay={200}>
-          <RewardAmountCard>
-            <RewardAmountLabel>You'll Earn</RewardAmountLabel>
-            <RewardAmountText>
-              {rewardCalculation.rewardAmount} points
-            </RewardAmountText>
-          </RewardAmountCard>
-        </Animatable.View>
-
-        <ActionHint>Tap your flashcard to claim reward</ActionHint>
-
-        {/* Cancel Button */}
-        <CancelButtonContainer>
-          <CancelButton onPress={() => navigation.goBack()}>
-            <CancelButtonText>Cancel</CancelButtonText>
-          </CancelButton>
-        </CancelButtonContainer>
-      </RewardSection>
+      <PrimaryButton
+        icon="nfc-symbol"
+        btnText="Activate NFC"
+        onPress={onPressActivateNFC}
+      />
+      <SecondaryButton btnText="Cancel" onPress={() => navigation.goBack()} />
     </Wrapper>
   );
 };
@@ -430,6 +424,8 @@ export default Rewards;
 
 const Wrapper = styled.View<{isExternalPayment?: boolean}>`
   flex: 1;
+  align-items: center;
+  justify-content: space-evenly;
   background-color: #ffffff;
   padding: 20px;
   padding-bottom: ${props => (props.isExternalPayment ? '20px' : '140px')};
@@ -458,11 +454,6 @@ const DisabledMessage = styled.Text`
   line-height: 24px;
 `;
 
-const HeaderSection = styled.View`
-  align-items: center;
-  margin-bottom: 20px;
-`;
-
 const Title = styled.Text`
   font-size: 28px;
   font-family: 'Outfit-Bold';
@@ -472,7 +463,7 @@ const Title = styled.Text`
   line-height: 34px;
 `;
 
-const PurchaseCard = styled.View`
+const PurchaseCard = styled(Animatable.View)`
   background-color: #f8f9fa;
   border-radius: 16px;
   padding: 20px;
@@ -483,13 +474,6 @@ const PurchaseCard = styled.View`
   shadow-radius: 8px;
   elevation: 3;
   min-width: 280px;
-`;
-
-const PurchaseLabel = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Medium';
-  color: #666666;
-  margin-bottom: 4px;
 `;
 
 const PurchaseAmount = styled.Text`
@@ -512,23 +496,12 @@ const RewardRateText = styled.Text`
   color: #ffffff;
 `;
 
-const IconSection = styled.View`
-  align-items: center;
-  margin-vertical: -70px;
-`;
-
-const Image = styled.Image`
+const Image = styled(Animatable.Image)`
   width: ${Math.min(width - 120, 250)}px;
   height: ${Math.min(width - 120, 250)}px;
 `;
 
-const RewardSection = styled.View`
-  align-items: center;
-  flex: 1;
-  justify-content: center;
-`;
-
-const RewardAmountCard = styled.View`
+const RewardAmountCard = styled(Animatable.View)`
   background-color: #007856;
   border-radius: 20px;
   padding: 24px 32px;
@@ -556,41 +529,6 @@ const RewardAmountText = styled.Text`
   margin-bottom: 4px;
 `;
 
-const RewardCurrencyText = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: rgba(255, 255, 255, 0.7);
-`;
-
-const RewardDetailsContainer = styled.View`
-  align-items: center;
-  margin-bottom: 20px;
-`;
-
-const RewardDetailsText = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Medium';
-  text-align: center;
-  color: #666666;
-  margin-bottom: 12px;
-  line-height: 22px;
-`;
-
-const ConstraintBadge = styled.View<{type: 'minimum' | 'maximum'}>`
-  background-color: ${props =>
-    props.type === 'minimum' ? '#FFA500' : '#FF6B6B'};
-  border-radius: 12px;
-  padding-horizontal: 12px;
-  padding-vertical: 6px;
-  margin-top: 4px;
-`;
-
-const ConstraintText = styled.Text`
-  font-size: 12px;
-  font-family: 'Outfit-Medium';
-  color: #ffffff;
-`;
-
 const ActionHint = styled.Text`
   font-size: 18px;
   font-family: 'Outfit-Regular';
@@ -598,24 +536,4 @@ const ActionHint = styled.Text`
   color: #888888;
   line-height: 24px;
   font-style: italic;
-`;
-
-const CancelButtonContainer = styled.View`
-  margin-top: 30px;
-  align-items: center;
-`;
-
-const CancelButton = styled.TouchableOpacity`
-  background-color: transparent;
-  border: 2px solid #ccc;
-  border-radius: 25px;
-  padding: 12px 30px;
-  min-width: 120px;
-`;
-
-const CancelButtonText = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Medium';
-  color: #666;
-  text-align: center;
 `;
