@@ -22,7 +22,7 @@ import {addTransaction} from '../store/slices/transactionHistorySlice';
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const Success: React.FC<Props> = ({navigation, route}) => {
-  const {printSilently, printReceipt} = usePrint();
+  const {print, printSilently, printReceipt, printReceiptHTML} = usePrint();
   const {setNfcEnabled} = useFlashcard();
 
   const dispatch = useAppDispatch();
@@ -56,7 +56,11 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   const onPrintReceipt = () => {
     if (!hasBeenPrinted) {
       // First print - use silent printing
-      printSilently();
+      if (Platform.OS === 'ios') {
+        print();
+      } else {
+        printSilently();
+      }
       setHasBeenPrinted(true);
     } else if (lastTransaction) {
       // Subsequent prints - use reprint functionality
@@ -72,8 +76,11 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         paymentHash: lastTransaction.invoice.paymentHash,
         status: lastTransaction.status,
       };
-
-      printReceipt(receiptData);
+      if (Platform.OS === 'ios') {
+        printReceiptHTML(receiptData);
+      } else {
+        printReceipt(receiptData);
+      }
     }
   };
 
@@ -89,33 +96,21 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         }`}</PrimaryAmount>
       </InnerWrapper>
       <BtnsWrapper>
-        {Platform.OS !== 'ios' ? (
-          <>
-            <PrimaryButton
-              icon={hasBeenPrinted ? 'refresh' : 'print'}
-              btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
-              iconColor="#002118"
-              textStyle={{color: '#002118'}}
-              btnStyle={{backgroundColor: '#fff'}}
-              onPress={onPrintReceipt}
-            />
-            <SecondaryButton
-              btnText="Done"
-              iconColor="#fff"
-              textStyle={{color: '#fff'}}
-              btnStyle={{borderColor: '#fff', marginTop: 10}}
-              onPress={onDone}
-            />
-          </>
-        ) : (
-          <PrimaryButton
-            btnText="Done"
-            iconColor="#002118"
-            textStyle={{color: '#002118'}}
-            btnStyle={{backgroundColor: '#fff'}}
-            onPress={onDone}
-          />
-        )}
+        <PrimaryButton
+          icon={hasBeenPrinted ? 'rotate' : 'print'}
+          btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
+          iconColor="#002118"
+          textStyle={{color: '#002118'}}
+          btnStyle={{backgroundColor: '#fff'}}
+          onPress={onPrintReceipt}
+        />
+        <SecondaryButton
+          btnText="Done"
+          iconColor="#fff"
+          textStyle={{color: '#fff'}}
+          btnStyle={{borderColor: '#fff', marginTop: 10}}
+          onPress={onDone}
+        />
       </BtnsWrapper>
     </Wrapper>
   );
