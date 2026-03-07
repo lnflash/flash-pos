@@ -4,6 +4,7 @@ declare module '@env' {
   export const FLASH_LN_ADDRESS_URL = string;
   export const FLASH_LN_ADDRESS = string;
   export const BTC_PAY_SERVER = string;
+  export const CASHU_MINT_URL = string; // e.g. "https://forge.flashapp.me"
   export const PULL_PAYMENT_ID = string;
 
   // Reward system configuration

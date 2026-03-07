@@ -18,6 +18,7 @@ import {
   EventSettings,
 } from '../screens';
 import CashuProvision from '../screens/CashuProvision';
+import CashuPayment from '../screens/CashuPayment';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
@@ -136,6 +137,15 @@ const Root = () => {
           animation: 'slide_from_right',
           headerStyle: {backgroundColor: '#0a0a0a'},
           headerTintColor: '#FF6600',
+        }}
+      />
+      <Stack.Screen
+        name="CashuPayment"
+        component={CashuPayment}
+        options={{
+          headerShown: false,
+          animation: 'fade',
+          gestureEnabled: false,
         }}
       />
     </Stack.Navigator>

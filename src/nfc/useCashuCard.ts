@@ -38,6 +38,8 @@ import {
   CardInfo,
   CardProof,
   SW_OK,
+  CASHU_CLA,
+  INS_SPEND_PROOF,
 } from './cashu-apdu';
 
 export class CashuCardError extends Error {
@@ -174,6 +176,26 @@ const useCashuCard = () => {
     [sendAndCheck],
   );
 
+  // ─── Spend commands ─────────────────────────────────────────────────────
+
+  /**
+   * SPEND_PROOF — atomically marks the proof spent and returns a 64-byte
+   * BIP-340 Schnorr signature over the provided 32-byte message.
+   *
+   * msg = SHA256(reconstructP2PKSecret(proof.nonce, cardPubkey))
+   *
+   * @param slotIndex  slot to spend (0–31)
+   * @param msg        32 bytes to sign (as number[])
+   * @returns          64-byte Schnorr signature as number[]
+   */
+  const spendProof = useCallback(
+    async (slotIndex: number, msg: number[]): Promise<number[]> => {
+      const apdu = [CASHU_CLA, INS_SPEND_PROOF, slotIndex & 0xff, 0x00, 32].concat(msg);
+      return sendAndCheck(apdu, 'SPEND_PROOF');
+    },
+    [sendAndCheck],
+  );
+
   // ─── Compound provisioning flow ─────────────────────────────────────────
 
   /**
@@ -252,6 +274,7 @@ const useCashuCard = () => {
     setPin,
     verifyPin,
     loadProof,
+    spendProof,
     readBlankCardPubkey,
     writeProofs,
   };

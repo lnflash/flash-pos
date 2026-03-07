@@ -45,7 +45,7 @@ type Props = StackScreenProps<RootStackType, 'Invoice'>;
 
 const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
-  const {paymentRequest, paymentHash, paymentSecret} = useAppSelector(
+  const {paymentRequest, paymentHash, paymentSecret, usdCents} = useAppSelector(
     state => state.invoice,
   );
   const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
@@ -319,6 +319,17 @@ const Invoice: React.FC<Props> = ({navigation}) => {
           </RowWrapper>
         )}
       </InnerWrapper>
+      {paymentRequest && usdCents > 0 && (
+        <PrimaryButton
+          btnText="💳  Pay with Flash Card"
+          onPress={() =>
+            navigation.navigate('CashuPayment', {
+              paymentRequest,
+              amountCents: usdCents,
+            })
+          }
+        />
+      )}
       <PrimaryButton btnText="Back" onPress={() => navigation.goBack()} />
     </Wrapper>
   );

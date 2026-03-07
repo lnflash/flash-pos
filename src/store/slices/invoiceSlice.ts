@@ -4,6 +4,8 @@ interface InvoiceSlice {
   paymentHash: string;
   paymentRequest: string;
   paymentSecret: string;
+  /** USD amount in cents — used for Flash card tap-to-pay (ENG-178) */
+  usdCents: number;
   loading: boolean;
   error: string;
 }
@@ -12,6 +14,7 @@ const initialState: InvoiceSlice = {
   paymentHash: '',
   paymentRequest: '',
   paymentSecret: '',
+  usdCents: 0,
   loading: false,
   error: '',
 };

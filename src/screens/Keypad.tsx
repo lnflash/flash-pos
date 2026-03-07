@@ -151,7 +151,10 @@ const Keypad = () => {
 
       if (result.data?.lnUsdInvoiceCreateOnBehalfOfRecipient?.invoice) {
         dispatch(
-          setInvoice(result.data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice),
+          setInvoice({
+            ...result.data.lnUsdInvoiceCreateOnBehalfOfRecipient.invoice,
+            usdCents: Math.round(cents),
+          }),
         );
         navigation.navigate('Invoice');
       } else {

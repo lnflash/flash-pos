@@ -16,6 +16,7 @@ type RootStackType = {
   EventSettings: undefined;
   SupportChat: undefined;
   CashuProvision: undefined;
+  CashuPayment: {paymentRequest: string; amountCents: number};
 };
 
 // Rewards screen parameters - all optional for backward compatibility
