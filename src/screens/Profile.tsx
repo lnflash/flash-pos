@@ -179,8 +179,13 @@ const Profile = () => {
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />
       <Transactions />
       <TextButton
+        title="💳  Issue Flash Card"
+        btnStyle={{marginTop: 20}}
+        onPress={() => navigation.navigate('CashuProvision')}
+      />
+      <TextButton
         title="Logout"
-        btnStyle={{marginTop: 20, marginBottom: 150}}
+        btnStyle={{marginTop: 8, marginBottom: 150}}
         onPress={onLogout}
       />
       <PinModal

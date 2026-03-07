@@ -17,6 +17,7 @@ import {
   RegisteredRewardCards,
   EventSettings,
 } from '../screens';
+import CashuProvision from '../screens/CashuProvision';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
@@ -123,6 +124,18 @@ const Root = () => {
         options={{
           headerShown: false,
           animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="CashuProvision"
+        component={CashuProvision}
+        options={{
+          headerShown: true,
+          headerTitle: 'Issue Flash Card',
+          headerTitleStyle: {fontFamily: 'Outfit-Bold'},
+          animation: 'slide_from_right',
+          headerStyle: {backgroundColor: '#0a0a0a'},
+          headerTintColor: '#FF6600',
         }}
       />
     </Stack.Navigator>
