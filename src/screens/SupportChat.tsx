@@ -9,94 +9,69 @@ import {
   StyleSheet,
 } from 'react-native';
 
+const CHATWOOT_HTML = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Flash Support</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #fff; }
+    .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #666; font-size: 16px; }
+    /* Force Chatwoot widget to fill the screen */
+    .woot-widget-holder { position: fixed !important; top: 0 !important; bottom: 0 !important; left: 0 !important; right: 0 !important; max-height: 100vh !important; min-height: 100vh !important; border-radius: 0 !important; }
+    .woot--bubble-holder { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">Connecting to support...</div>
+
+  <script>
+    window.chatwootSettings = {
+      position: "right",
+      type: "expanded_bubble",
+      launcherTitle: "Flash Support"
+    };
+
+    (function(d, t) {
+      var BASE_URL = "https://app.chatwoot.com/";
+      var g = d.createElement(t), s = d.getElementsByTagName(t)[0];
+      g.src = BASE_URL + "/packs/js/sdk.js";
+      g.async = true;
+      s.parentNode.insertBefore(g, s);
+      g.onload = function() {
+        window.chatwootSDK.run({
+          websiteToken: 'iXmsgU54be2SiQvgBg77bn9S',
+          baseUrl: BASE_URL
+        });
+      };
+    })(document, "script");
+
+    window.addEventListener('chatwoot:ready', function() {
+      document.getElementById('loading').style.display = 'none';
+      if (window.$chatwoot) {
+        window.$chatwoot.toggle('open');
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'chatReady',
+        success: true
+      }));
+    });
+  </script>
+</body>
+</html>
+`;
+
 const SupportChat = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chatReady, setChatReady] = useState(false);
   const webViewRef = useRef<any>(null);
 
-  const chatUrl = 'https://getflash.io/app/tidio.html';
-
-  const handleLoadStart = () => {
-    console.log('WebView started loading');
-    setLoading(true);
-    setError(null);
-    setChatReady(false);
-  };
-
   const handleLoadEnd = () => {
-    console.log('WebView finished loading');
-    setLoading(false);
-
-    // Inject additional JavaScript to ensure chat opens
-    const injectJS = `
-      console.log('Injecting chat opening script...');
-      
-      let attempts = 0;
-      const maxAttempts = 20;
-      
-      function forceOpenChat() {
-        attempts++;
-        console.log('Attempt to open chat:', attempts);
-        
-        if (window.tidioChatApi) {
-          console.log('Tidio API found, opening chat...');
-          try {
-            window.tidioChatApi.open();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatOpened',
-              success: true
-            }));
-            return true;
-          } catch (error) {
-            console.error('Error opening chat:', error);
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatError',
-              error: error.message
-            }));
-          }
-        }
-        
-        if (attempts < maxAttempts) {
-          setTimeout(forceOpenChat, 500);
-        } else {
-          console.error('Failed to open chat after', maxAttempts, 'attempts');
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'chatTimeout',
-            attempts: attempts
-          }));
-        }
-        
-        return false;
-      }
-      
-      // Try multiple approaches
-      setTimeout(forceOpenChat, 1000);
-      
-      // Also listen for the ready event
-      document.addEventListener('tidioChat-ready', function() {
-        console.log('Tidio ready event received in injected script');
-        setTimeout(() => {
-          if (window.tidioChatApi) {
-            window.tidioChatApi.open();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatReady',
-              success: true
-            }));
-          }
-        }, 500);
-      });
-      
-      // Send status update
-      window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: 'scriptInjected',
-        timestamp: new Date().toISOString()
-      }));
-      
-      true; // Return true to indicate successful injection
-    `;
-
-    webViewRef.current?.injectJavaScript(injectJS);
+    // WebView loaded, Chatwoot SDK will initialize
+    setTimeout(() => setLoading(false), 3000); // Fallback timeout
   };
 
   const handleError = (syntheticEvent: any) => {
@@ -111,28 +86,8 @@ const SupportChat = () => {
       const data = JSON.parse(event.nativeEvent?.data);
       console.log('Message from WebView:', data);
 
-      switch (data.type) {
-        case 'chatOpened':
-          setChatReady(true);
-          console.log('Chat opened successfully');
-          break;
-        case 'chatReady':
-          setChatReady(true);
-          console.log('Chat is ready');
-          break;
-        case 'chatError':
-          console.error('Chat error:', data.error);
-          setError(`Chat error: ${data.error}`);
-          break;
-        case 'chatTimeout':
-          console.error('Chat timeout after', data.attempts, 'attempts');
-          setError('Chat failed to load. Please try refreshing.');
-          break;
-        case 'scriptInjected':
-          console.log('Script injected at:', data.timestamp);
-          break;
-        default:
-          console.log('Unknown message type:', data.type);
+      if (data.type === 'chatReady') {
+        setLoading(false);
       }
     } catch (e) {
       console.log('Raw WebView message:', event.nativeEvent.data);
@@ -142,13 +97,11 @@ const SupportChat = () => {
   const handleRefresh = () => {
     setError(null);
     setLoading(true);
-    setChatReady(false);
     webViewRef.current?.reload();
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Error display */}
       {error && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
@@ -158,35 +111,29 @@ const SupportChat = () => {
         </View>
       )}
 
-      {/* Loading overlay */}
       {loading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#007856" />
-          <Text style={styles.loadingText}>Loading Tidio Chat...</Text>
+          <Text style={styles.loadingText}>Loading Support Chat...</Text>
         </View>
       )}
 
-      {/* WebView */}
       <WebView
         ref={webViewRef}
-        source={{uri: chatUrl}}
+        source={{html: CHATWOOT_HTML}}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        startInLoadingState={false} // We handle loading manually
+        startInLoadingState={false}
         mixedContentMode="compatibility"
         allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        onLoadStart={handleLoadStart}
         onLoadEnd={handleLoadEnd}
         onError={handleError}
         onMessage={handleMessage}
         scalesPageToFit={false}
         bounces={false}
         scrollEnabled={true}
-        allowsBackForwardNavigationGestures={false}
         webviewDebuggingEnabled={__DEV__}
-        userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
         originWhitelist={['*']}
       />
     </SafeAreaView>
