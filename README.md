@@ -1,79 +1,142 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Flash POS
 
-# Getting Started
+> ⚡ A Bitcoin Lightning Point-of-Sale app for merchants — powered by [Flash](https://getflash.io)
 
->**Note**: Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/environment-setup) instructions till "Creating a new application" step, before proceeding.
+Flash POS is a React Native mobile application that enables merchants to accept Bitcoin Lightning payments quickly and privately. Built for the Caribbean and beyond.
 
-## Step 1: Start the Metro Server
+## Screenshots
 
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
+| Payment Screen | Transaction History | Settings |
+|---|---|---|
+| ![Payment](docs/screenshots/payment.png) | ![History](docs/screenshots/history.png) | ![Settings](docs/screenshots/settings.png) |
 
-To start Metro, run the following command from the _root_ of your React Native project:
+> 📸 Screenshots coming soon — see the `/docs/screenshots` folder.
+
+## Features
+
+- ⚡ Accept Bitcoin Lightning payments via QR code
+- 💵 USD / local currency display with real-time conversion
+- 📋 Full transaction history with search
+- 🖨️ Receipt printer support (ESC/POS thermal printers)
+- 📲 NFC tap-to-pay support (where available)
+- 🔒 Non-custodial — you hold your keys
+- 🌐 Works offline for invoicing (pays settle when connected)
+
+## Supported Hardware
+
+### Receipt Printers
+- Any ESC/POS compatible thermal printer (Bluetooth or USB)
+- Tested with: EPSON TM-T20, Star TSP100, MUNBYN printers
+- Connect via Bluetooth settings before launching the app
+
+### NFC Readers
+- Android devices with NFC hardware enabled
+- iOS devices with NFC entitlement (iPhone 7+)
+- Supports Lightning NFC cards (BOLT card compatible)
+
+### Mobile Devices
+- Android 8.0+ (API level 26+)
+- iOS 13.0+
+- Recommended: Any mid-range or better smartphone from 2019 onwards
+
+## Local Development Setup
+
+### Prerequisites
+
+- Node.js 18+ and Yarn
+- React Native CLI: `npm install -g @react-native-community/cli`
+- For iOS: Xcode 14+ and CocoaPods (`gem install cocoapods`)
+- For Android: Android Studio with SDK 33+, Java 11+
+
+### Installation
 
 ```bash
-# using npm
-npm start
+# Clone the repository
+git clone https://github.com/lnflash/flash-pos.git
+cd flash-pos
 
-# OR using Yarn
-yarn start
+# Install dependencies
+yarn install
+
+# Copy environment config
+cp .env.example .env
+# Edit .env with your Flash API credentials
 ```
 
-## Step 2: Start your Application
-
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
-
-### For Android
+### iOS
 
 ```bash
-# using npm
-npm run android
+# Install CocoaPods dependencies
+cd ios && pod install && cd ..
 
-# OR using Yarn
+# Start Metro bundler
+yarn start
+
+# Run on iOS simulator (new terminal)
+yarn ios
+
+# Run on physical device
+yarn ios --device
+```
+
+### Android
+
+```bash
+# Start Metro bundler
+yarn start
+
+# Run on Android emulator or connected device
 yarn android
 ```
 
-### For iOS
+### Environment Variables
 
-```bash
-# using npm
-npm run ios
+Copy `.env.example` to `.env` and configure:
 
-# OR using Yarn
-yarn ios
+```env
+FLASH_API_URL=https://api.flashapp.me
+FLASH_WS_URL=wss://ws.flashapp.me
+# Add your credentials from the Flash developer portal
 ```
 
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
+## Getting Started for Contributors
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+Welcome! We appreciate contributions of all kinds.
 
-## Step 3: Modifying your App
+1. **Fork** this repository
+2. **Clone** your fork: `git clone https://github.com/YOUR_USERNAME/flash-pos.git`
+3. **Create a branch**: `git checkout -b feature/your-feature-name`
+4. **Make your changes** and test thoroughly on both iOS and Android
+5. **Commit** with a clear message: `git commit -m 'feat: add your feature'`
+6. **Push** and open a Pull Request against `main`
 
-Now that you have successfully run the app, let's modify it.
+Please read [CONTRIBUTING.md](https://github.com/lnflash/.github/blob/main/CONTRIBUTING.md) before submitting.
 
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+### Running Tests
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+```bash
+yarn test
+yarn lint
+```
 
-## Congratulations! :tada:
+### Commit Convention
 
-You've successfully run and modified your React Native App. :partying_face:
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+- `feat:` — new feature
+- `fix:` — bug fix
+- `docs:` — documentation changes
+- `chore:` — maintenance tasks
 
-### Now what?
+## Bounty Program
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [Introduction to React Native](https://reactnative.dev/docs/getting-started).
+This project participates in the Flash Bounty Program. Open issues labeled `💰 bounty` are available for contributors to claim. Payment is in Bitcoin via Lightning on merge.
 
-# Troubleshooting
+See [CONTRIBUTING.md](https://github.com/lnflash/.github/blob/main/CONTRIBUTING.md) for details.
 
-If you can't get this to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+## License
 
-# Learn More
+MIT — see [LICENSE](LICENSE) for details.
 
-To learn more about React Native, take a look at the following resources:
+---
 
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Built with ❤️ by the [Flash](https://getflash.io) team and contributors.
