@@ -1,3 +1,113 @@
+# Flash POS
+
+Flash POS is a high-performance Point of Sale application built with React Native, designed for lightning-fast Bitcoin payments and automated reward distributions.
+
+## 📱 Screenshots
+
+| Payment Screen | Transaction History | Settings |
+|---|---|---|
+| ![Payment](https://github.com/lnflash/flash-pos/raw/main/docs/screenshots/payment.png) | ![History](https://github.com/lnflash/flash-pos/raw/main/docs/screenshots/history.png) | ![Settings](https://github.com/lnflash/flash-pos/raw/main/docs/screenshots/settings.png) |
+*Note: Provide your own screenshots in the docs/screenshots folder.*
+
+## 🚀 Quick Start
+
+### Prerequisites
+- [Node.js](https://nodejs.org/) (v18+)
+- [Yarn](https://yarnpkg.com/)
+- [React Native Environment Setup](https://reactnative.dev/docs/environment-setup) (Ruby, CocoaPods for iOS, Android Studio for Android)
+
+### Setup Guide
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/lnflash/flash-pos.git
+   cd flash-pos
+   ```
+
+2. **Install dependencies**
+   ```bash
+   yarn install
+   cd ios && pod install && cd ..
+   ```
+
+3. **Configure Environment**
+   Copy the example environment file and update the values:
+   ```bash
+   cp .env.example .env
+   ```
+   Update `.env` with your GraphQL endpoints and BTCPay Server details.
+
+4. **Run the Application**
+
+   **For iOS:**
+   ```bash
+   npx react-native run-ios
+   ```
+
+   **For Android:**
+   ```bash
+   npx react-native run-android
+   ```
+
+## 🔌 Supported Hardware
+
+Flash POS is designed to be hardware-agnostic but works best with:
+
+- **Receipt Printers:**
+  - Epson TM-m30 series (Bluetooth/Network)
+  - Star Micronics mC-Print3
+  - Standard ESC/POS thermal printers
+
+- **NFC Readers:**
+  - Built-in NFC for iOS and Android (for Bolt Card/LNURL-withdraw)
+  - External ACS ACR122U (via USB OTG on Android)
+
+- **Scanning:**
+  - Integrated camera for QR code scanning
+  - Bluetooth HID barcode scanners
+
+## 🛠️ Development & Contribution
+
+We welcome contributors! Here is how you can get started:
+
+### Project Structure
+- `/src` - Main React Native source code
+- `/ios` & `/android` - Native platform code
+- `.env.example` - Configuration template for API and rewards logic
+
+### Coding Standards
+- **Linting:** We use ESLint and Prettier. Run `yarn lint` to check your code.
+- **State Management:** Logic is handled via Redux. Ensure reward calculations are tested.
+- **Review Process:** Please see our [Copilot PR Instructions](.github/copilot-instructions.md) for details on what we look for in reviews.
+
+### Testing
+Before submitting a PR, ensure all tests pass:
+```bash
+yarn test
+```
+
+### Contribution Workflow
+1. Fork the repo and create your branch from `main`.
+2. If you've added code that should be tested, add tests.
+3. Ensure the app builds locally on at least one platform.
+4. Submit a Pull Request with a clear description of the changes.
+
+## 💰 Rewards & Configuration
+
+The app includes a sophisticated reward system. You can configure:
+- `DEFAULT_REWARD_RATE`: Percentage of purchase given back in sats.
+- `EVENT_MODE_ENABLED`: Enable special promotional periods.
+- `EVENT_TRACK_BY`: Choose between `flashcard` or `lightning_address` for customer tracking.
+
+Refer to `.env.example` for all configurable variables.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+**Flash POS** - Built for the future of hyperbitcoinization. ⚡
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
 # Getting Started
@@ -44,16 +154,16 @@ yarn ios
 
 If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+This is one way to run your app â you can also run it directly from within Android Studio and Xcode respectively.
 
 ## Step 3: Modifying your App
 
 Now that you have successfully run the app, let's modify it.
 
 1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd â</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+   For **iOS**: Hit <kbd>Cmd â</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
 
 ## Congratulations! :tada:
 
