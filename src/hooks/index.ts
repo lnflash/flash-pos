@@ -5,6 +5,7 @@ import useSatPrice from './useSatPrice';
 import usePrint from './usePrint';
 import useNfc from './useNfc';
 import {useFlashcard} from './useFlashcard';
+import useRefund from './useRefund';
 
 export {
   useActivityIndicator,
@@ -14,4 +15,5 @@ export {
   usePrint,
   useNfc,
   useFlashcard,
+  useRefund,
 };

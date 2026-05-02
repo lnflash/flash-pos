@@ -11,7 +11,7 @@ import {PrimaryButton, SecondaryButton} from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
-import {usePrint} from '../hooks';
+import {usePrint, useRefund} from '../hooks';
 
 // assets
 import Check from '../assets/icons/check.svg';
@@ -39,6 +39,7 @@ type FilterType =
 const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const navigations = useNavigation<NavigationProp>();
   const {printReceipt} = usePrint();
+  const {initiateRefund, isRefunding} = useRefund();
   const dispatch = useAppDispatch();
   const {transactions} = useAppSelector(state => state.transactionHistory);
 
@@ -231,11 +232,35 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           )}
         </CompactDetails>
 
-        {/* Minimal reprint button */}
-        <ReprintButton onPress={() => onReprintTransaction(item)}>
-          <ButtonIcon source={Refresh} />
-          <ButtonText>Reprint</ButtonText>
-        </ReprintButton>
+        {/* Action buttons row */}
+        <ActionsRow>
+          {/* Refund button */}
+          {item.refunded ? (
+            <RefundedBadge>
+              <ButtonText style={{color: '#999'}}>Refunded</ButtonText>
+            </RefundedBadge>
+          ) : item.status === 'completed' &&
+            item.amount.satAmount > 0 &&
+            !item.refunded ? (
+            <RefundButton
+              isRefunding={isRefunding(item.id)}
+              onPress={() => initiateRefund(item)}
+              disabled={isRefunding(item.id)}>
+              <ButtonText
+                style={{
+                  color: isRefunding(item.id) ? '#999' : '#FF6B6B',
+                }}>
+                {isRefunding(item.id) ? 'Refunding...' : 'Refund'}
+              </ButtonText>
+            </RefundButton>
+          ) : null}
+
+          {/* Reprint button */}
+          <ReprintButton onPress={() => onReprintTransaction(item)}>
+            <ButtonIcon source={Refresh} />
+            <ButtonText>Reprint</ButtonText>
+          </ReprintButton>
+        </ActionsRow>
       </TransactionCard>
     );
   };
@@ -488,6 +513,31 @@ const StatusIcon = styled.Image`
   tint-color: #007856;
 `;
 
+const ActionsRow = styled.View`
+  flex-direction: row;
+  gap: ${scale(8)}px;
+`;
+
+const RefundButton = styled.TouchableOpacity<{isRefunding: boolean}>`
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  background-color: ${props =>
+    props.isRefunding ? '#f8f9fa' : '#FFF0F0'};
+  border-radius: ${scale(6)}px;
+  padding: ${scale(8)}px;
+  flex: 1;
+`;
+
+const RefundedBadge = styled.View`
+  align-items: center;
+  justify-content: center;
+  background-color: #f0f0f0;
+  border-radius: ${scale(6)}px;
+  padding: ${scale(8)}px;
+  flex: 1;
+`;
+
 const ReprintButton = styled.TouchableOpacity`
   flex-direction: row;
   align-items: center;
@@ -495,6 +545,7 @@ const ReprintButton = styled.TouchableOpacity`
   background-color: #f8f9fa;
   border-radius: ${scale(6)}px;
   padding: ${scale(8)}px;
+  flex: 1;
 `;
 
 const ButtonIcon = styled.Image`

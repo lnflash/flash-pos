@@ -13,6 +13,7 @@ type PaymentMethod =
 interface TransactionData {
   id: string;
   timestamp: string;
+  refunded?: boolean;
   // New fields for External Payment Rewards
   transactionType: TransactionType; // How the transaction was processed
   paymentMethod?: PaymentMethod; // How the customer paid (optional for backward compatibility)
@@ -48,6 +49,7 @@ interface TransactionHistoryState {
   transactions: TransactionData[];
   lastTransaction?: TransactionData;
   maxTransactions: number;
+  refundingIds: string[];
 }
 
 interface ReceiptData {

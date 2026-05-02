@@ -4,6 +4,7 @@ const initialState: TransactionHistoryState = {
   transactions: [],
   lastTransaction: undefined,
   maxTransactions: 50, // Keep last 50 transactions
+  refundingIds: [],
 };
 
 export const transactionHistorySlice = createSlice({
@@ -47,6 +48,7 @@ export const transactionHistorySlice = createSlice({
     clearTransactionHistory: state => {
       state.transactions = [];
       state.lastTransaction = undefined;
+      state.refundingIds = [];
     },
 
     removeTransaction: (state, action: PayloadAction<string>) => {
@@ -60,6 +62,29 @@ export const transactionHistorySlice = createSlice({
         );
       }
     },
+
+    setRefunding: (
+      state,
+      action: PayloadAction<{id: string; isRefunding: boolean}>,
+    ) => {
+      const {id, isRefunding} = action.payload;
+      if (isRefunding) {
+        if (!state.refundingIds.includes(id)) {
+          state.refundingIds.push(id);
+        }
+      } else {
+        state.refundingIds = state.refundingIds.filter(rid => rid !== id);
+      }
+    },
+
+    markRefunded: (state, action: PayloadAction<string>) => {
+      const id = action.payload;
+      const transaction = state.transactions.find(t => t.id === id);
+      if (transaction) {
+        transaction.refunded = true;
+      }
+      state.refundingIds = state.refundingIds.filter(rid => rid !== id);
+    },
   },
 });
 
@@ -68,6 +93,8 @@ export const {
   updateTransactionStatus,
   clearTransactionHistory,
   removeTransaction,
+  setRefunding,
+  markRefunded,
 } = transactionHistorySlice.actions;
 
 export default transactionHistorySlice.reducer;
