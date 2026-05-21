@@ -1,79 +1,197 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Flash POS
 
-# Getting Started
+Flash POS is a React Native point-of-sale app for accepting Lightning payments and managing Flash merchant workflows on Android and iOS.
 
->**Note**: Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/environment-setup) instructions till "Creating a new application" step, before proceeding.
+## Getting Started
 
-## Step 1: Start the Metro Server
+### Prerequisites
 
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
+- Node.js 18 or newer
+- Yarn
+- React Native development environment
+- Android Studio and Android SDK for Android builds
+- Xcode and CocoaPods for iOS builds (macOS only)
+- A configured Flash GraphQL API endpoint
 
-To start Metro, run the following command from the _root_ of your React Native project:
+Follow the official React Native environment guide before running the app locally:
+
+- https://reactnative.dev/docs/environment-setup
+
+### 1. Install dependencies
 
 ```bash
-# using npm
-npm start
+yarn install
+```
 
-# OR using Yarn
+For iOS, install CocoaPods dependencies after installing JavaScript packages:
+
+```bash
+cd ios
+pod install
+cd ..
+```
+
+### 2. Configure environment variables
+
+Copy the example environment file and fill in the values for your Flash backend and BTCPay setup:
+
+```bash
+cp .env.example .env
+```
+
+Common variables include:
+
+```bash
+FLASH_GRAPHQL_URI=https://your-graphql-endpoint/graphql
+FLASH_GRAPHQL_WS_URI=wss://your-graphql-endpoint/graphql
+BTC_PAY_SERVER=https://your-btcpay-server
+PULL_PAYMENT_ID=your-pull-payment-id
+```
+
+See [`docs/02-development-setup.md`](docs/02-development-setup.md) and [`docs/environment-configuration.md`](docs/environment-configuration.md) for more detail.
+
+### 3. Start Metro
+
+```bash
 yarn start
 ```
 
-## Step 2: Start your Application
+Keep Metro running in its own terminal while you build the app.
 
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
+### 4. Run the app
 
-### For Android
+Android:
 
 ```bash
-# using npm
-npm run android
-
-# OR using Yarn
 yarn android
 ```
 
-### For iOS
+iOS:
 
 ```bash
-# using npm
-npm run ios
-
-# OR using Yarn
 yarn ios
 ```
 
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
+You can also run the native projects directly from Android Studio or Xcode.
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+## Main Screens
 
-## Step 3: Modifying your App
+The app includes screens for payment entry, payment confirmation, transaction history, merchant profile/settings, rewards, NFC reward cards, and printable paycodes.
 
-Now that you have successfully run the app, let's modify it.
+### Payment
 
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+Use the keypad/payment flow to enter a sale amount, generate or pay a Lightning invoice, and confirm successful payment.
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+Suggested screenshot for maintainers:
 
-## Congratulations! :tada:
+```markdown
+![Payment screen](docs/screenshots/payment.png)
+```
 
-You've successfully run and modified your React Native App. :partying_face:
+### Transaction History
 
-### Now what?
+The transaction history screen helps merchants review completed payments and reward activity.
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [Introduction to React Native](https://reactnative.dev/docs/getting-started).
+Suggested screenshot for maintainers:
 
-# Troubleshooting
+```markdown
+![Transaction history](docs/screenshots/transaction-history.png)
+```
 
-If you can't get this to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+### Settings and Profile
 
-# Learn More
+Profile, event settings, and rewards settings screens are used to configure merchant/event behavior and reward options.
 
-To learn more about React Native, take a look at the following resources:
+Suggested screenshot for maintainers:
 
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+```markdown
+![Settings screen](docs/screenshots/settings.png)
+```
+
+> Screenshot note: this repository does not currently include committed screenshots. Add device screenshots under `docs/screenshots/` with the filenames above to make the image links live.
+
+## Supported Hardware
+
+Flash POS depends on the capabilities of the Android/iOS device and configured native modules.
+
+### Android
+
+- Android phone or tablet with Google/Android SDK-compatible build target
+- Optional NFC hardware for reward-card flows using `react-native-nfc-manager`
+- Optional receipt printer support through the app's native printer module and `react-native-print`
+
+### iOS
+
+- iPhone or iPad supported by the React Native/iOS build target
+- Optional NFC support on devices that expose compatible Core NFC behavior
+- Optional AirPrint-compatible receipt/document printing through `react-native-print`
+
+### Printers and NFC readers
+
+Printer and NFC support can vary by operating system, device model, and native module configuration. Before deploying to a venue, test the exact device, printer, NFC card, and network combination that will be used in production.
+
+Related docs:
+
+- [`docs/06-nfc-integration.md`](docs/06-nfc-integration.md)
+- [`docs/08-printing-system.md`](docs/08-printing-system.md)
+
+## Contributor Quick Start
+
+1. Fork and clone the repository.
+2. Install dependencies with `yarn install`.
+3. Copy `.env.example` to `.env` and configure local endpoints.
+4. Start Metro with `yarn start`.
+5. Run `yarn android` or `yarn ios`.
+6. Before opening a pull request, run:
+
+```bash
+yarn lint
+yarn test
+```
+
+Useful documentation:
+
+- [`docs/README.md`](docs/README.md)
+- [`docs/01-project-overview.md`](docs/01-project-overview.md)
+- [`docs/02-development-setup.md`](docs/02-development-setup.md)
+- [`docs/03-architecture.md`](docs/03-architecture.md)
+
+## Development Scripts
+
+```bash
+yarn start          # Start Metro
+yarn android        # Run Android app
+yarn ios            # Run iOS app
+yarn test           # Run Jest tests
+yarn lint           # Run ESLint
+yarn apk-android    # Build Android APK
+yarn aab-android    # Build Android App Bundle
+```
+
+## Troubleshooting
+
+Clear Metro cache:
+
+```bash
+npx react-native start --reset-cache
+```
+
+Clean Android build:
+
+```bash
+cd android
+./gradlew clean
+cd ..
+yarn android
+```
+
+Refresh iOS pods:
+
+```bash
+cd ios
+pod install
+cd ..
+yarn ios
+```
+
+If setup still fails, compare your local environment with the prerequisites in [`docs/02-development-setup.md`](docs/02-development-setup.md).
