@@ -129,7 +129,8 @@ android {
 
 gradle.taskGraph.whenReady { taskGraph ->
     def isReleaseBuild = taskGraph.allTasks.any { task ->
-        task.name.toLowerCase().contains('release')
+        def name = task.name.toLowerCase()
+        name.contains('release') && (name.contains('assemble') || name.contains('bundle') || name.contains('install'))
     }
 
     if (isReleaseBuild) {
