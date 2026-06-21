@@ -73,6 +73,14 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
 
+def getReleaseSigningValue = { name ->
+    def value = project.findProperty(name)
+    if (value == null || value.toString().trim().isEmpty()) {
+        value = System.getenv(name)
+    }
+    return value == null ? '' : value.toString()
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -94,12 +102,10 @@ android {
             keyPassword 'android'
         }
         release {
-            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
-                storeFile file(MYAPP_UPLOAD_STORE_FILE)
-                storePassword MYAPP_UPLOAD_STORE_PASSWORD
-                keyAlias MYAPP_UPLOAD_KEY_ALIAS
-                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
-            }
+            storeFile file(getReleaseSigningValue('MYAPP_UPLOAD_STORE_FILE') ?: 'release.keystore')
+            storePassword getReleaseSigningValue('MYAPP_UPLOAD_STORE_PASSWORD')
+            keyAlias getReleaseSigningValue('MYAPP_UPLOAD_KEY_ALIAS')
+            keyPassword getReleaseSigningValue('MYAPP_UPLOAD_KEY_PASSWORD')
         }
     }
     buildTypes {
@@ -117,6 +123,26 @@ android {
     repositories {
         flatDir {
             dirs 'libs'
+        }
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def isReleaseBuild = taskGraph.allTasks.any { task ->
+        task.name.toLowerCase().contains('release')
+    }
+
+    if (isReleaseBuild) {
+        def missing = [
+            'MYAPP_UPLOAD_KEY_ALIAS',
+            'MYAPP_UPLOAD_STORE_PASSWORD',
+            'MYAPP_UPLOAD_KEY_PASSWORD'
+        ].findAll { name -> getReleaseSigningValue(name).trim().isEmpty() }
+
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                "Release signing is not configured. Set ${missing.join(', ')} in ~/.gradle/gradle.properties or CI environment variables."
+            )
         }
     }
 }
