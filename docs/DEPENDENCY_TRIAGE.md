@@ -52,7 +52,7 @@ business logic.
 | Package | Severity | Path | Status |
 | --- | --- | --- | --- |
 | `shell-quote@1.8.3` | Critical | `react-native > react-devtools-core > shell-quote` | Resolved to `1.8.4`. |
-| `minimatch@3.1.2` | High | `react-native > glob > minimatch`, `@react-native/codegen` paths, Jest coverage tooling paths | Resolved to `3.1.5`. Yarn warns this also overrides `minimatch@^8` and `minimatch@^9`; Jest, TypeScript, and lint verification pass. Keep this resolution until the React Native/tooling graph carries patched minimatch versions without an override. |
+| `minimatch@3.1.2` | High | `react-native > glob > minimatch`, `@react-native/codegen` paths, Jest coverage tooling paths | React Native 0.77.1 refreshes the tooling graph so Yarn can install `minimatch@3.1.5`, `8.0.7`, and `9.0.9` where each caller expects them. The prior global `minimatch` resolution was removed because it broke `babel-plugin-module-resolver` under Jest with RN 0.77.1. |
 | `node-forge@1.3.1` | High, moderate | `react-native > @react-native/community-cli-plugin > @react-native/dev-middleware > selfsigned > node-forge` | Resolved to `1.4.0`. |
 | `picomatch@2.3.1` | High, moderate | Metro, Jest, codegen, and micromatch paths under `react-native` | Resolved to `2.3.2`. |
 | `ws@6.2.3`, `ws@7.5.10` | High | `react-native > ws`, Metro/dev-middleware/devtools paths | Resolved to `7.5.11`. Yarn warns this overrides `ws@^6.2.3`; Jest, TypeScript, and lint verification pass. Keep this resolution until a React Native/Metro upgrade can remove the override. |
@@ -64,7 +64,7 @@ findings remain.
 
 | Package | Severity | Path | Status |
 | --- | --- | --- | --- |
-| `brace-expansion@1.1.12` | Moderate | under `minimatch` from React Native build/codegen/test paths | Resolved to `1.1.13`. |
+| `brace-expansion@1.1.12` | Moderate | under `minimatch` from React Native build/codegen/test paths | Resolved through the refreshed `minimatch` dependency graph after the RN 0.77.1 upgrade. |
 | `postcss@8.4.31` | Moderate | `styled-components > postcss` | Resolved to `8.5.10`. |
 | `js-yaml@3.14.1` | Moderate | Metro config and Jest Istanbul config loaders under `react-native` | Accepted temporarily. This is Node-side Metro/Jest config parsing, not app runtime code. One advisory can be patched with `3.14.2`, but the newer quadratic DoS advisory requires `>=4.2.0`, a major override for older tooling. Track with React Native/Metro/Jest upgrade. |
 
