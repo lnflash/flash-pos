@@ -26,6 +26,7 @@ import {useAppDispatch, useAppSelector} from '../store/hooks';
 import {toastShow} from '../utils/toast';
 import {useSubscription} from '@apollo/client';
 import {calculateReward} from '../utils/rewardCalculations';
+import {sanitizeMerchantRewardId} from '../utils/validation';
 
 // gql
 import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
@@ -99,9 +100,18 @@ const Invoice: React.FC<Props> = ({navigation}) => {
           );
         }
 
+        const sanitizedMerchantRewardId =
+          sanitizeMerchantRewardId(merchantRewardId);
+
+        if (!sanitizedMerchantRewardId) {
+          throw new Error(
+            'Merchant Reward ID is invalid. Please update it in Rewards Settings.',
+          );
+        }
+
         // Use the BTCPay Server API to send rewards to the card
         const response = await axios.post(
-          `${BTC_PAY_SERVER}/api/v1/pull-payments/${merchantRewardId}/payouts`,
+          `${BTC_PAY_SERVER}/api/v1/pull-payments/${sanitizedMerchantRewardId}/payouts`,
           {
             amount: rewardAmount,
             destination: cardLnurl,

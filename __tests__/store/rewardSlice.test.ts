@@ -9,12 +9,18 @@ import {
   setError,
   updateRewardConfig,
   resetRewardConfig,
+  setEventModeEnabled,
+  updateEventConfig,
+  activateEvent,
+  trackEventReward,
+  resetEventTracking,
   selectRewardRate,
   selectMinimumReward,
   selectMaximumReward,
   selectDefaultReward,
   selectIsRewardEnabled,
   selectRewardConfig,
+  selectEventCustomerRewardCount,
 } from '../../src/store/slices/rewardSlice';
 
 describe('rewardSlice', () => {
@@ -235,6 +241,45 @@ describe('rewardSlice', () => {
     });
   });
 
+  describe('event customer reward tracking', () => {
+    beforeEach(() => {
+      store.dispatch(setEventModeEnabled(true));
+      store.dispatch(updateEventConfig({eventCustomerRewardLimit: 2}));
+      store.dispatch(activateEvent());
+    });
+
+    it('tracks repeat rewards for the same customer with an explicit count', () => {
+      store.dispatch(
+        trackEventReward({rewardAmount: 10, customerId: 'customer-1'}),
+      );
+      store.dispatch(
+        trackEventReward({rewardAmount: 15, customerId: 'customer-1'}),
+      );
+
+      const state = store.getState();
+
+      expect(state.reward.eventCustomerRewardCount).toEqual({
+        'customer-1': 2,
+      });
+      expect(selectEventCustomerRewardCount(state)['customer-1']).toBe(2);
+      expect(state.reward.eventCustomersRewarded).toBe(1);
+      expect(state.reward.eventTotalRewardsGiven).toBe(25);
+    });
+
+    it('resets per-customer reward counts when event tracking resets', () => {
+      store.dispatch(
+        trackEventReward({rewardAmount: 10, customerId: 'customer-1'}),
+      );
+      store.dispatch(resetEventTracking());
+
+      const state = store.getState();
+
+      expect(state.reward.eventCustomerRewardCount).toEqual({});
+      expect(state.reward.eventCustomersRewarded).toBe(0);
+      expect(state.reward.eventTotalRewardsGiven).toBe(0);
+    });
+  });
+
   describe('selectors', () => {
     beforeEach(() => {
       store.dispatch(
@@ -282,7 +327,9 @@ describe('rewardSlice', () => {
         minimumReward: 10,
         maximumReward: 800,
         defaultReward: 35,
+        merchantRewardId: 'test-pull-payment-id',
         isEnabled: false,
+        showStandaloneRewards: false,
       });
     });
   });

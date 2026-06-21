@@ -32,6 +32,7 @@ import {
 
 // utils
 import {toastShow} from '../utils/toast';
+import {validateInvoiceAmount} from '../utils/amounts';
 
 // Responsive font size calculation
 const {width: screenWidth} = Dimensions.get('window');
@@ -110,7 +111,28 @@ const Keypad = () => {
       // First convert 1 local currency unit to sats, then estimate USD equivalent
       const {convertedCurrencyAmount: satsPerLocalUnit} = currencyToSats(1);
       const usdPerSat = satsToUsd(1);
+      const invoiceAmount = validateInvoiceAmount(usdPerSat, Number(satAmount));
+
+      if (!invoiceAmount.valid) {
+        toastShow({
+          message:
+            invoiceAmount.error ||
+            'Unable to process this amount. Please try a different value.',
+          type: 'error',
+        });
+        return;
+      }
+
       const usdPerLocalUnit = satsPerLocalUnit * usdPerSat;
+      if (!Number.isFinite(usdPerLocalUnit) || usdPerLocalUnit <= 0) {
+        toastShow({
+          message:
+            'Unable to process this amount. Please try again in a moment.',
+          type: 'error',
+        });
+        return;
+      }
+
       const maxLocalAmount = Math.round(10000 / usdPerLocalUnit);
 
       if (numericAmount > maxLocalAmount) {
@@ -124,26 +146,12 @@ const Keypad = () => {
       }
 
       toggleLoading(true);
-      const usdAmount = satsToUsd(Number(satAmount));
-      const cents = usdAmount * 100;
-      const amount = cents;
-
-      // Additional validation for converted amount
-      const convertedAmount = Number(amount);
-      if (isNaN(convertedAmount) || convertedAmount <= 0) {
-        toastShow({
-          message:
-            'Unable to process this amount. Please try a different value.',
-          type: 'error',
-        });
-        return;
-      }
 
       const result = await createInvoice({
         variables: {
           input: {
             recipientWalletId: walletId,
-            amount: convertedAmount,
+            amount: invoiceAmount.cents,
             memo,
           },
         },
