@@ -22,6 +22,12 @@ jest.mock('react-native-toast-message', () => {
   };
 });
 
+jest.mock('react-native-keychain', () => ({
+  setGenericPassword: jest.fn(() => Promise.resolve(true)),
+  getGenericPassword: jest.fn(() => Promise.resolve(false)),
+  resetGenericPassword: jest.fn(() => Promise.resolve(true)),
+}));
+
 jest.mock('react-native-nfc-manager', () => ({
   __esModule: true,
   default: {

@@ -3,14 +3,17 @@ import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
 import {Platform} from 'react-native';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
 import {navigationRef} from '../routes';
 import {isRewardsEnabled} from '../utils/featureFlags';
-
-// Local storage key for stored cards
-const STORED_CARDS_KEY = '@flashcard_stored_cards';
+import {
+  clearStoredFlashcards,
+  deleteStoredFlashcard,
+  getAllStoredFlashcards,
+  getStoredFlashcard,
+  storeFlashcardInfo,
+} from '../services/flashcardStorage';
 
 interface FlashcardInterface {
   tag?: TagEvent;
@@ -308,32 +311,7 @@ export const FlashcardProvider = ({children}: Props) => {
     cardBalanceInSats?: number,
   ) => {
     try {
-      // Get existing stored cards
-      const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
-      const existingCards: StoredCardInfo[] = existingCardsJson
-        ? JSON.parse(existingCardsJson)
-        : [];
-
-      // Remove any existing entry for this tag ID
-      const filteredCards = existingCards.filter(card => card.tagId !== tagId);
-
-      // Add new/updated card info
-      const newCardInfo: StoredCardInfo = {
-        tagId,
-        lnurl: cardLnurl,
-        lastSeen: new Date().toISOString(),
-        balanceInSats: cardBalanceInSats,
-      };
-
-      filteredCards.unshift(newCardInfo); // Add to beginning
-
-      // Keep only the last 50 cards to prevent storage bloat
-      const limitedCards = filteredCards.slice(0, 50);
-
-      await AsyncStorage.setItem(
-        STORED_CARDS_KEY,
-        JSON.stringify(limitedCards),
-      );
+      await storeFlashcardInfo(tagId, cardLnurl, cardBalanceInSats);
     } catch (err) {}
   };
 
@@ -341,19 +319,7 @@ export const FlashcardProvider = ({children}: Props) => {
     tagId: string,
   ): Promise<StoredCardInfo | null> => {
     try {
-      const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
-      if (!existingCardsJson) {
-        return null;
-      }
-
-      const existingCards: StoredCardInfo[] = JSON.parse(existingCardsJson);
-      const foundCard = existingCards.find(card => card.tagId === tagId);
-
-      if (foundCard) {
-        return foundCard;
-      } else {
-        return null;
-      }
+      return await getStoredFlashcard(tagId);
     } catch (err) {
       return null;
     }
@@ -361,13 +327,7 @@ export const FlashcardProvider = ({children}: Props) => {
 
   const getAllStoredCards = async (): Promise<StoredCardInfo[]> => {
     try {
-      const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
-      if (!existingCardsJson) {
-        return [];
-      }
-
-      const existingCards: StoredCardInfo[] = JSON.parse(existingCardsJson);
-      return existingCards;
+      return await getAllStoredFlashcards();
     } catch (err) {
       return [];
     }
@@ -375,19 +335,7 @@ export const FlashcardProvider = ({children}: Props) => {
 
   const deleteStoredCard = async (tagId: string): Promise<boolean> => {
     try {
-      const existingCardsJson = await AsyncStorage.getItem(STORED_CARDS_KEY);
-      if (!existingCardsJson) {
-        return false;
-      }
-
-      const existingCards: StoredCardInfo[] = JSON.parse(existingCardsJson);
-      const filteredCards = existingCards.filter(card => card.tagId !== tagId);
-
-      await AsyncStorage.setItem(
-        STORED_CARDS_KEY,
-        JSON.stringify(filteredCards),
-      );
-      return true;
+      return await deleteStoredFlashcard(tagId);
     } catch (err) {
       return false;
     }
@@ -395,8 +343,7 @@ export const FlashcardProvider = ({children}: Props) => {
 
   const clearAllStoredCards = async (): Promise<boolean> => {
     try {
-      await AsyncStorage.removeItem(STORED_CARDS_KEY);
-      return true;
+      return await clearStoredFlashcards();
     } catch (err) {
       return false;
     }
