@@ -54,14 +54,14 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
 
         // Find the correct tab configuration for this route
         const tabConfig = dynamicTabs.find(tab => {
-          if (route.name === 'Keypad') return tab.label === 'POS';
-          if (route.name === 'Rewards') return tab.label === 'Rewards';
-          if (route.name === 'Support') return tab.label === 'Support';
-          if (route.name === 'Profile') return tab.label === 'Profile';
+          if (route.name === 'Keypad') {return tab.label === 'POS';}
+          if (route.name === 'Rewards') {return tab.label === 'Rewards';}
+          if (route.name === 'Support') {return tab.label === 'Support';}
+          if (route.name === 'Profile') {return tab.label === 'Profile';}
           return false;
         });
 
-        if (!tabConfig) return null;
+        if (!tabConfig) {return null;}
 
         const onPress = () => {
           const event = navigation.emit({

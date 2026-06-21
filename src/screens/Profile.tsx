@@ -37,8 +37,6 @@ const Profile = () => {
 
   const dispatch = useAppDispatch();
 
-  const {username} = useAppSelector(state => state.user);
-  const {transactions} = useAppSelector(state => state.transactionHistory);
   const eventModeEnabled = useAppSelector(selectEventModeEnabled);
 
   // PIN management

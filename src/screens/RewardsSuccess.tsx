@@ -24,10 +24,7 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
     rewardSatAmount,
     balance,
     purchaseDisplayAmount,
-    rewardRate,
-    calculationType,
     isExternalPayment,
-    paymentMethod,
   } = route.params;
 
   const {satsToCurrency} = useRealtimePrice();
@@ -37,7 +34,7 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
   // Disable NFC on mount and re-enable on unmount
   useEffect(() => {
     setNfcEnabled(false);
-    
+
     return () => {
       setNfcEnabled(true);
     };
@@ -49,27 +46,6 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
       routes: [{name: 'Home'}],
     });
   };
-
-  // Determine reward context
-  const isPurchaseBased = calculationType === 'purchase-based';
-  const rewardPercentage =
-    isPurchaseBased && rewardRate ? (rewardRate * 100).toFixed(1) : null;
-
-  // Get payment method display info
-  const getPaymentMethodInfo = () => {
-    switch (paymentMethod) {
-      case 'cash':
-        return {icon: '💵', name: 'Cash Payment'};
-      case 'card':
-        return {icon: '💳', name: 'Card Payment'};
-      case 'check':
-        return {icon: '📄', name: 'Check Payment'};
-      default:
-        return {icon: '🏪', name: 'External Payment'};
-    }
-  };
-
-  const paymentInfo = getPaymentMethodInfo();
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
@@ -205,15 +181,6 @@ const SuccessTitle = styled.Text`
   margin-bottom: 12px;
 `;
 
-const SuccessSubtitle = styled.Text`
-  font-size: 16px;
-  font-family: 'Outfit-Regular';
-  text-align: center;
-  color: rgba(255, 255, 255, 0.9);
-  line-height: 22px;
-  max-width: 300px;
-`;
-
 const RewardCard = styled.View`
   background-color: rgba(255, 255, 255, 0.95);
   border-radius: 24px;
@@ -264,24 +231,6 @@ const PurchaseContextCard = styled.View`
   min-width: 300px;
 `;
 
-const PurchaseContextHeader = styled.View`
-  flex-direction: row;
-  align-items: center;
-  margin-bottom: 16px;
-`;
-
-const PurchaseIcon = styled.Text`
-  font-size: 24px;
-  margin-right: 8px;
-`;
-
-const PurchaseContextTitle = styled.Text`
-  font-size: 18px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  flex: 1;
-`;
-
 const PurchaseDetailRow = styled.View`
   flex-direction: row;
   justify-content: space-between;
@@ -299,40 +248,6 @@ const PurchaseDetailValue = styled.Text<{highlight?: boolean}>`
   font-size: 14px;
   font-family: 'Outfit-Bold';
   color: ${props => (props.highlight ? '#007856' : '#000000')};
-`;
-
-const StandaloneCard = styled.View`
-  background-color: rgba(255, 255, 255, 0.9);
-  border-radius: 20px;
-  padding: 24px;
-  align-items: center;
-  margin-bottom: 20px;
-  shadow-color: #000;
-  shadow-offset: 0px 4px;
-  shadow-opacity: 0.2;
-  shadow-radius: 8px;
-  elevation: 6;
-  min-width: 280px;
-`;
-
-const StandaloneIcon = styled.Text`
-  font-size: 48px;
-  margin-bottom: 12px;
-`;
-
-const StandaloneTitle = styled.Text`
-  font-size: 20px;
-  font-family: 'Outfit-Bold';
-  color: #007856;
-  margin-bottom: 8px;
-`;
-
-const StandaloneMessage = styled.Text`
-  font-size: 14px;
-  font-family: 'Outfit-Regular';
-  color: #666666;
-  text-align: center;
-  line-height: 20px;
 `;
 
 const BalanceContainer = styled.View`

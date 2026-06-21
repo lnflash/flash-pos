@@ -17,7 +17,7 @@ const ExpireTime: React.FC<Props> = ({setErrMessage}) => {
   const [progress, setProgress] = useState(PROGRESS_BAR_MAX_WIDTH);
   const [seconds, setSeconds] = useState(0);
   const [minutes, setMinutes] = useState(USD_MAX_INVOICE_TIME);
-  const [expiresAt, setExpiresAt] = useState(USD_MAX_INVOICE_TIME);
+  const [expiresAt] = useState(USD_MAX_INVOICE_TIME);
 
   useEffect(() => {
     const timerStartTime = new Date();
@@ -33,7 +33,7 @@ const ExpireTime: React.FC<Props> = ({setErrMessage}) => {
 
       if (remainingSeconds <= 0) {
         clearInterval(interval);
-        setErrMessage(`Invoice has expired.\nGenerate a new invoice!`);
+        setErrMessage('Invoice has expired.\nGenerate a new invoice!');
       } else {
         setMinutes(Math.floor(remainingSeconds / 60));
         setSeconds(remainingSeconds % 60);
@@ -45,7 +45,7 @@ const ExpireTime: React.FC<Props> = ({setErrMessage}) => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [setErrMessage]);
 
   return (
     <ProgressWrapper>

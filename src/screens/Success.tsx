@@ -17,7 +17,6 @@ import Check from '../assets/icons/check.svg';
 // store
 import {resetAmount} from '../store/slices/amountSlice';
 import {resetInvoice} from '../store/slices/invoiceSlice';
-import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
@@ -90,7 +89,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         <IconWrapper>
           <Icon source={Check} />
         </IconWrapper>
-        <Title>{route.params?.title || `The invoice has been paid`}</Title>
+        <Title>{route.params?.title || 'The invoice has been paid'}</Title>
         <PrimaryAmount>{`${currency.symbol} ${
           displayAmount || 0
         }`}</PrimaryAmount>

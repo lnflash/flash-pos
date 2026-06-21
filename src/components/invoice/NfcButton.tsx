@@ -14,10 +14,8 @@ const NfcButton = () => {
   const navigation = useNavigation();
   const {handleTag} = useFlashcard();
 
-  useEffect(() => {
-    navigation.setOptions({
-      headerRight: () => renderHeaderRight(),
-    });
+  const dismiss = useCallback(() => {
+    NfcManager.cancelTechnologyRequest();
   }, []);
 
   const readFlashcard = useCallback(async () => {
@@ -42,9 +40,11 @@ const NfcButton = () => {
       await NfcManager.requestTechnology(NfcTech.Ndef);
 
       const tag = await NfcManager.getTag();
-      if (tag) handleTag(tag);
+      if (tag) {
+        handleTag(tag);
+      }
     } catch (error) {
-      console.error({error}, `can't fetch the Ndef payload`);
+      console.error({error}, 'can\'t fetch the Ndef payload');
       Alert.alert(
         'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
       );
@@ -53,18 +53,23 @@ const NfcButton = () => {
     }
 
     dismiss();
-  }, []);
+  }, [dismiss, handleTag]);
 
-  const dismiss = useCallback(() => {
-    NfcManager.cancelTechnologyRequest();
-  }, []);
-
-  const renderHeaderRight = () => (
-    <Wrapper onPress={readFlashcard}>
-      <Text>NFC</Text>
-      <Image source={NfcSignal} />
-    </Wrapper>
+  const renderHeaderRight = useCallback(
+    () => (
+      <Wrapper onPress={readFlashcard}>
+        <Text>NFC</Text>
+        <Image source={NfcSignal} />
+      </Wrapper>
+    ),
+    [readFlashcard],
   );
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: renderHeaderRight,
+    });
+  }, [navigation, renderHeaderRight]);
 
   return null;
 };

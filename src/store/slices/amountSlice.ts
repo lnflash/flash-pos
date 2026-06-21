@@ -108,7 +108,7 @@ export const updateAmount =
           break;
 
         case 'deleteDigit':
-          if (!!currentAmount) {
+          if (currentAmount) {
             currentAmount = currentAmount?.slice(0, -1);
           }
           break;

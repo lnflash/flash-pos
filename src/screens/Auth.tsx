@@ -20,7 +20,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
   const [err, setErr] = useState<string>();
 
   const onStart = async () => {
-    if (!value) return;
+    if (!value) {return;}
 
     toggleLoading(true);
     const username = value.trim();

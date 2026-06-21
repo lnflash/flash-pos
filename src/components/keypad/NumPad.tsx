@@ -61,7 +61,7 @@ const NumPad = () => {
           <NumBtn
             onPress={() => dispatch(updateAmount('addDigit', '.'))}
             disabled={true}>
-            <NumText></NumText>
+            <NumText />
           </NumBtn>
         )}
         <NumBtn onPress={() => dispatch(updateAmount('addDigit', '0'))}>

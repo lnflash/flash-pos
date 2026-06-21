@@ -143,20 +143,20 @@ const PinModal: React.FC<PinModalProps> = ({
   }, [step, oldPin, pin, confirmPin, mode, onSuccess, onVerifyOldPin]);
 
   const getCurrentPin = () => {
-    if (step === 'old') return oldPin;
-    if (step === 'enter') return pin;
+    if (step === 'old') {return oldPin;}
+    if (step === 'enter') {return pin;}
     return confirmPin;
   };
 
   const getCurrentTitle = () => {
-    if (step === 'old') return 'Enter Current PIN';
-    if (step === 'confirm') return 'Confirm New PIN';
+    if (step === 'old') {return 'Enter Current PIN';}
+    if (step === 'confirm') {return 'Confirm New PIN';}
     return title;
   };
 
   const getCurrentSubtitle = () => {
-    if (step === 'old') return 'Enter your current 4-digit PIN';
-    if (step === 'confirm') return 'Re-enter your new PIN to confirm';
+    if (step === 'old') {return 'Enter your current 4-digit PIN';}
+    if (step === 'confirm') {return 'Re-enter your new PIN to confirm';}
     return subtitle;
   };
 

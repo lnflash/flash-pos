@@ -19,7 +19,7 @@ type Props = {
 const RecentActivity: React.FC<Props> = ({transactions}) => {
   const {satsToCurrency} = useRealtimePrice();
 
-  const renderItem = ({item, index}: RenderItem) => {
+  const renderItem = ({item, index: _index}: RenderItem) => {
     const sats = parseInt(item.sats.replaceAll(',', ''), 10);
     return (
       <RowWrapper>

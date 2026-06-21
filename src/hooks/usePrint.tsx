@@ -19,21 +19,21 @@ const usePrint = () => {
   const printSilently = () => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
-    PrinterModule.printText(`Sale completed\n`);
+    PrinterModule.printText('Sale completed\n');
     PrinterModule.printText(`${currency.symbol} ${displayAmount}\n`);
     PrinterModule.printText(`≈ ${satAmount} points\n`);
     PrinterModule.setTextBold(false);
-    PrinterModule.printText(`========================\n`);
+    PrinterModule.printText('========================\n');
     PrinterModule.printText(`Paid to:   ${username}\n`);
     PrinterModule.printText(`Date:   ${moment().format('L')}\n`);
     PrinterModule.printText(`Time:   ${moment().format('LTS')}\n`);
-    PrinterModule.printText(`Status:   Paid\n`);
+    PrinterModule.printText('Status:   Paid\n');
     PrinterModule.printText(`Description:   ${memo || 'none'}\n`);
     PrinterModule.printText('========================\n');
 
     // Print QR code (e.g., payment ID or order number)
     PrinterModule.setAlignment(1);
-    PrinterModule.printText(`Download the Flash APP: \n`);
+    PrinterModule.printText('Download the Flash APP: \n');
     PrinterModule.printQRCode('https://getflash.io/app', 6, 1);
     PrinterModule.nextLine(4);
   };
@@ -113,13 +113,13 @@ const usePrint = () => {
   const printReceipt = (receiptData: ReceiptData) => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
-    PrinterModule.printText(`Sale completed\n`);
+    PrinterModule.printText('Sale completed\n');
     PrinterModule.printText(
       `${receiptData.currency.symbol} ${receiptData.displayAmount}\n`,
     );
     PrinterModule.printText(`≈ ${receiptData.satAmount} points\n`);
     PrinterModule.setTextBold(false);
-    PrinterModule.printText(`========================\n`);
+    PrinterModule.printText('========================\n');
     PrinterModule.printText(`Paid to:   ${receiptData.username}\n`);
     PrinterModule.printText(
       `Date:   ${moment(receiptData.timestamp).format('L')}\n`,
@@ -133,7 +133,7 @@ const usePrint = () => {
 
     // Print QR code (e.g., payment ID or order number)
     PrinterModule.setAlignment(1);
-    PrinterModule.printText(`Download the Flash APP: \n`);
+    PrinterModule.printText('Download the Flash APP: \n');
     PrinterModule.printQRCode('https://getflash.io/app', 6, 1);
     PrinterModule.nextLine(4);
   };

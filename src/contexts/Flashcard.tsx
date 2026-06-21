@@ -32,7 +32,7 @@ interface FlashcardInterface {
 
 const defaultValue: FlashcardInterface = {
   isNfcEnabled: true,
-  handleTag: (tag: TagEvent) => {},
+  handleTag: (_tag: TagEvent) => {},
   resetFlashcard: () => {},
   setNfcEnabled: () => {},
   getCardRewardLnurl: () => undefined,
@@ -258,13 +258,6 @@ export const FlashcardProvider = ({children}: Props) => {
       if (match && match[1]) {
         return match[1];
       }
-    }
-
-    // If no patterns match, let's look for any occurrence of 'lnurl' to debug
-    const lnurlOccurrences = html.toLowerCase().indexOf('lnurl');
-    if (lnurlOccurrences !== -1) {
-      const contextStart = Math.max(0, lnurlOccurrences - 50);
-      const contextEnd = Math.min(html.length, lnurlOccurrences + 100);
     }
 
     return undefined;

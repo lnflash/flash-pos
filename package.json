@@ -8,6 +8,7 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
+    "typecheck": "tsc --noEmit",
     "aab-android": "cd android && ./gradlew bundleRelease && cd ..",
     "apk-android": "cd android && ./gradlew app:assembleRelease && cd ..",
     "postinstall": "patch-package"
@@ -64,6 +65,8 @@
     "@react-native/eslint-config": "0.76.6",
     "@react-native/metro-config": "0.76.6",
     "@react-native/typescript-config": "0.76.6",
+    "@testing-library/react-native": "12.9.0",
+    "@types/jest": "29.5.14",
     "@types/react": "^18.2.6",
     "@types/react-native-html-to-pdf": "^0.8.3",
     "@types/react-native-indicators": "^0.16.6",

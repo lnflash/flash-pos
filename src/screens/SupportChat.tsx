@@ -12,7 +12,7 @@ import {
 const SupportChat = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chatReady, setChatReady] = useState(false);
+  const [, setChatReady] = useState(false);
   const webViewRef = useRef<any>(null);
 
   const chatUrl = 'https://getflash.io/app/tidio.html';

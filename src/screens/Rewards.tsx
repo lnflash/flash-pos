@@ -22,10 +22,7 @@ import {BTC_PAY_SERVER} from '@env';
 // utils
 import {toastShow} from '../utils/toast';
 import {readFlashcard} from '../utils/flashcard';
-import {
-  calculateReward,
-  formatRewardForDisplay,
-} from '../utils/rewardCalculations';
+import {calculateReward} from '../utils/rewardCalculations';
 import {
   createRewardsOnlyTransaction,
   createRewardData,
@@ -101,18 +98,6 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
         eventRewardRate: eventConfig.eventRewardRate,
       }),
     [purchaseAmount, rewardConfig, eventActive, eventConfig.eventRewardRate],
-  );
-
-  // Format reward information for display with external payment context
-  const rewardDisplay = useMemo(
-    () =>
-      formatRewardForDisplay(
-        rewardCalculation,
-        satsToCurrency,
-        isExternalPayment,
-        paymentMethod,
-      ),
-    [rewardCalculation, satsToCurrency, isExternalPayment, paymentMethod],
   );
 
   // Check if rewards are enabled

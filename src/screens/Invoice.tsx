@@ -110,7 +110,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
         }
 
         // Use the BTCPay Server API to send rewards to the card
-        const response = await axios.post(
+        await axios.post(
           `${BTC_PAY_SERVER}/api/v1/pull-payments/${sanitizedMerchantRewardId}/payouts`,
           {
             amount: rewardAmount,
@@ -230,8 +230,6 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     sendRewardsToCard,
     tag,
     resetFlashcard,
-    k1,
-    callback,
     getCardLnurlFromStorage,
   ]);
 
