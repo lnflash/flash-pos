@@ -41,14 +41,14 @@ const Amount: React.FC<Props> = ({
   useEffect(() => {
     if (!loading && isPrimaryAmountSats) {
       const {convertedCurrencyAmount} = satsToCurrency(Number(satAmount));
-      let displayAmount = Number(convertedCurrencyAmount).toFixed(2);
+      let nextDisplayAmount = Number(convertedCurrencyAmount).toFixed(2);
       if (
         convertedCurrencyAmount.toString().includes('NaN') ||
-        displayAmount === '0.00'
+        nextDisplayAmount === '0.00'
       ) {
-        displayAmount = '0';
+        nextDisplayAmount = '0';
       }
-      dispatch(setDisplayAmount(displayAmount));
+      dispatch(setDisplayAmount(nextDisplayAmount));
     }
   }, [
     isPrimaryAmountSats,
@@ -62,11 +62,11 @@ const Amount: React.FC<Props> = ({
   useEffect(() => {
     if (!loading && !isPrimaryAmountSats) {
       const {convertedCurrencyAmount} = currencyToSats(Number(displayAmount));
-      let satAmount = Math.round(convertedCurrencyAmount).toString();
+      let nextSatAmount = Math.round(convertedCurrencyAmount).toString();
       if (convertedCurrencyAmount.toString().includes('NaN')) {
-        satAmount = '0';
+        nextSatAmount = '0';
       }
-      dispatch(setSatAmount(satAmount));
+      dispatch(setSatAmount(nextSatAmount));
     }
   }, [
     isPrimaryAmountSats,

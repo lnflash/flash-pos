@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import {Platform, StatusBar} from 'react-native';
+import {Platform, StatusBar, StyleSheet} from 'react-native';
 import {Provider} from 'react-redux';
 import {ApolloProvider} from '@apollo/client';
 import Toast from 'react-native-toast-message';
@@ -31,7 +31,7 @@ import {toastConfig} from './src/utils/toast';
 
 function App(): React.JSX.Element {
   return (
-    <SafeAreaView style={{flex: 1}}>
+    <SafeAreaView style={styles.container}>
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
           <StatusBar
@@ -51,5 +51,11 @@ function App(): React.JSX.Element {
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
 
 export default App;

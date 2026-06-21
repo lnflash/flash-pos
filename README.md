@@ -1,79 +1,77 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Flash POS
 
-# Getting Started
+Flash POS is a merchant point-of-sale app for accepting Lightning payments and, when explicitly enabled, issuing Flash rewards to customers. It is built for iOS and Android with React Native.
 
->**Note**: Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/environment-setup) instructions till "Creating a new application" step, before proceeding.
+## Tech Stack
 
-## Step 1: Start the Metro Server
+- React Native 0.76.6
+- TypeScript
+- Redux Toolkit and redux-persist
+- Apollo Client
+- GraphQL and GraphQL WebSocket subscriptions
+- React Navigation
 
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
+## Prerequisites
 
-To start Metro, run the following command from the _root_ of your React Native project:
+- Node.js 20 or newer
+- Yarn 1.x
+- Xcode with iOS Simulator support
+- Android Studio with an Android SDK and emulator
+- CocoaPods
 
-```bash
-# using npm
-npm start
-
-# OR using Yarn
-yarn start
-```
-
-## Step 2: Start your Application
-
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
-
-### For Android
+## Setup
 
 ```bash
-# using npm
-npm run android
-
-# OR using Yarn
-yarn android
+git clone <repo-url>
+cd flash-pos
+yarn install
+cp .env.example .env
+cd ios && pod install && cd ..
 ```
 
-### For iOS
+Fill in `.env` with the correct development or production endpoints before starting the app. See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for the full environment reference.
+
+## Environment Configuration
+
+Environment values are loaded through `babel-plugin-dotenv-import` and imported from `@env`. The local `.env` file is gitignored and must not be committed.
+
+Use a development `.env` for local testing and a production `.env` only for release builds. The `REWARDS_ENABLED` flag controls whether reward functionality is active; it defaults to `false` in `.env.example` and should only be enabled for releases where rewards are intentionally supported.
+
+## Scripts
 
 ```bash
-# using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+yarn start          # Start Metro
+yarn ios            # Build and run iOS
+yarn android        # Build and run Android
+yarn test           # Run Jest
+yarn typecheck      # Run TypeScript checks
+yarn lint           # Run ESLint
+yarn aab-android    # Build Android release AAB
+yarn apk-android    # Build Android release APK
 ```
 
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
+## Architecture
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+- `src/screens`: screen-level user flows, including keypad, invoices, rewards, profile, and support
+- `src/routes`: navigation stacks and tab routing
+- `src/store`: Redux Toolkit slices, typed hooks, and persistence configuration
+- `src/hooks`: shared app behavior for pricing, printing, NFC, activity state, and API flows
+- `src/graphql`: Apollo Client setup, GraphQL queries, and mutations
+- `src/services`: platform-backed services such as secure storage and flashcard persistence
+- `src/components`: reusable UI elements and feature components
 
-## Step 3: Modifying your App
+## Native Setup
 
-Now that you have successfully run the app, let's modify it.
+Some dependencies require native linking. In particular, PIN hashes and flashcard records use `react-native-keychain`, so run `pod install` after dependency changes and rebuild the native app. See [docs/NATIVE_SETUP.md](docs/NATIVE_SETUP.md).
 
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+## Release Process
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+Release signing credentials and generated release artifacts must stay outside git. See [docs/RELEASE.md](docs/RELEASE.md) for signing setup and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) before every release.
 
-## Congratulations! :tada:
+## Security Notes
 
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [Introduction to React Native](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you can't get this to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+- Rewards are feature-flagged behind `REWARDS_ENABLED`.
+- PIN records use PBKDF2-SHA256 and platform secure storage instead of reversible local state.
+- Android signing credentials must live in `~/.gradle/gradle.properties` or protected CI secrets, not the repository.
+- iOS signing must be managed through Xcode using the correct team and provisioning profile.
+- `.env`, keystores, and generated release outputs must never be committed.

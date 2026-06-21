@@ -44,7 +44,7 @@ const constantTimeEqual = (left: string, right: string): boolean => {
 
   let diff = 0;
   for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+    diff += Number(left.charCodeAt(i) !== right.charCodeAt(i));
   }
 
   return diff === 0;

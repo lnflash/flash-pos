@@ -20,6 +20,11 @@ import {resetInvoice} from '../store/slices/invoiceSlice';
 
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
+const printButtonTextStyle = {color: '#002118'};
+const printButtonStyle = {backgroundColor: '#fff'};
+const doneButtonTextStyle = {color: '#fff'};
+const doneButtonStyle = {borderColor: '#fff', marginTop: 10};
+
 const Success: React.FC<Props> = ({navigation, route}) => {
   const {print, printSilently, printReceipt, printReceiptHTML} = usePrint();
   const {setNfcEnabled} = useFlashcard();
@@ -99,15 +104,15 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           icon={hasBeenPrinted ? 'rotate' : 'print'}
           btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
           iconColor="#002118"
-          textStyle={{color: '#002118'}}
-          btnStyle={{backgroundColor: '#fff'}}
+          textStyle={printButtonTextStyle}
+          btnStyle={printButtonStyle}
           onPress={onPrintReceipt}
         />
         <SecondaryButton
           btnText="Done"
           iconColor="#fff"
-          textStyle={{color: '#fff'}}
-          btnStyle={{borderColor: '#fff', marginTop: 10}}
+          textStyle={doneButtonTextStyle}
+          btnStyle={doneButtonStyle}
           onPress={onDone}
         />
       </BtnsWrapper>

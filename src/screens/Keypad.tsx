@@ -38,6 +38,23 @@ import {isRewardsEnabled} from '../utils/featureFlags';
 // Responsive font size calculation
 const {width: screenWidth} = Dimensions.get('window');
 const responsiveFontSize = screenWidth < 375 ? 14 : screenWidth > 414 ? 18 : 16;
+const amountStyle = {marginHorizontal: 20};
+const rewardButtonStyle = {
+  flex: 1,
+  marginRight: 8,
+  marginBottom: 0,
+  paddingVertical: 15,
+};
+const nextButtonStyle = {
+  flex: 1,
+  marginLeft: 0,
+  paddingVertical: 15,
+};
+const nextButtonWithRewardsStyle = {
+  flex: 1,
+  marginLeft: 8,
+  paddingVertical: 15,
+};
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -215,7 +232,7 @@ const Keypad = () => {
     <Wrapper>
       <BodyWrapper>
         <Amount
-          style={{marginHorizontal: 20}}
+          style={amountStyle}
           hideToggle={true}
           hideCurrency={false}
           hideSecondary={true}
@@ -239,22 +256,15 @@ const Keypad = () => {
             <SecondaryButton
               btnText="Give Points"
               onPress={isValidAmount ? onGivePoints : () => {}}
-              btnStyle={{
-                flex: 1,
-                marginRight: rewardsEnabled ? 8 : 0,
-                marginBottom: 0,
-                paddingVertical: 15,
-              }}
+              btnStyle={rewardButtonStyle}
             />
           )}
           <PrimaryButton
             btnText="Next"
             onPress={isValidAmount ? onCreateInvoice : () => {}}
-            btnStyle={{
-              flex: 1,
-              marginLeft: rewardsEnabled ? 8 : 0,
-              paddingVertical: 15,
-            }}
+            btnStyle={
+              rewardsEnabled ? nextButtonWithRewardsStyle : nextButtonStyle
+            }
           />
         </ButtonRow>
       </BtnsWrapper>

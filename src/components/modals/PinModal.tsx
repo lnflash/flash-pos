@@ -101,7 +101,7 @@ const PinModal: React.FC<PinModalProps> = ({
             setError('Incorrect current PIN. Please try again.');
             setOldPin(''); // Auto-clear on error
           }
-        } catch (error) {
+        } catch {
           setError('Verification failed. Please try again.');
           setOldPin(''); // Auto-clear on error
         } finally {

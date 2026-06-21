@@ -32,6 +32,8 @@ export type PinMode = 'setup' | 'verify' | 'change' | 'remove';
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
+const logoutButtonStyle = {marginTop: 20, marginBottom: 150};
+
 const Profile = () => {
   const navigation = useNavigation<Props>();
 
@@ -163,7 +165,7 @@ const Profile = () => {
       <Transactions />
       <TextButton
         title="Logout"
-        btnStyle={{marginTop: 20, marginBottom: 150}}
+        btnStyle={logoutButtonStyle}
         onPress={onLogout}
       />
       <PinModal

@@ -12,6 +12,8 @@ type Props = {
   onPress: () => void;
 };
 
+const iconStyle = {marginRight: 5};
+
 const SecondaryButton: React.FC<Props> = ({
   icon,
   btnText,
@@ -28,7 +30,7 @@ const SecondaryButton: React.FC<Props> = ({
           size={20}
           solid
           color={iconColor || '#002118'}
-          style={{marginRight: 5}}
+          style={iconStyle}
         />
       )}
       <Text style={textStyle}>{btnText}</Text>

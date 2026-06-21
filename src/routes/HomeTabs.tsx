@@ -33,6 +33,9 @@ const tabs = [
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
+const tabBarStyle = {flex: 1};
+const renderTabBar = (props: BottomTabBarProps) => <MyTabBar {...props} />;
+
 const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
   const {buildHref} = useLinkBuilder();
   const rewardConfig = useAppSelector(selectRewardConfig);
@@ -98,7 +101,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
             testID={options.tabBarButtonTestID}
             onPress={onPress}
             onLongPress={onLongPress}
-            style={{flex: 1}}>
+            style={tabBarStyle}>
             <Icon
               name={isFocused ? tabConfig.iconActive : tabConfig.icon}
               size={24}
@@ -131,7 +134,7 @@ export const HomeTabs = () => {
 
   return (
     <Tab.Navigator
-      tabBar={props => <MyTabBar {...props} />}
+      tabBar={renderTabBar}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: headerTitle,

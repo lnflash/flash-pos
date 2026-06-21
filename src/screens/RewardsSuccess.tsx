@@ -16,6 +16,21 @@ import {useFlashcard} from '../hooks';
 import Reward from '../assets/icons/reward.svg';
 
 const width = Dimensions.get('screen').width;
+const continueButtonTextStyle = {
+  color: '#007856',
+  fontSize: 18,
+  fontFamily: 'Outfit-Bold',
+};
+const continueButtonStyle = {
+  backgroundColor: '#fff',
+  borderRadius: 16,
+  paddingVertical: 16,
+  shadowColor: '#000',
+  shadowOffset: {width: 0, height: 4},
+  shadowOpacity: 0.2,
+  shadowRadius: 8,
+  elevation: 8,
+};
 
 type Props = StackScreenProps<RootStackType, 'RewardsSuccess'>;
 
@@ -130,21 +145,8 @@ const RewardsSuccess: React.FC<Props> = ({navigation, route}) => {
       <Animatable.View animation="slideInUp" duration={600} delay={1000}>
         <PrimaryButton
           btnText="Continue"
-          textStyle={{
-            color: '#007856',
-            fontSize: 18,
-            fontFamily: 'Outfit-Bold',
-          }}
-          btnStyle={{
-            backgroundColor: '#fff',
-            borderRadius: 16,
-            paddingVertical: 16,
-            shadowColor: '#000',
-            shadowOffset: {width: 0, height: 4},
-            shadowOpacity: 0.2,
-            shadowRadius: 8,
-            elevation: 8,
-          }}
+          textStyle={continueButtonTextStyle}
+          btnStyle={continueButtonStyle}
           onPress={onDone}
         />
       </Animatable.View>

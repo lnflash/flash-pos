@@ -9,13 +9,65 @@ import {
   StyleSheet,
 } from 'react-native';
 
+const SUPPORT_CHAT_URL = 'https://getflash.io/app/tidio.html';
+const SUPPORT_CHAT_ORIGIN = new URL(SUPPORT_CHAT_URL).origin;
+const SUPPORT_CHAT_ORIGIN_WHITELIST = [SUPPORT_CHAT_ORIGIN];
+const SUPPORT_CHAT_MESSAGE_TYPES = [
+  'chatOpened',
+  'chatReady',
+  'chatError',
+  'chatTimeout',
+  'scriptInjected',
+] as const;
+
+type SupportChatMessageType = (typeof SUPPORT_CHAT_MESSAGE_TYPES)[number];
+type SupportChatMessage = {
+  type: SupportChatMessageType;
+  success?: boolean;
+  error?: string;
+  attempts?: number;
+  timestamp?: string;
+};
+
+const isSupportChatMessage = (value: unknown): value is SupportChatMessage => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const {type} = value as {type?: unknown};
+  return (
+    typeof type === 'string' &&
+    SUPPORT_CHAT_MESSAGE_TYPES.includes(type as SupportChatMessageType)
+  );
+};
+
+const parseSupportChatMessage = (rawMessage: string): SupportChatMessage | null => {
+  try {
+    const parsed = JSON.parse(rawMessage);
+    return isSupportChatMessage(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const getMessageOrigin = (event: WebViewMessageEvent): string | null => {
+  const eventUrl = event.nativeEvent?.url;
+  if (!eventUrl) {
+    return null;
+  }
+
+  try {
+    return new URL(eventUrl).origin;
+  } catch {
+    return null;
+  }
+};
+
 const SupportChat = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [, setChatReady] = useState(false);
   const webViewRef = useRef<any>(null);
-
-  const chatUrl = 'https://getflash.io/app/tidio.html';
 
   const handleLoadStart = () => {
     console.log('WebView started loading');
@@ -28,17 +80,18 @@ const SupportChat = () => {
     console.log('WebView finished loading');
     setLoading(false);
 
-    // Inject additional JavaScript to ensure chat opens
+    // The bridge opens the Tidio widget and reports only chat lifecycle events:
+    // scriptInjected, chatReady, chatOpened, chatError, and chatTimeout.
     const injectJS = `
       console.log('Injecting chat opening script...');
-      
+
       let attempts = 0;
       const maxAttempts = 20;
-      
+
       function forceOpenChat() {
         attempts++;
         console.log('Attempt to open chat:', attempts);
-        
+
         if (window.tidioChatApi) {
           console.log('Tidio API found, opening chat...');
           try {
@@ -56,7 +109,7 @@ const SupportChat = () => {
             }));
           }
         }
-        
+
         if (attempts < maxAttempts) {
           setTimeout(forceOpenChat, 500);
         } else {
@@ -66,13 +119,13 @@ const SupportChat = () => {
             attempts: attempts
           }));
         }
-        
+
         return false;
       }
-      
+
       // Try multiple approaches
       setTimeout(forceOpenChat, 1000);
-      
+
       // Also listen for the ready event
       document.addEventListener('tidioChat-ready', function() {
         console.log('Tidio ready event received in injected script');
@@ -86,13 +139,13 @@ const SupportChat = () => {
           }
         }, 500);
       });
-      
+
       // Send status update
       window.ReactNativeWebView.postMessage(JSON.stringify({
         type: 'scriptInjected',
         timestamp: new Date().toISOString()
       }));
-      
+
       true; // Return true to indicate successful injection
     `;
 
@@ -107,35 +160,38 @@ const SupportChat = () => {
   };
 
   const handleMessage = (event: WebViewMessageEvent) => {
-    try {
-      const data = JSON.parse(event.nativeEvent?.data);
-      console.log('Message from WebView:', data);
+    const messageOrigin = getMessageOrigin(event);
+    if (messageOrigin !== SUPPORT_CHAT_ORIGIN) {
+      console.warn('Rejected WebView message from unexpected origin');
+      return;
+    }
 
-      switch (data.type) {
-        case 'chatOpened':
-          setChatReady(true);
-          console.log('Chat opened successfully');
-          break;
-        case 'chatReady':
-          setChatReady(true);
-          console.log('Chat is ready');
-          break;
-        case 'chatError':
-          console.error('Chat error:', data.error);
-          setError(`Chat error: ${data.error}`);
-          break;
-        case 'chatTimeout':
-          console.error('Chat timeout after', data.attempts, 'attempts');
-          setError('Chat failed to load. Please try refreshing.');
-          break;
-        case 'scriptInjected':
-          console.log('Script injected at:', data.timestamp);
-          break;
-        default:
-          console.log('Unknown message type:', data.type);
-      }
-    } catch (e) {
-      console.log('Raw WebView message:', event.nativeEvent.data);
+    const data = parseSupportChatMessage(event.nativeEvent?.data);
+    if (!data) {
+      console.warn('Rejected unexpected WebView message');
+      return;
+    }
+
+    switch (data.type) {
+      case 'chatOpened':
+        setChatReady(true);
+        console.log('Chat opened successfully');
+        break;
+      case 'chatReady':
+        setChatReady(true);
+        console.log('Chat is ready');
+        break;
+      case 'chatError':
+        console.error('Chat error:', data.error);
+        setError(`Chat error: ${data.error || 'Unable to open chat'}`);
+        break;
+      case 'chatTimeout':
+        console.error('Chat timeout after', data.attempts, 'attempts');
+        setError('Chat failed to load. Please try refreshing.');
+        break;
+      case 'scriptInjected':
+        console.log('Script injected at:', data.timestamp);
+        break;
     }
   };
 
@@ -169,12 +225,12 @@ const SupportChat = () => {
       {/* WebView */}
       <WebView
         ref={webViewRef}
-        source={{uri: chatUrl}}
+        source={{uri: SUPPORT_CHAT_URL}}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
         startInLoadingState={false} // We handle loading manually
-        mixedContentMode="compatibility"
+        mixedContentMode="never"
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
         onLoadStart={handleLoadStart}
@@ -187,7 +243,7 @@ const SupportChat = () => {
         allowsBackForwardNavigationGestures={false}
         webviewDebuggingEnabled={__DEV__}
         userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
-        originWhitelist={['*']}
+        originWhitelist={SUPPORT_CHAT_ORIGIN_WHITELIST}
       />
     </SafeAreaView>
   );
