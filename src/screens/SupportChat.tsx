@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 
 const SUPPORT_CHAT_URL = 'https://getflash.io/app/tidio.html';
-const SUPPORT_CHAT_ORIGIN = new URL(SUPPORT_CHAT_URL).origin;
+const SUPPORT_CHAT_ORIGIN = 'https://getflash.io';
 const SUPPORT_CHAT_ORIGIN_WHITELIST = [SUPPORT_CHAT_ORIGIN];
 const SUPPORT_CHAT_MESSAGE_TYPES = [
   'chatOpened',
@@ -56,11 +56,9 @@ const getMessageOrigin = (event: WebViewMessageEvent): string | null => {
     return null;
   }
 
-  try {
-    return new URL(eventUrl).origin;
-  } catch {
-    return null;
-  }
+  // RN's URL polyfill doesn't implement .origin, so extract it manually
+  const match = eventUrl.match(/^(https?:\/\/[^/]+)/i);
+  return match ? match[1] : null;
 };
 
 const SupportChat = () => {
