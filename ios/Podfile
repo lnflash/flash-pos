@@ -5,8 +5,9 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
-# Enable New Architecture (Fabric) to match Android's newArchEnabled=true
-ENV['RCT_NEW_ARCH_ENABLED'] = '1'
+# Note: New Architecture disabled — flash-pos uses Paper-era view managers
+# (@rneui RC, react-native-animatable) that crash under Fabric interop.
+# Enable only after migrating off @rneui/react-native-animatable.
 
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
