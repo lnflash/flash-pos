@@ -1,4 +1,4 @@
-import React, {createContext, useEffect, useState} from 'react';
+import React, {createContext, useEffect, useRef, useState} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
 import {Platform} from 'react-native';
 import {getParams} from 'js-lnurl';
@@ -7,6 +7,11 @@ import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
 import {navigationRef} from '../routes';
 import {isRewardsEnabled} from '../utils/featureFlags';
+import {
+  getBalanceFromHtml,
+  getLnurlFromHtml,
+  getTransactionsFromHtml,
+} from '../utils/flashcardParser';
 import {
   clearStoredFlashcards,
   deleteStoredFlashcard,
@@ -61,10 +66,16 @@ export const FlashcardProvider = ({children}: Props) => {
   const [loading, setLoading] = useState<boolean>();
   const [error, setError] = useState<string>();
   const [isNfcEnabled, setNfcEnabled] = useState<boolean>(true);
+  const isNfcEnabledRef = useRef(isNfcEnabled);
+  const handleTagRef = useRef<(scannedTag: TagEvent) => void>(() => {});
 
   useEffect(() => {
     checkNfc();
   }, []);
+
+  useEffect(() => {
+    isNfcEnabledRef.current = isNfcEnabled;
+  }, [isNfcEnabled]);
 
   const checkNfc = async () => {
     const isSupported = await NfcManager.isSupported();
@@ -85,7 +96,7 @@ export const FlashcardProvider = ({children}: Props) => {
 
   const handleTag = async (scannedTag: TagEvent) => {
     // Check if NFC is enabled before processing
-    if (!isNfcEnabled) {
+    if (!isNfcEnabledRef.current) {
       return;
     }
 
@@ -123,6 +134,36 @@ export const FlashcardProvider = ({children}: Props) => {
       toastShow({message: 'No tag found', type: 'error'});
     }
   };
+
+  useEffect(() => {
+    handleTagRef.current = handleTag;
+  });
+
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      return;
+    }
+
+    const onDiscoverTag = (scannedTag: TagEvent) => {
+      handleTagRef.current(scannedTag);
+    };
+
+    const onSessionClosed = () => {
+      NfcManager.cancelTechnologyRequest();
+      NfcManager.unregisterTagEvent();
+    };
+
+    NfcManager.setEventListener(NfcEvents.DiscoverTag, onDiscoverTag);
+    NfcManager.setEventListener(NfcEvents.SessionClosed, onSessionClosed);
+    NfcManager.registerTagEvent();
+
+    return () => {
+      NfcManager.setEventListener(NfcEvents.DiscoverTag, null);
+      NfcManager.setEventListener(NfcEvents.SessionClosed, null);
+      NfcManager.cancelTechnologyRequest();
+      NfcManager.unregisterTagEvent();
+    };
+  }, []);
 
   const getPayDetails = async (payload: string, currentTag: TagEvent) => {
     try {
@@ -235,63 +276,6 @@ export const FlashcardProvider = ({children}: Props) => {
     }
   };
 
-  // Helper functions that return values instead of setting state
-  const getLnurlFromHtml = (html: string): string | undefined => {
-    // Try various LNURL patterns that might appear in the HTML
-    const patterns = [
-      // Original pattern from working version
-      /href="lightning:(lnurl\w+)"/,
-      // Alternative patterns
-      /lightning:(lnurl[a-zA-Z0-9]+)/,
-      /'lightning:(lnurl[a-zA-Z0-9]+)'/,
-      /"lightning:(lnurl[a-zA-Z0-9]+)"/,
-      // LNURL without lightning prefix
-      /(lnurl[a-zA-Z0-9]{50,})/i,
-      // In data attributes
-      /data-lnurl="(lnurl[a-zA-Z0-9]+)"/,
-      // In value attributes
-      /value="(lnurl[a-zA-Z0-9]+)"/,
-      // Look for any standalone lnurl
-      /\b(lnurl[a-zA-Z0-9]+)\b/gi,
-    ];
-
-    for (let i = 0; i < patterns.length; i++) {
-      const pattern = patterns[i];
-      const match = html.match(pattern);
-
-      if (match && match[1]) {
-        return match[1];
-      }
-    }
-
-    return undefined;
-  };
-
-  const getBalanceFromHtml = (html: string): number | undefined => {
-    const balanceMatch = html.match(/(\d{1,3}(?:,\d{3})*)\s*SATS<\/dt>/);
-    if (balanceMatch) {
-      const parsedBalance = balanceMatch[1].replace(/,/g, '');
-      const satoshiAmount = parseInt(parsedBalance, 10);
-      return satoshiAmount;
-    }
-    return undefined;
-  };
-
-  const getTransactionsFromHtml = (
-    html: string,
-  ): TransactionList | undefined => {
-    const transactionMatches = [
-      ...html.matchAll(
-        /<time datetime="(.*?)".*?>.*?<\/time>\s*<\/td>\s*<td.*?>\s*<span.*?>(-?\d{1,3}(,\d{3})*) SATS<\/span>/g,
-      ),
-    ];
-    const data = transactionMatches.map(match => ({
-      date: match[1],
-      sats: match[2],
-    }));
-    return data.length > 0 ? data : undefined;
-  };
-
   const resetFlashcard = () => {
     setTag(undefined);
     setK1(undefined);
@@ -349,16 +333,6 @@ export const FlashcardProvider = ({children}: Props) => {
     }
   };
 
-  if (Platform.OS !== 'ios') {
-    NfcManager.setEventListener(NfcEvents.DiscoverTag, handleTag);
-
-    NfcManager.setEventListener(NfcEvents.SessionClosed, () => {
-      NfcManager.cancelTechnologyRequest();
-      NfcManager.unregisterTagEvent();
-    });
-
-    NfcManager.registerTagEvent();
-  }
   const getCardRewardLnurl = () => {
     // Return the LNURL that can receive rewards
     return lnurl;

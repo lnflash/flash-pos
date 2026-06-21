@@ -9,7 +9,7 @@ import React from 'react';
 import {it} from '@jest/globals';
 
 // Note: test renderer must be required after react-native.
-import renderer from 'react-test-renderer';
+import renderer, {act} from 'react-test-renderer';
 
 jest.mock('../src/routes', () => {
   const {View} = require('react-native');
@@ -19,6 +19,15 @@ jest.mock('../src/routes', () => {
 
 import App from '../App';
 
-it('renders correctly', () => {
-  renderer.create(<App />);
+it('renders correctly', async () => {
+  let testRenderer: ReturnType<typeof renderer.create> | undefined;
+
+  await act(async () => {
+    testRenderer = renderer.create(<App />);
+    await Promise.resolve();
+  });
+
+  act(() => {
+    testRenderer?.unmount();
+  });
 });
