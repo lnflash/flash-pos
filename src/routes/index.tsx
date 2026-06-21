@@ -23,6 +23,7 @@ import {useAppSelector} from '../store/hooks';
 
 // store
 import {selectEventConfig} from '../store/slices/rewardSlice';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // navigation
 import {navigationRef} from '../navigation/navigationRef';
@@ -32,6 +33,7 @@ const Stack = createStackNavigator<RootStackType>();
 const Root = () => {
   const {username} = useAppSelector(state => state.user);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   // Determine header title based on event mode
   const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
@@ -65,21 +67,25 @@ const Root = () => {
         options={{headerShown: false}}
       />
       <Stack.Screen name="Invoice" component={Invoice} />
-      <Stack.Screen
-        name="Rewards"
-        component={Rewards}
-        options={{headerShown: false}}
-      />
+      {rewardsFeatureEnabled && (
+        <Stack.Screen
+          name="Rewards"
+          component={Rewards}
+          options={{headerShown: false}}
+        />
+      )}
       <Stack.Screen
         name="Success"
         component={Success}
         options={{headerShown: false}}
       />
-      <Stack.Screen
-        name="RewardsSuccess"
-        component={RewardsSuccess}
-        options={{headerShown: false}}
-      />
+      {rewardsFeatureEnabled && (
+        <Stack.Screen
+          name="RewardsSuccess"
+          component={RewardsSuccess}
+          options={{headerShown: false}}
+        />
+      )}
       <Stack.Screen
         name="FlashcardBalance"
         component={FlashcardBalance}

@@ -33,6 +33,7 @@ import {
 // utils
 import {toastShow} from '../utils/toast';
 import {validateInvoiceAmount} from '../utils/amounts';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // Responsive font size calculation
 const {width: screenWidth} = Dimensions.get('window');
@@ -54,6 +55,7 @@ const Keypad = () => {
     useAppSelector(state => state.amount);
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsEnabled = isRewardsEnabled() && rewardConfig.isEnabled;
 
   // Check if event mode is enabled and active
   const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
@@ -77,6 +79,14 @@ const Keypad = () => {
 
   // External Payment Rewards - "Give Points" functionality
   const onGivePoints = useCallback(() => {
+    if (!rewardsEnabled) {
+      toastShow({
+        message: 'Rewards system is currently disabled.',
+        type: 'error',
+      });
+      return;
+    }
+
     if (!satAmount || !displayAmount || !isValidAmount) {
       toastShow({
         message: 'Please enter a valid amount',
@@ -92,7 +102,14 @@ const Keypad = () => {
       isExternalPayment: true,
       paymentMethod: 'external',
     });
-  }, [satAmount, displayAmount, currency, navigation, isValidAmount]);
+  }, [
+    satAmount,
+    displayAmount,
+    currency,
+    navigation,
+    isValidAmount,
+    rewardsEnabled,
+  ]);
 
   const onCreateInvoice = async () => {
     try {
@@ -218,13 +235,13 @@ const Keypad = () => {
 
       <BtnsWrapper>
         <ButtonRow>
-          {rewardConfig.isEnabled && (
+          {rewardsEnabled && (
             <SecondaryButton
               btnText="Give Points"
               onPress={isValidAmount ? onGivePoints : () => {}}
               btnStyle={{
                 flex: 1,
-                marginRight: rewardConfig.isEnabled ? 8 : 0,
+                marginRight: rewardsEnabled ? 8 : 0,
                 marginBottom: 0,
                 paddingVertical: 15,
               }}
@@ -235,7 +252,7 @@ const Keypad = () => {
             onPress={isValidAmount ? onCreateInvoice : () => {}}
             btnStyle={{
               flex: 1,
-              marginLeft: rewardConfig.isEnabled ? 8 : 0,
+              marginLeft: rewardsEnabled ? 8 : 0,
               paddingVertical: 15,
             }}
           />

@@ -27,6 +27,7 @@ import {toastShow} from '../utils/toast';
 import {useSubscription} from '@apollo/client';
 import {calculateReward} from '../utils/rewardCalculations';
 import {sanitizeMerchantRewardId} from '../utils/validation';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // gql
 import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
@@ -53,7 +54,8 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const {satAmount, displayAmount, currency, isPrimaryAmountSats, memo} =
     useAppSelector(state => state.amount);
   const {username} = useAppSelector(state => state.user);
-  const isRewardEnabled = useAppSelector(selectIsRewardEnabled);
+  const persistedRewardEnabled = useAppSelector(selectIsRewardEnabled);
+  const isRewardEnabled = isRewardsEnabled() && persistedRewardEnabled;
   const rewardConfig = useAppSelector(selectRewardConfig);
   const merchantRewardId = useAppSelector(selectMerchantRewardId);
 
@@ -92,6 +94,10 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
   const sendRewardsToCard = useCallback(
     async (cardLnurl: string, rewardAmount: number) => {
+      if (!isRewardsEnabled()) {
+        return false;
+      }
+
       try {
         // Validate merchant reward ID
         if (!merchantRewardId || merchantRewardId.trim() === '') {

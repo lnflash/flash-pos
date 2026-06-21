@@ -7,6 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
 import {navigationRef} from '../routes';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // Local storage key for stored cards
 const STORED_CARDS_KEY = '@flashcard_stored_cards';
@@ -103,7 +104,7 @@ export const FlashcardProvider = ({children}: Props) => {
             await getPayDetails(payload, scannedTag);
           } else if (currentScreen === 'Keypad') {
             await getHtml(payload, currentScreen, scannedTag);
-          } else if (currentScreen === 'Rewards') {
+          } else if (currentScreen === 'Rewards' && isRewardsEnabled()) {
             await getHtml(payload, currentScreen, scannedTag);
           } else {
             toastShow({

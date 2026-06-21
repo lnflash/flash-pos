@@ -28,6 +28,7 @@ import {
   createRewardData,
 } from '../utils/transactionHelpers';
 import {sanitizeMerchantRewardId} from '../utils/validation';
+import {isRewardsEnabled as isRewardsFeatureEnabled} from '../utils/featureFlags';
 
 // selectors
 import {
@@ -101,7 +102,8 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   );
 
   // Check if rewards are enabled
-  const isRewardsEnabled = rewardConfig.isEnabled;
+  const rewardsFeatureEnabled = isRewardsFeatureEnabled();
+  const rewardsEnabled = rewardsFeatureEnabled && rewardConfig.isEnabled;
 
   // Determine reward type for enhanced messaging
   const isPurchaseBased =
@@ -140,7 +142,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   }, [isExternalPayment, navigation]);
 
   const onReward = useCallback(async () => {
-    if (!isRewardsEnabled) {
+    if (!rewardsEnabled) {
       toastShow({
         message: 'Rewards system is currently disabled.',
         type: 'error',
@@ -322,7 +324,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       setIsProcessingReward(false); // Reset on error
     }
   }, [
-    isRewardsEnabled,
+    rewardsEnabled,
     isProcessingReward,
     lastRewardTime,
     COOLDOWN_PERIOD,
@@ -349,14 +351,22 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
 
   useFocusEffect(
     useCallback(() => {
-      if (loading || !lnurl || !isRewardsEnabled) {
+      if (loading || !lnurl || !rewardsEnabled) {
         return;
       }
       onReward();
-    }, [loading, lnurl, isRewardsEnabled, onReward]),
+    }, [loading, lnurl, rewardsEnabled, onReward]),
   );
 
   const onPressActivateNFC = async () => {
+    if (!rewardsEnabled) {
+      toastShow({
+        message: 'Rewards system is currently disabled.',
+        type: 'error',
+      });
+      return;
+    }
+
     const tag = await readFlashcard();
     if (tag) {
       handleTag(tag);
@@ -364,7 +374,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   };
 
   // Don't render if rewards are disabled
-  if (!isRewardsEnabled) {
+  if (!rewardsEnabled) {
     return (
       <Wrapper isExternalPayment={isExternalPayment}>
         <DisabledContainer>

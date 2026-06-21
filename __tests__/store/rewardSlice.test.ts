@@ -35,7 +35,7 @@ describe('rewardSlice', () => {
       expect(state.reward.minimumReward).toBe(1);
       expect(state.reward.maximumReward).toBe(1000);
       expect(state.reward.defaultReward).toBe(21);
-      expect(state.reward.isEnabled).toBe(true);
+      expect(state.reward.isEnabled).toBe(false);
       expect(state.reward.loading).toBe(false);
       expect(state.reward.error).toBe('');
     });
@@ -235,7 +235,7 @@ describe('rewardSlice', () => {
       expect(state.reward.minimumReward).toBe(1);
       expect(state.reward.maximumReward).toBe(1000);
       expect(state.reward.defaultReward).toBe(21);
-      expect(state.reward.isEnabled).toBe(true);
+      expect(state.reward.isEnabled).toBe(false);
       expect(state.reward.loading).toBe(false);
       expect(state.reward.error).toBe('');
     });

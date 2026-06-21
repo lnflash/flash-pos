@@ -1,4 +1,5 @@
 import {createSlice, createSelector} from '@reduxjs/toolkit';
+import {isRewardsEnabled} from '../../utils/featureFlags';
 
 interface RewardState {
   rewardRate: number; // Percentage (e.g., 0.02 for 2%)
@@ -54,7 +55,6 @@ const getDefaultConfiguration = () => {
       MIN_REWARD_SATS,
       MAX_REWARD_SATS,
       STANDALONE_REWARD_SATS,
-      REWARDS_ENABLED,
       PULL_PAYMENT_ID,
       // Event Mode environment variables
       EVENT_MODE_ENABLED,
@@ -82,7 +82,7 @@ const getDefaultConfiguration = () => {
       maximumReward: parseInt(MAX_REWARD_SATS || '1000', 10),
       defaultReward: parseInt(STANDALONE_REWARD_SATS || '21', 10),
       merchantRewardId: PULL_PAYMENT_ID || '',
-      isEnabled: (REWARDS_ENABLED || 'true').toLowerCase() === 'true',
+      isEnabled: isRewardsEnabled(),
       showStandaloneRewards: false, // Default to off
 
       // Event Mode defaults
@@ -139,7 +139,7 @@ const getDefaultConfiguration = () => {
       maximumReward: 1000, // Maximum 1000 sats
       defaultReward: 21, // Current fixed amount for standalone rewards
       merchantRewardId: '', // Empty by default, user must configure
-      isEnabled: true, // Rewards enabled by default
+      isEnabled: false, // Rewards disabled when env configuration is unavailable
       showStandaloneRewards: false, // Default to off
 
       // Event Mode hardcoded defaults
@@ -476,7 +476,8 @@ export const selectMaximumReward = (state: any) => state.reward.maximumReward;
 export const selectDefaultReward = (state: any) => state.reward.defaultReward;
 export const selectMerchantRewardId = (state: any) =>
   state.reward.merchantRewardId;
-export const selectIsRewardEnabled = (state: any) => state.reward.isEnabled;
+export const selectIsRewardEnabled = (state: any) =>
+  isRewardsEnabled() && state.reward.isEnabled;
 export const selectShowStandaloneRewards = (state: any) =>
   state.reward.showStandaloneRewards;
 
@@ -512,8 +513,9 @@ export const selectRewardConfig = createSelector(
 
 // Event Mode selectors
 export const selectEventModeEnabled = (state: any) =>
-  state.reward.eventModeEnabled;
-export const selectEventActive = (state: any) => state.reward.eventActive;
+  isRewardsEnabled() && state.reward.eventModeEnabled;
+export const selectEventActive = (state: any) =>
+  isRewardsEnabled() && state.reward.eventActive;
 export const selectEventRewardLimit = (state: any) =>
   state.reward.eventRewardLimit;
 export const selectEventRewardRate = (state: any) =>

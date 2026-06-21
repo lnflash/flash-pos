@@ -16,6 +16,7 @@ import {
   selectRewardConfig,
   selectEventConfig,
 } from '../store/slices/rewardSlice';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // screens
 import {Keypad, Profile, Rewards, SupportChat} from '../screens';
@@ -35,9 +36,12 @@ const tabs = [
 const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
   const {buildHref} = useLinkBuilder();
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   // Create dynamic tabs array based on standalone rewards setting
-  const dynamicTabs = rewardConfig.showStandaloneRewards
+  const shouldShowRewardsTab =
+    rewardsFeatureEnabled && rewardConfig.showStandaloneRewards;
+  const dynamicTabs = shouldShowRewardsTab
     ? tabs
     : tabs.filter(tab => tab.label !== 'Rewards');
 
@@ -45,7 +49,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
     <Wrapper>
       {state.routes.map((route, index) => {
         // Skip rendering Rewards tab if standalone rewards are disabled
-        if (route.name === 'Rewards' && !rewardConfig.showStandaloneRewards) {
+        if (route.name === 'Rewards' && !shouldShowRewardsTab) {
           return null;
         }
 
@@ -114,6 +118,9 @@ export const HomeTabs = () => {
   const {username} = useAppSelector(state => state.user);
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsFeatureEnabled = isRewardsEnabled();
+  const shouldShowRewardsTab =
+    rewardsFeatureEnabled && rewardConfig.showStandaloneRewards;
 
   // Determine header title based on event mode
   const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
@@ -133,7 +140,7 @@ export const HomeTabs = () => {
         animation: 'shift',
       }}>
       <Tab.Screen name="Keypad" component={Keypad} />
-      {rewardConfig.showStandaloneRewards && (
+      {shouldShowRewardsTab && (
         <Tab.Screen
           name="Rewards"
           component={Rewards}
