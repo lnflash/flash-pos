@@ -32,10 +32,30 @@ import {
 
 // utils
 import {toastShow} from '../utils/toast';
+import {validateInvoiceAmount} from '../utils/amounts';
+import {isRewardsEnabled} from '../utils/featureFlags';
+import {POS_INVOICE_EXPIRATION_MINUTES} from '../constants/invoice';
 
 // Responsive font size calculation
 const {width: screenWidth} = Dimensions.get('window');
 const responsiveFontSize = screenWidth < 375 ? 14 : screenWidth > 414 ? 18 : 16;
+const amountStyle = {marginHorizontal: 20};
+const rewardButtonStyle = {
+  flex: 1,
+  marginRight: 8,
+  marginBottom: 0,
+  paddingVertical: 15,
+};
+const nextButtonStyle = {
+  flex: 1,
+  marginLeft: 0,
+  paddingVertical: 15,
+};
+const nextButtonWithRewardsStyle = {
+  flex: 1,
+  marginLeft: 8,
+  paddingVertical: 15,
+};
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -53,6 +73,7 @@ const Keypad = () => {
     useAppSelector(state => state.amount);
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsEnabled = isRewardsEnabled() && rewardConfig.isEnabled;
 
   // Check if event mode is enabled and active
   const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
@@ -76,6 +97,14 @@ const Keypad = () => {
 
   // External Payment Rewards - "Give Points" functionality
   const onGivePoints = useCallback(() => {
+    if (!rewardsEnabled) {
+      toastShow({
+        message: 'Rewards system is currently disabled.',
+        type: 'error',
+      });
+      return;
+    }
+
     if (!satAmount || !displayAmount || !isValidAmount) {
       toastShow({
         message: 'Please enter a valid amount',
@@ -91,7 +120,14 @@ const Keypad = () => {
       isExternalPayment: true,
       paymentMethod: 'external',
     });
-  }, [satAmount, displayAmount, currency, navigation, isValidAmount]);
+  }, [
+    satAmount,
+    displayAmount,
+    currency,
+    navigation,
+    isValidAmount,
+    rewardsEnabled,
+  ]);
 
   const onCreateInvoice = async () => {
     try {
@@ -110,7 +146,28 @@ const Keypad = () => {
       // First convert 1 local currency unit to sats, then estimate USD equivalent
       const {convertedCurrencyAmount: satsPerLocalUnit} = currencyToSats(1);
       const usdPerSat = satsToUsd(1);
+      const invoiceAmount = validateInvoiceAmount(usdPerSat, Number(satAmount));
+
+      if (!invoiceAmount.valid) {
+        toastShow({
+          message:
+            invoiceAmount.error ||
+            'Unable to process this amount. Please try a different value.',
+          type: 'error',
+        });
+        return;
+      }
+
       const usdPerLocalUnit = satsPerLocalUnit * usdPerSat;
+      if (!Number.isFinite(usdPerLocalUnit) || usdPerLocalUnit <= 0) {
+        toastShow({
+          message:
+            'Unable to process this amount. Please try again in a moment.',
+          type: 'error',
+        });
+        return;
+      }
+
       const maxLocalAmount = Math.round(10000 / usdPerLocalUnit);
 
       if (numericAmount > maxLocalAmount) {
@@ -124,26 +181,13 @@ const Keypad = () => {
       }
 
       toggleLoading(true);
-      const usdAmount = satsToUsd(Number(satAmount));
-      const cents = usdAmount * 100;
-      const amount = cents;
-
-      // Additional validation for converted amount
-      const convertedAmount = Number(amount);
-      if (isNaN(convertedAmount) || convertedAmount <= 0) {
-        toastShow({
-          message:
-            'Unable to process this amount. Please try a different value.',
-          type: 'error',
-        });
-        return;
-      }
 
       const result = await createInvoice({
         variables: {
           input: {
             recipientWalletId: walletId,
-            amount: convertedAmount,
+            amount: invoiceAmount.cents,
+            expiresIn: POS_INVOICE_EXPIRATION_MINUTES,
             memo,
           },
         },
@@ -190,7 +234,7 @@ const Keypad = () => {
     <Wrapper>
       <BodyWrapper>
         <Amount
-          style={{marginHorizontal: 20}}
+          style={amountStyle}
           hideToggle={true}
           hideCurrency={false}
           hideSecondary={true}
@@ -210,26 +254,19 @@ const Keypad = () => {
 
       <BtnsWrapper>
         <ButtonRow>
-          {rewardConfig.isEnabled && (
+          {rewardsEnabled && (
             <SecondaryButton
               btnText="Give Points"
               onPress={isValidAmount ? onGivePoints : () => {}}
-              btnStyle={{
-                flex: 1,
-                marginRight: rewardConfig.isEnabled ? 8 : 0,
-                marginBottom: 0,
-                paddingVertical: 15,
-              }}
+              btnStyle={rewardButtonStyle}
             />
           )}
           <PrimaryButton
             btnText="Next"
             onPress={isValidAmount ? onCreateInvoice : () => {}}
-            btnStyle={{
-              flex: 1,
-              marginLeft: rewardConfig.isEnabled ? 8 : 0,
-              paddingVertical: 15,
-            }}
+            btnStyle={
+              rewardsEnabled ? nextButtonWithRewardsStyle : nextButtonStyle
+            }
           />
         </ButtonRow>
       </BtnsWrapper>

@@ -88,7 +88,7 @@ export const updateAmount =
       switch (type) {
         case 'addDigit':
           if (
-            (digit == '0' && currentAmount == '0') ||
+            (digit === '0' && currentAmount === '0') ||
             (digit === '.' && currentAmount?.includes('.')) ||
             currentAmount?.match(/(\.[0-9]{2,}$|\..*\.)/) ||
             (currentAmount && currentAmount?.length >= MAX_INPUT_VALUE_LENGTH)
@@ -108,7 +108,7 @@ export const updateAmount =
           break;
 
         case 'deleteDigit':
-          if (!!currentAmount) {
+          if (currentAmount) {
             currentAmount = currentAmount?.slice(0, -1);
           }
           break;

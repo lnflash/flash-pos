@@ -22,14 +22,13 @@ import {BTC_PAY_SERVER} from '@env';
 // utils
 import {toastShow} from '../utils/toast';
 import {readFlashcard} from '../utils/flashcard';
-import {
-  calculateReward,
-  formatRewardForDisplay,
-} from '../utils/rewardCalculations';
+import {calculateReward} from '../utils/rewardCalculations';
 import {
   createRewardsOnlyTransaction,
   createRewardData,
 } from '../utils/transactionHelpers';
+import {sanitizeMerchantRewardId} from '../utils/validation';
+import {isRewardsEnabled as isRewardsFeatureEnabled} from '../utils/featureFlags';
 
 // selectors
 import {
@@ -39,7 +38,7 @@ import {
   selectEventActive,
   selectEventMinPurchaseAmount,
   selectEventCustomerRewardLimit,
-  selectEventRewardedCustomers,
+  selectEventCustomerRewardCount,
   selectEventMerchantRewardId,
   trackEventReward,
 } from '../store/slices/rewardSlice';
@@ -75,7 +74,9 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   const eventCustomerRewardLimit = useAppSelector(
     selectEventCustomerRewardLimit,
   );
-  const eventRewardedCustomers = useAppSelector(selectEventRewardedCustomers);
+  const eventCustomerRewardCount = useAppSelector(
+    selectEventCustomerRewardCount,
+  );
   const eventMerchantRewardId = useAppSelector(selectEventMerchantRewardId);
 
   // Use event merchant ID if event is active, otherwise use regular merchant ID
@@ -100,20 +101,9 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     [purchaseAmount, rewardConfig, eventActive, eventConfig.eventRewardRate],
   );
 
-  // Format reward information for display with external payment context
-  const rewardDisplay = useMemo(
-    () =>
-      formatRewardForDisplay(
-        rewardCalculation,
-        satsToCurrency,
-        isExternalPayment,
-        paymentMethod,
-      ),
-    [rewardCalculation, satsToCurrency, isExternalPayment, paymentMethod],
-  );
-
   // Check if rewards are enabled
-  const isRewardsEnabled = rewardConfig.isEnabled;
+  const rewardsFeatureEnabled = isRewardsFeatureEnabled();
+  const rewardsEnabled = rewardsFeatureEnabled && rewardConfig.isEnabled;
 
   // Determine reward type for enhanced messaging
   const isPurchaseBased =
@@ -152,7 +142,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
   }, [isExternalPayment, navigation]);
 
   const onReward = useCallback(async () => {
-    if (!isRewardsEnabled) {
+    if (!rewardsEnabled) {
       toastShow({
         message: 'Rewards system is currently disabled.',
         type: 'error',
@@ -172,17 +162,15 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       }
 
       // Check customer reward limit
-      if (lnurl && eventRewardedCustomers.includes(lnurl)) {
-        const customerRewardCount = eventRewardedCustomers.filter(
-          (id: string) => id === lnurl,
-        ).length;
-        if (customerRewardCount >= eventCustomerRewardLimit) {
-          toastShow({
-            message: 'You have reached the maximum rewards for this event.',
-            type: 'info',
-          });
-          return;
-        }
+      if (
+        lnurl &&
+        (eventCustomerRewardCount[lnurl] || 0) >= eventCustomerRewardLimit
+      ) {
+        toastShow({
+          message: 'You have reached the maximum rewards for this event.',
+          type: 'info',
+        });
+        return;
       }
     }
 
@@ -223,13 +211,27 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       return;
     }
 
+    const sanitizedMerchantRewardId = sanitizeMerchantRewardId(
+      effectiveMerchantRewardId,
+    );
+
+    if (!sanitizedMerchantRewardId) {
+      setIsProcessingReward(false);
+      toastShow({
+        message:
+          'Merchant Reward ID is invalid. Please update it in Rewards Settings.',
+        type: 'error',
+      });
+      return;
+    }
+
     const requestBody = {
       destination: lnurl,
       amount: rewardCalculation.rewardAmount, // Dynamic amount based on calculation
       payoutMethodId: 'BTC-LN',
     };
 
-    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${effectiveMerchantRewardId}/payouts`;
+    const url = `${BTC_PAY_SERVER}/api/v1/pull-payments/${sanitizedMerchantRewardId}/payouts`;
 
     try {
       const response = await axios.post(url, requestBody);
@@ -322,7 +324,7 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
       setIsProcessingReward(false); // Reset on error
     }
   }, [
-    isRewardsEnabled,
+    rewardsEnabled,
     isProcessingReward,
     lastRewardTime,
     COOLDOWN_PERIOD,
@@ -344,25 +346,35 @@ const Rewards: React.FC<Props> = ({navigation, route}) => {
     eventActive,
     eventCustomerRewardLimit,
     eventMinPurchaseAmount,
-    eventRewardedCustomers,
+    eventCustomerRewardCount,
   ]);
 
   useFocusEffect(
     useCallback(() => {
-      if (loading || !lnurl || !isRewardsEnabled) {
+      if (loading || !lnurl || !rewardsEnabled) {
         return;
       }
       onReward();
-    }, [loading, lnurl, isRewardsEnabled, onReward]),
+    }, [loading, lnurl, rewardsEnabled, onReward]),
   );
 
   const onPressActivateNFC = async () => {
+    if (!rewardsEnabled) {
+      toastShow({
+        message: 'Rewards system is currently disabled.',
+        type: 'error',
+      });
+      return;
+    }
+
     const tag = await readFlashcard();
-    if (tag) handleTag(tag);
+    if (tag) {
+      handleTag(tag);
+    }
   };
 
   // Don't render if rewards are disabled
-  if (!isRewardsEnabled) {
+  if (!rewardsEnabled) {
     return (
       <Wrapper isExternalPayment={isExternalPayment}>
         <DisabledContainer>

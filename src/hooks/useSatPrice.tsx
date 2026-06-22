@@ -17,24 +17,30 @@ const useSatPrice = () => {
   React.useEffect(() => {
     if (data?.price?.price) {
       const {base, offset} = data.price.price;
-      setPrice(base / 10 ** offset);
+      const nextPrice = base / 10 ** offset;
+      setPrice(Number.isFinite(nextPrice) && nextPrice > 0 ? nextPrice : 0);
     }
   }, [data]);
 
   const conversions = React.useMemo(
     () => ({
-      satsToUsd: (sats: number) => (sats * price) / 100,
-      usdToSats: (usd: number) => (100 * usd) / price,
-    }),
-    [price], // Now properly depends on price
-  );
+      satsToUsd: (sats: number) => {
+        if (price <= 0 || !Number.isFinite(sats)) {
+          return 0;
+        }
 
-  if (price === 0) {
-    return {
-      satsToUsd: () => NaN,
-      usdToSats: () => NaN,
-    };
-  }
+        return (sats * price) / 100;
+      },
+      usdToSats: (usd: number) => {
+        if (price <= 0 || !Number.isFinite(usd)) {
+          return 0;
+        }
+
+        return (100 * usd) / price;
+      },
+    }),
+    [price],
+  );
 
   return conversions;
 };

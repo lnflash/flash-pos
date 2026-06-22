@@ -69,9 +69,9 @@ const useNfc = (paymentRequest: string) => {
 
               const result = await fetch(url);
               const lnurlResponse = await result.json();
-              if (lnurlResponse.status == 'ERROR') {
+              if (lnurlResponse.status === 'ERROR') {
                 toastShow({message: lnurlResponse.reason, type: 'error'});
-              } else if (lnurlResponse.status == 'OK') {
+              } else if (lnurlResponse.status === 'OK') {
                 navigation.navigate('Success', {title: lnurlResponse.reason});
               }
               // LNURL response received successfully

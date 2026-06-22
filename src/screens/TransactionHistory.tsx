@@ -7,11 +7,11 @@ import {StackScreenProps} from '@react-navigation/stack';
 import moment from 'moment';
 
 // components
-import {PrimaryButton, SecondaryButton} from '../components';
+import {PrimaryButton, SecondaryButton} from '../components/buttons';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
-import {usePrint} from '../hooks';
+import usePrint from '../hooks/usePrint';
 
 // assets
 import Check from '../assets/icons/check.svg';

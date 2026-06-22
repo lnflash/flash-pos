@@ -1,0 +1,81 @@
+diff --git a/node_modules/react-native-screens/lib/commonjs/components/Screen.js b/node_modules/react-native-screens/lib/commonjs/components/Screen.js
+index 162a645..8b7da7d 100644
+--- a/node_modules/react-native-screens/lib/commonjs/components/Screen.js
++++ b/node_modules/react-native-screens/lib/commonjs/components/Screen.js
+@@ -212,13 +212,15 @@ const InnerScreen = exports.InnerScreen = /*#__PURE__*/_react.default.forwardRef
+         zIndex: undefined
+       }],
+       activityState: activityState,
+-      sheetAllowedDetents: resolvedSheetAllowedDetents,
+-      sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
+-      sheetElevation: sheetElevation,
+-      sheetGrabberVisible: sheetGrabberVisible,
+-      sheetCornerRadius: sheetCornerRadius,
+-      sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
+-      sheetInitialDetent: resolvedSheetInitialDetentIndex,
++      // flash-pos uses JS stack navigators. On iOS/RN 0.77 these sheet
++      // detent props can be applied to RCTView and crash at startup.
++      // sheetAllowedDetents: resolvedSheetAllowedDetents,
++      // sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
++      // sheetElevation: sheetElevation,
++      // sheetGrabberVisible: sheetGrabberVisible,
++      // sheetCornerRadius: sheetCornerRadius,
++      // sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
++      // sheetInitialDetent: resolvedSheetInitialDetentIndex,
+       gestureResponseDistance: {
+         start: gestureResponseDistance?.start ?? -1,
+         end: gestureResponseDistance?.end ?? -1,
+diff --git a/node_modules/react-native-screens/lib/module/components/Screen.js b/node_modules/react-native-screens/lib/module/components/Screen.js
+index 8c92745..30cf959 100644
+--- a/node_modules/react-native-screens/lib/module/components/Screen.js
++++ b/node_modules/react-native-screens/lib/module/components/Screen.js
+@@ -208,13 +208,15 @@ export const InnerScreen = /*#__PURE__*/React.forwardRef(function InnerScreen(pr
+         zIndex: undefined
+       }],
+       activityState: activityState,
+-      sheetAllowedDetents: resolvedSheetAllowedDetents,
+-      sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
+-      sheetElevation: sheetElevation,
+-      sheetGrabberVisible: sheetGrabberVisible,
+-      sheetCornerRadius: sheetCornerRadius,
+-      sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
+-      sheetInitialDetent: resolvedSheetInitialDetentIndex,
++      // flash-pos uses JS stack navigators. On iOS/RN 0.77 these sheet
++      // detent props can be applied to RCTView and crash at startup.
++      // sheetAllowedDetents: resolvedSheetAllowedDetents,
++      // sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
++      // sheetElevation: sheetElevation,
++      // sheetGrabberVisible: sheetGrabberVisible,
++      // sheetCornerRadius: sheetCornerRadius,
++      // sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
++      // sheetInitialDetent: resolvedSheetInitialDetentIndex,
+       gestureResponseDistance: {
+         start: gestureResponseDistance?.start ?? -1,
+         end: gestureResponseDistance?.end ?? -1,
+diff --git a/node_modules/react-native-screens/src/components/Screen.tsx b/node_modules/react-native-screens/src/components/Screen.tsx
+index 6d24b93..f70402f 100644
+--- a/node_modules/react-native-screens/src/components/Screen.tsx
++++ b/node_modules/react-native-screens/src/components/Screen.tsx
+@@ -302,13 +302,15 @@ export const InnerScreen = React.forwardRef<View, ScreenProps>(
+             // Detailed information can be found here https://github.com/software-mansion/react-native-screens/pull/2351
+             style={[style, { zIndex: undefined }]}
+             activityState={activityState}
+-            sheetAllowedDetents={resolvedSheetAllowedDetents}
+-            sheetLargestUndimmedDetent={resolvedSheetLargestUndimmedDetent}
+-            sheetElevation={sheetElevation}
+-            sheetGrabberVisible={sheetGrabberVisible}
+-            sheetCornerRadius={sheetCornerRadius}
+-            sheetExpandsWhenScrolledToEdge={sheetExpandsWhenScrolledToEdge}
+-            sheetInitialDetent={resolvedSheetInitialDetentIndex}
++            // flash-pos uses JS stack navigators. On iOS/RN 0.77 these sheet
++            // detent props can be applied to RCTView and crash at startup.
++            // sheetAllowedDetents={resolvedSheetAllowedDetents}
++            // sheetLargestUndimmedDetent={resolvedSheetLargestUndimmedDetent}
++            // sheetElevation={sheetElevation}
++            // sheetGrabberVisible={sheetGrabberVisible}
++            // sheetCornerRadius={sheetCornerRadius}
++            // sheetExpandsWhenScrolledToEdge={sheetExpandsWhenScrolledToEdge}
++            // sheetInitialDetent={resolvedSheetInitialDetentIndex}
+             gestureResponseDistance={{
+               start: gestureResponseDistance?.start ?? -1,
+               end: gestureResponseDistance?.end ?? -1,

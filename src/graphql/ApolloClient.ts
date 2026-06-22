@@ -46,14 +46,14 @@ const wsLink = new GraphQLWsLink(
 const errorLink = onError(({graphQLErrors, networkError}) => {
   // graphqlErrors should be managed locally
   if (graphQLErrors)
-    graphQLErrors.forEach(({message, locations, path}) => {
+    {graphQLErrors.forEach(({message, locations, path}) => {
       if (message === 'PersistedQueryNotFound') {
       } else {
         console.warn(`[GraphQL error]: Message: ${message}, Path: ${path}}`, {
           locations,
         });
       }
-    });
+    });}
   // only network error are managed globally
   if (networkError) {
   }

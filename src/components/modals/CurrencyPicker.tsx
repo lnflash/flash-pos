@@ -88,7 +88,7 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
         <Backdrop onPress={() => setVisible(false)} activeOpacity={0.9}>
           <ModalView>
             <RowWrapper>
-              <Close></Close>
+              <Close />
               <Title>Currency List</Title>
               <Close onPress={() => setVisible(false)}>
                 <Icon name={'xmark'} size={30} solid />

@@ -20,6 +20,7 @@ import {
 // utils
 import {toastShow} from '../utils/toast';
 import {sanitizeMerchantRewardId} from '../utils/validation';
+import {isRewardsEnabled as isRewardsFeatureEnabled} from '../utils/featureFlags';
 
 // env
 import {BTC_PAY_SERVER} from '@env';
@@ -31,6 +32,8 @@ const EventSettings = () => {
   const dispatch = useAppDispatch();
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsFeatureEnabled = isRewardsFeatureEnabled();
+  const rewardsEnabled = rewardsFeatureEnabled && rewardConfig.isEnabled;
 
   // Local state for event configuration with safe defaults
   // Note: eventRewardLimit is handled by eventBudgetSats in this implementation
@@ -191,6 +194,14 @@ const EventSettings = () => {
   );
 
   const testEventMerchantRewardId = useCallback(async () => {
+    if (!rewardsFeatureEnabled) {
+      toastShow({
+        message: 'Rewards are disabled in this build.',
+        type: 'error',
+      });
+      return;
+    }
+
     if (!eventMerchantRewardId.trim()) {
       toastShow({
         message: 'Please enter an Event Merchant Reward ID first',
@@ -235,11 +246,11 @@ const EventSettings = () => {
     } finally {
       setIsTestingEventMerchantId(false);
     }
-  }, [eventMerchantRewardId]);
+  }, [eventMerchantRewardId, rewardsFeatureEnabled]);
 
   const handleActivateEvent = () => {
     // Check if rewards are enabled before activating event
-    if (!rewardConfig.isEnabled) {
+    if (!rewardsEnabled) {
       toastShow({
         message: 'Rewards must be enabled before activating events',
         type: 'error',
@@ -288,6 +299,32 @@ const EventSettings = () => {
         100
       : 0;
 
+  if (!rewardsFeatureEnabled) {
+    return (
+      <Wrapper>
+        <Header>
+          <BackButton onPress={onGoBack}>
+            <Icon
+              name={'chevron-back-outline'}
+              type="ionicon"
+              color="#ffffff"
+              size={24}
+            />
+          </BackButton>
+          <HeaderTitle>Event Settings</HeaderTitle>
+          <HeaderSpacer />
+        </Header>
+
+        <DisabledContainer>
+          <DisabledTitle>Rewards Disabled</DisabledTitle>
+          <DisabledMessage>
+            Event rewards are disabled in this build.
+          </DisabledMessage>
+        </DisabledContainer>
+      </Wrapper>
+    );
+  }
+
   return (
     <Wrapper>
       <Header>
@@ -306,7 +343,7 @@ const EventSettings = () => {
       <ScrollWrapper showsVerticalScrollIndicator={false}>
         <ContentWrapper>
           {/* Rewards Required Warning */}
-          {!rewardConfig.isEnabled && (
+          {!rewardsEnabled && (
             <WarningContainer>
               <WarningIcon>⚠️</WarningIcon>
               <WarningText>
@@ -372,9 +409,9 @@ const EventSettings = () => {
                 {!eventConfig.eventActive ? (
                   <ActionButton
                     onPress={handleActivateEvent}
-                    disabled={!rewardConfig.isEnabled}>
-                    <ActionButtonText disabled={!rewardConfig.isEnabled}>
-                      {!rewardConfig.isEnabled
+                    disabled={!rewardsEnabled}>
+                    <ActionButtonText disabled={!rewardsEnabled}>
+                      {!rewardsEnabled
                         ? 'Rewards Required'
                         : 'Activate Event'}
                     </ActionButtonText>
@@ -647,6 +684,29 @@ const ContentWrapper = styled.View`
   max-width: 500px;
   align-self: center;
   width: 100%;
+`;
+
+const DisabledContainer = styled.View`
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+`;
+
+const DisabledTitle = styled.Text`
+  font-size: 24px;
+  font-family: 'Outfit-Bold';
+  text-align: center;
+  color: #000000;
+  margin-bottom: 12px;
+`;
+
+const DisabledMessage = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #5a5a5a;
+  line-height: 22px;
 `;
 
 const StatusContainer = styled.View`

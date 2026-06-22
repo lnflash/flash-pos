@@ -1,194 +1,221 @@
-import React, {useState, useRef} from 'react';
-import {WebView, WebViewMessageEvent} from 'react-native-webview';
+import React, {useRef, useState, useCallback, useEffect} from 'react';
 import {
   SafeAreaView,
-  ActivityIndicator,
   View,
   Text,
+  TextInput,
   TouchableOpacity,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {useAppSelector} from '../store/hooks';
+import {useSupportChat} from '../hooks/useSupportChat';
+import type {ChatwootMessage} from '../services/chatwoot/types';
 
-const SupportChat = () => {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [chatReady, setChatReady] = useState(false);
-  const webViewRef = useRef<any>(null);
+const BUBBLE_OUTGOING = '#41AC48';
+const BUBBLE_INCOMING = '#F0F2F5';
+const TEXT_OUTGOING = '#FFFFFF';
+const TEXT_INCOMING = '#1A1A1A';
+const TIME_OUTGOING = 'rgba(255,255,255,0.7)';
+const TIME_INCOMING = '#888888';
+const APP_VERSION = '0.3.1';
 
-  const chatUrl = 'https://getflash.io/app/tidio.html';
+type RenderMessageProps = {
+  item: ChatwootMessage;
+};
 
-  const handleLoadStart = () => {
-    console.log('WebView started loading');
-    setLoading(true);
-    setError(null);
-    setChatReady(false);
-  };
+const isOutgoing = (item: ChatwootMessage) =>
+  item.message_type === 0; // 0 = from contact (user), 1 = from agent
 
-  const handleLoadEnd = () => {
-    console.log('WebView finished loading');
-    setLoading(false);
+const formatTime = (timestamp: number): string => {
+  const date = new Date(timestamp * 1000);
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
 
-    // Inject additional JavaScript to ensure chat opens
-    const injectJS = `
-      console.log('Injecting chat opening script...');
-      
-      let attempts = 0;
-      const maxAttempts = 20;
-      
-      function forceOpenChat() {
-        attempts++;
-        console.log('Attempt to open chat:', attempts);
-        
-        if (window.tidioChatApi) {
-          console.log('Tidio API found, opening chat...');
-          try {
-            window.tidioChatApi.open();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatOpened',
-              success: true
-            }));
-            return true;
-          } catch (error) {
-            console.error('Error opening chat:', error);
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatError',
-              error: error.message
-            }));
-          }
-        }
-        
-        if (attempts < maxAttempts) {
-          setTimeout(forceOpenChat, 500);
-        } else {
-          console.error('Failed to open chat after', maxAttempts, 'attempts');
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'chatTimeout',
-            attempts: attempts
-          }));
-        }
-        
-        return false;
-      }
-      
-      // Try multiple approaches
-      setTimeout(forceOpenChat, 1000);
-      
-      // Also listen for the ready event
-      document.addEventListener('tidioChat-ready', function() {
-        console.log('Tidio ready event received in injected script');
-        setTimeout(() => {
-          if (window.tidioChatApi) {
-            window.tidioChatApi.open();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'chatReady',
-              success: true
-            }));
-          }
-        }, 500);
-      });
-      
-      // Send status update
-      window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: 'scriptInjected',
-        timestamp: new Date().toISOString()
-      }));
-      
-      true; // Return true to indicate successful injection
-    `;
-
-    webViewRef.current?.injectJavaScript(injectJS);
-  };
-
-  const handleError = (syntheticEvent: any) => {
-    const {nativeEvent} = syntheticEvent;
-    console.error('WebView error:', nativeEvent);
-    setLoading(false);
-    setError(`Failed to load chat: ${nativeEvent.description}`);
-  };
-
-  const handleMessage = (event: WebViewMessageEvent) => {
-    try {
-      const data = JSON.parse(event.nativeEvent?.data);
-      console.log('Message from WebView:', data);
-
-      switch (data.type) {
-        case 'chatOpened':
-          setChatReady(true);
-          console.log('Chat opened successfully');
-          break;
-        case 'chatReady':
-          setChatReady(true);
-          console.log('Chat is ready');
-          break;
-        case 'chatError':
-          console.error('Chat error:', data.error);
-          setError(`Chat error: ${data.error}`);
-          break;
-        case 'chatTimeout':
-          console.error('Chat timeout after', data.attempts, 'attempts');
-          setError('Chat failed to load. Please try refreshing.');
-          break;
-        case 'scriptInjected':
-          console.log('Script injected at:', data.timestamp);
-          break;
-        default:
-          console.log('Unknown message type:', data.type);
-      }
-    } catch (e) {
-      console.log('Raw WebView message:', event.nativeEvent.data);
-    }
-  };
-
-  const handleRefresh = () => {
-    setError(null);
-    setLoading(true);
-    setChatReady(false);
-    webViewRef.current?.reload();
-  };
+const MessageBubble = ({item}: RenderMessageProps) => {
+  const outgoing = isOutgoing(item);
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Error display */}
-      {error && (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={handleRefresh} style={styles.retryButton}>
+    <View
+      style={[
+        styles.bubbleRow,
+        outgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming,
+      ]}>
+      <View
+        style={[
+          styles.bubble,
+          {backgroundColor: outgoing ? BUBBLE_OUTGOING : BUBBLE_INCOMING},
+        ]}>
+        <Text
+          style={[
+            styles.bubbleText,
+            {color: outgoing ? TEXT_OUTGOING : TEXT_INCOMING},
+          ]}>
+          {item.content}
+        </Text>
+        <Text
+          style={[
+            styles.bubbleTime,
+            {color: outgoing ? TIME_OUTGOING : TIME_INCOMING},
+          ]}>
+          {formatTime(item.created_at)}
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+const ConnectionBanner = ({
+  status,
+}: {
+  status: 'connecting' | 'connected' | 'disconnected' | 'error';
+}) => {
+  if (status === 'connected') {
+    return null;
+  }
+
+  const config = {
+    connecting: {text: 'Connecting...', color: '#8a8a8a', bg: '#f5f5f5'},
+    disconnected: {text: 'Disconnected — retrying...', color: '#8a6d3b', bg: '#fcf8e3'},
+    error: {text: 'Connection error', color: '#a94442', bg: '#f2dede'},
+  }[status];
+
+  return (
+    <View style={[styles.banner, {backgroundColor: config.bg}]}>
+      <Text style={[styles.bannerText, {color: config.color}]}>
+        {config.text}
+      </Text>
+    </View>
+  );
+};
+
+const SupportChat = () => {
+  const insets = useSafeAreaInsets();
+  const username = useAppSelector(state => state.user.username);
+  const {messages, connectionStatus, error, sendMessage, retry, isSending} =
+    useSupportChat({
+      userIdentifier: username,
+      userDisplayName: username ? `POS — ${username}` : undefined,
+      appVersion: APP_VERSION,
+    });
+
+  const [inputText, setInputText] = useState('');
+  const flatListRef = useRef<FlatList<ChatwootMessage>>(null);
+
+  const handleSend = useCallback(() => {
+    if (!inputText.trim() || isSending) {
+      return;
+    }
+
+    const text = inputText;
+    setInputText('');
+    sendMessage(text);
+  }, [inputText, isSending, sendMessage]);
+
+  // Scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (messages.length > 0) {
+      const timer = setTimeout(() => {
+        flatListRef.current?.scrollToEnd({animated: true});
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [messages.length]);
+
+  const renderMessage = useCallback(
+    ({item}: {item: ChatwootMessage}) => <MessageBubble item={item} />,
+    [],
+  );
+
+  // Error state with retry
+  if (error && messages.length === 0) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>Unable to load support chat</Text>
+          <Text style={styles.emptySubtitle}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={retry}>
             <Text style={styles.retryButtonText}>Try Again</Text>
           </TouchableOpacity>
         </View>
-      )}
+      </SafeAreaView>
+    );
+  }
 
-      {/* Loading overlay */}
-      {loading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#007856" />
-          <Text style={styles.loadingText}>Loading Tidio Chat...</Text>
+  return (
+    <SafeAreaView style={styles.container}>
+      <ConnectionBanner status={connectionStatus} />
+
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={insets.top + 44}>
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={item => item.id.toString()}
+          renderItem={renderMessage}
+          contentContainerStyle={styles.messageList}
+          onContentSizeChange={() =>
+            flatListRef.current?.scrollToEnd({animated: false})
+          }
+          ListEmptyComponent={
+            connectionStatus === 'connecting' ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator size="large" color={BUBBLE_OUTGOING} />
+                <Text style={styles.emptySubtitle}>
+                  Loading support chat...
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>No messages yet</Text>
+                <Text style={styles.emptySubtitle}>
+                  Send a message to start a conversation with our support team.
+                </Text>
+              </View>
+            )
+          }
+        />
+
+        {/* Input bar */}
+        <View
+          style={[styles.inputBar, {paddingBottom: insets.bottom || 8}]}>
+          <TextInput
+            style={styles.textInput}
+            placeholder="Type a message..."
+            placeholderTextColor="#999"
+            value={inputText}
+            onChangeText={setInputText}
+            multiline
+            maxLength={2000}
+            editable={connectionStatus !== 'error'}
+            accessible
+            accessibilityLabel="Support chat message input"
+          />
+          <TouchableOpacity
+            style={[
+              styles.sendButton,
+              (!inputText.trim() || isSending) && styles.sendButtonDisabled,
+            ]}
+            onPress={handleSend}
+            disabled={!inputText.trim() || isSending}
+            accessible
+            accessibilityLabel="Send message">
+            {isSending ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.sendButtonText}>Send</Text>
+            )}
+          </TouchableOpacity>
         </View>
-      )}
-
-      {/* WebView */}
-      <WebView
-        ref={webViewRef}
-        source={{uri: chatUrl}}
-        style={styles.webview}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        startInLoadingState={false} // We handle loading manually
-        mixedContentMode="compatibility"
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        onLoadStart={handleLoadStart}
-        onLoadEnd={handleLoadEnd}
-        onError={handleError}
-        onMessage={handleMessage}
-        scalesPageToFit={false}
-        bounces={false}
-        scrollEnabled={true}
-        allowsBackForwardNavigationGestures={false}
-        webviewDebuggingEnabled={__DEV__}
-        userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
-        originWhitelist={['*']}
-      />
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -196,54 +223,126 @@ const SupportChat = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'white',
+    backgroundColor: '#FFFFFF',
   },
-  errorContainer: {
-    backgroundColor: '#f8d7da',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f5c6cb',
+  flex: {
+    flex: 1,
+  },
+  banner: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
     alignItems: 'center',
   },
-  errorText: {
-    color: '#721c24',
-    fontSize: 14,
+  bannerText: {
+    fontSize: 13,
     fontFamily: 'Outfit-Regular',
-    textAlign: 'center',
-    marginBottom: 10,
   },
-  retryButton: {
-    backgroundColor: '#dc3545',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 5,
+  messageList: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexGrow: 1,
   },
-  retryButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
+  bubbleRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+    maxWidth: '80%',
   },
-  loadingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+  bubbleRowOutgoing: {
+    alignSelf: 'flex-end',
+    justifyContent: 'flex-end',
+  },
+  bubbleRowIncoming: {
+    alignSelf: 'flex-start',
+  },
+  bubble: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  bubbleText: {
+    fontSize: 15,
+    fontFamily: 'Outfit-Regular',
+    lineHeight: 20,
+  },
+  bubbleTime: {
+    fontSize: 11,
+    fontFamily: 'Outfit-Regular',
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  inputBar: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5E5',
+    backgroundColor: '#FFFFFF',
+  },
+  textInput: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 100,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F5',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 10,
+    fontSize: 15,
+    fontFamily: 'Outfit-Regular',
+    color: '#1A1A1A',
+    marginRight: 8,
+  },
+  sendButton: {
+    backgroundColor: BUBBLE_OUTGOING,
+    borderRadius: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    minHeight: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 1000,
   },
-  loadingText: {
-    marginTop: 15,
-    fontSize: 16,
-    fontFamily: 'Outfit-Bold',
-    color: '#666',
+  sendButtonDisabled: {
+    opacity: 0.5,
+  },
+  sendButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: 'Outfit-SemiBold',
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 32,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontFamily: 'Outfit-SemiBold',
+    color: '#333',
+    marginBottom: 8,
     textAlign: 'center',
   },
-  webview: {
-    flex: 1,
-    marginBottom: 70,
+  emptySubtitle: {
+    fontSize: 14,
+    fontFamily: 'Outfit-Regular',
+    color: '#888',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  retryButton: {
+    backgroundColor: BUBBLE_OUTGOING,
+    borderRadius: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: 'Outfit-SemiBold',
   },
 });
 

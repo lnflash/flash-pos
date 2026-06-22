@@ -16,10 +16,12 @@ type Props = {
   transactions?: TransactionList;
 };
 
+const listStyle = {paddingHorizontal: 20};
+
 const RecentActivity: React.FC<Props> = ({transactions}) => {
   const {satsToCurrency} = useRealtimePrice();
 
-  const renderItem = ({item, index}: RenderItem) => {
+  const renderItem = ({item, index: _index}: RenderItem) => {
     const sats = parseInt(item.sats.replaceAll(',', ''), 10);
     return (
       <RowWrapper>
@@ -46,7 +48,7 @@ const RecentActivity: React.FC<Props> = ({transactions}) => {
       <FlatList
         data={transactions}
         renderItem={renderItem}
-        style={{paddingHorizontal: 20}}
+        style={listStyle}
       />
     </Wrapper>
   );

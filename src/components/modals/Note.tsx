@@ -23,7 +23,7 @@ const Note: React.FC<Props> = ({btnStyle}) => {
 
   return (
     <Wrapper>
-      {!!memo ? (
+      {memo ? (
         <NoteWrapper>
           <NoteText numberOfLines={1}>
             Note:{' '}
@@ -49,7 +49,7 @@ const Note: React.FC<Props> = ({btnStyle}) => {
         <Backdrop onPress={() => setVisible(false)} activeOpacity={0.9}>
           <ModalView>
             <RowWrapper>
-              <Close></Close>
+              <Close />
               <Title>Note</Title>
               <Close onPress={() => setVisible(false)}>
                 <Icon name={'xmark'} size={30} solid />
