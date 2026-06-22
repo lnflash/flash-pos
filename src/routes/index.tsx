@@ -47,6 +47,7 @@ const Root = () => {
   return (
     <Stack.Navigator
       initialRouteName={initialRouteName}
+      detachInactiveScreens={false}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: headerTitle,

@@ -135,6 +135,7 @@ export const HomeTabs = () => {
   return (
     <Tab.Navigator
       tabBar={renderTabBar}
+      detachInactiveScreens={false}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: headerTitle,
