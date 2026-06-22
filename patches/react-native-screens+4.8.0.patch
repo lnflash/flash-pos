@@ -1,0 +1,26 @@
+diff --git a/node_modules/react-native-screens/lib/module/components/Screen.js b/node_modules/react-native-screens/lib/module/components/Screen.js
+index 8c92745..3170cc7 100644
+--- a/node_modules/react-native-screens/lib/module/components/Screen.js
++++ b/node_modules/react-native-screens/lib/module/components/Screen.js
+@@ -208,13 +208,14 @@ export const InnerScreen = /*#__PURE__*/React.forwardRef(function InnerScreen(pr
+         zIndex: undefined
+       }],
+       activityState: activityState,
+-      sheetAllowedDetents: resolvedSheetAllowedDetents,
+-      sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
+-      sheetElevation: sheetElevation,
+-      sheetGrabberVisible: sheetGrabberVisible,
+-      sheetCornerRadius: sheetCornerRadius,
+-      sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
+-      sheetInitialDetent: resolvedSheetInitialDetentIndex,
++      // Sheet props disabled — flash-pos uses JS stack, crashes RCTView in Paper mode
++      // sheetAllowedDetents: resolvedSheetAllowedDetents,
++      // sheetLargestUndimmedDetent: resolvedSheetLargestUndimmedDetent,
++      // sheetElevation: sheetElevation,
++      // sheetGrabberVisible: sheetGrabberVisible,
++      // sheetCornerRadius: sheetCornerRadius,
++      // sheetExpandsWhenScrolledToEdge: sheetExpandsWhenScrolledToEdge,
++      // sheetInitialDetent: resolvedSheetInitialDetentIndex,
+       gestureResponseDistance: {
+         start: gestureResponseDistance?.start ?? -1,
+         end: gestureResponseDistance?.end ?? -1,
