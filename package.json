@@ -8,6 +8,7 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
+    "test:invoice-status": "jest --runInBand __tests__/screens/Invoice.test.tsx __tests__/components/ExpireTime.test.tsx",
     "typecheck": "tsc --noEmit",
     "aab-android": "cd android && ./gradlew bundleRelease && cd ..",
     "apk-android": "cd android && ./gradlew app:assembleRelease && cd ..",

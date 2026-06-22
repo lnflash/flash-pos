@@ -23,7 +23,8 @@ import {
 } from '../store/slices/pinSlice';
 import {selectEventModeEnabled} from '../store/slices/rewardSlice';
 
-// env
+// utils
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 import {Account, Security, Settings, Transactions} from '../components/profile';
 
@@ -40,6 +41,7 @@ const Profile = () => {
   const dispatch = useAppDispatch();
 
   const eventModeEnabled = useAppSelector(selectEventModeEnabled);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   // PIN management
 
@@ -62,8 +64,14 @@ const Profile = () => {
 
   const onViewRewardSettings = () => {
     setPinError('');
-    setIsViewRewardSettings(true);
     dispatch(clearResults());
+
+    if (!rewardsFeatureEnabled) {
+      navigation.navigate('RewardsSettings');
+      return;
+    }
+
+    setIsViewRewardSettings(true);
 
     if (!hasPin) {
       // First time setup - create PIN

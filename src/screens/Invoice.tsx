@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Platform, Share} from 'react-native';
 import styled from 'styled-components/native';
 import Clipboard from '@react-native-clipboard/clipboard';
@@ -24,12 +24,13 @@ import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // utils
 import {toastShow} from '../utils/toast';
-import {useSubscription} from '@apollo/client';
+import {useLazyQuery, useSubscription} from '@apollo/client';
 import {calculateReward} from '../utils/rewardCalculations';
 import {sanitizeMerchantRewardId} from '../utils/validation';
 import {isRewardsEnabled} from '../utils/featureFlags';
 
 // gql
+import {LnInvoicePaymentStatusQuery} from '../graphql/queries';
 import {LnInvoicePaymentStatus} from '../graphql/subscriptions';
 
 // store
@@ -46,6 +47,9 @@ import {BTC_PAY_SERVER} from '@env';
 
 type Props = StackScreenProps<RootStackType, 'Invoice'>;
 
+const invoiceUnavailableMessage =
+  'Please try again. Either the invoice has expired or it has not been paid.';
+
 const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {paymentRequest, paymentHash, paymentSecret} = useAppSelector(
@@ -61,6 +65,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
+  const completedPaymentHashRef = useRef<string | null>(null);
 
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
@@ -71,6 +76,12 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     },
     skip: !paymentRequest,
   });
+  const [confirmInvoicePaymentStatus] = useLazyQuery(
+    LnInvoicePaymentStatusQuery,
+    {
+      fetchPolicy: 'network-only',
+    },
+  );
 
   const getCardLnurlFromStorage = useCallback(async (): Promise<
     string | null
@@ -144,6 +155,12 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   );
 
   const handleSuccessfulPayment = useCallback(async () => {
+    const paymentIdentifier = paymentHash || paymentRequest;
+    if (completedPaymentHashRef.current === paymentIdentifier) {
+      return;
+    }
+    completedPaymentHashRef.current = paymentIdentifier;
+
     // Calculate reward information if rewards are enabled
     let rewardInfo;
     let rewardSentToCard = false;
@@ -239,23 +256,70 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     getCardLnurlFromStorage,
   ]);
 
-  useEffect(() => {
-    if (data) {
-      const {status, errors} = data.lnInvoicePaymentStatus;
-      if (status === 'PAID') {
-        setPaymentLoading(false);
-        handleSuccessfulPayment();
-      } else if (errors?.length > 0) {
-        setPaymentLoading(false);
-        setErrMessage(
-          'Please try again. Either the invoice has expired or it has not been paid.',
-        );
-      }
-    } else if (error) {
-      setPaymentLoading(false);
-      setErrMessage(error.message || 'An unexpected error occurred.');
+  const confirmInvoiceIsPaid = useCallback(async () => {
+    if (!paymentRequest) {
+      return false;
     }
-  }, [data, error, handleSuccessfulPayment]);
+
+    let statusPayload;
+    try {
+      const result = await confirmInvoicePaymentStatus({
+        variables: {
+          input: {paymentRequest},
+        },
+      });
+      statusPayload = result.data?.lnInvoicePaymentStatus;
+    } catch {
+      return false;
+    }
+
+    if (statusPayload?.status === 'PAID') {
+      return true;
+    }
+
+    if (statusPayload?.status === 'EXPIRED') {
+      setErrMessage(invoiceUnavailableMessage);
+    }
+
+    return false;
+  }, [confirmInvoicePaymentStatus, paymentRequest]);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    const handlePaymentStatus = async () => {
+      if (data) {
+        const {status} = data.lnInvoicePaymentStatus;
+        if (status === 'PAID') {
+          setPaymentLoading(true);
+          const confirmedPaid = await confirmInvoiceIsPaid();
+          if (!isCurrent) {
+            return;
+          }
+          setPaymentLoading(false);
+          if (confirmedPaid) {
+            handleSuccessfulPayment();
+          }
+        } else if (status === 'EXPIRED') {
+          setPaymentLoading(false);
+          setErrMessage(invoiceUnavailableMessage);
+        } else if (status === 'PENDING') {
+          setPaymentLoading(false);
+          setErrMessage('');
+        } else {
+          setPaymentLoading(false);
+        }
+      } else if (error) {
+        setPaymentLoading(false);
+      }
+    };
+
+    handlePaymentStatus();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [data, error, confirmInvoiceIsPaid, handleSuccessfulPayment]);
 
   const payUsingFlashcard = useCallback(async () => {
     if (!k1 || !callback) {

@@ -34,6 +34,7 @@ import {
 import {toastShow} from '../utils/toast';
 import {validateInvoiceAmount} from '../utils/amounts';
 import {isRewardsEnabled} from '../utils/featureFlags';
+import {POS_INVOICE_EXPIRATION_MINUTES} from '../constants/invoice';
 
 // Responsive font size calculation
 const {width: screenWidth} = Dimensions.get('window');
@@ -186,6 +187,7 @@ const Keypad = () => {
           input: {
             recipientWalletId: walletId,
             amount: invoiceAmount.cents,
+            expiresIn: POS_INVOICE_EXPIRATION_MINUTES,
             memo,
           },
         },

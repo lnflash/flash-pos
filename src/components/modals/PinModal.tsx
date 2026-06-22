@@ -8,7 +8,7 @@ type PinModalProps = {
   mode: 'setup' | 'verify' | 'change' | 'remove';
   title: string;
   subtitle?: string;
-  onSuccess: (pin: string, oldPin?: string) => void;
+  onSuccess: (pin: string, oldPin?: string) => Promise<void> | void;
   onCancel: () => void;
   maxAttempts?: number;
   externalError?: string;
@@ -88,6 +88,18 @@ const PinModal: React.FC<PinModalProps> = ({
     }
   };
 
+  const submitPin = useCallback(
+    async (nextPin: string, currentOldPin?: string) => {
+      setIsVerifying(true);
+      try {
+        await onSuccess(nextPin, currentOldPin);
+      } finally {
+        setIsVerifying(false);
+      }
+    },
+    [onSuccess],
+  );
+
   const handleNext = useCallback(async () => {
     if (step === 'old' && oldPin.length === PIN_LENGTH) {
       // Verify old PIN before proceeding
@@ -119,7 +131,7 @@ const PinModal: React.FC<PinModalProps> = ({
         setStep('confirm');
       } else {
         // Verify or Remove mode
-        onSuccess(pin);
+        await submitPin(pin);
       }
       return;
     }
@@ -127,9 +139,9 @@ const PinModal: React.FC<PinModalProps> = ({
     if (step === 'confirm' && confirmPin.length === PIN_LENGTH) {
       if (pin === confirmPin) {
         if (mode === 'change') {
-          onSuccess(pin, oldPin);
+          await submitPin(pin, oldPin);
         } else {
-          onSuccess(pin);
+          await submitPin(pin);
         }
       } else {
         setError('PINs do not match. Please try again.');
@@ -140,7 +152,7 @@ const PinModal: React.FC<PinModalProps> = ({
         setStep('enter');
       }
     }
-  }, [step, oldPin, pin, confirmPin, mode, onSuccess, onVerifyOldPin]);
+  }, [step, oldPin, pin, confirmPin, mode, submitPin, onVerifyOldPin]);
 
   const getCurrentPin = () => {
     if (step === 'old') {return oldPin;}

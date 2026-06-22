@@ -1,5 +1,5 @@
 import {createAsyncThunk, createSlice} from '@reduxjs/toolkit';
-import {pbkdf2} from '@noble/hashes/pbkdf2';
+import {pbkdf2Async} from '@noble/hashes/pbkdf2';
 import {sha256} from '@noble/hashes/sha256';
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils';
 
@@ -25,8 +25,9 @@ type PinRecord = {
 
 const PIN_RECORD_KEY = '@flash-pos-pin-hash';
 const PIN_SALT_KEY = '@flash-pos-pin-device-salt';
-const PIN_HASH_ITERATIONS = 100000;
+const PIN_HASH_ITERATIONS = 10000;
 const PIN_HASH_LENGTH_BYTES = 32;
+const PIN_HASH_ASYNC_TICK_MS = 2;
 
 const initialState: PinState = {
   hasPin: false,
@@ -67,15 +68,16 @@ const getDeviceSalt = async (): Promise<string> => {
   return salt;
 };
 
-const hashPin = (
+const hashPin = async (
   pin: string,
   salt: string,
   iterations = PIN_HASH_ITERATIONS,
-): string => {
+): Promise<string> => {
   return bytesToHex(
-    pbkdf2(sha256, utf8ToBytes(pin), hexToBytes(salt), {
+    await pbkdf2Async(sha256, utf8ToBytes(pin), hexToBytes(salt), {
       c: iterations,
       dkLen: PIN_HASH_LENGTH_BYTES,
+      asyncTick: PIN_HASH_ASYNC_TICK_MS,
     }),
   );
 };
@@ -88,7 +90,7 @@ const createPinRecord = async (pin: string): Promise<PinRecord> => {
     algorithm: 'pbkdf2-sha256',
     iterations: PIN_HASH_ITERATIONS,
     salt,
-    hash: hashPin(pin, salt, PIN_HASH_ITERATIONS),
+    hash: await hashPin(pin, salt, PIN_HASH_ITERATIONS),
   };
 };
 
@@ -126,7 +128,17 @@ export const verifyPin = async (pin: string): Promise<boolean> => {
     return false;
   }
 
-  return constantTimeEqual(hashPin(pin, record.salt, record.iterations), record.hash);
+  const verified = constantTimeEqual(
+    await hashPin(pin, record.salt, record.iterations),
+    record.hash,
+  );
+
+  if (verified && record.iterations !== PIN_HASH_ITERATIONS) {
+    const upgradedRecord = await createPinRecord(pin);
+    await setSecure(PIN_RECORD_KEY, JSON.stringify(upgradedRecord));
+  }
+
+  return verified;
 };
 
 export const loadPinState = createAsyncThunk('pin/loadPinState', async () => {
