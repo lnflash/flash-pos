@@ -52,6 +52,23 @@ def update_android_version_from_tag
   end
 end
 
+# Increment Android version code
+def increment_android_version_code
+  gradle_file_path = "../android/app/build.gradle"
+  gradle_file = File.read(gradle_file_path)
+
+  # Find current version code
+  current_version_code = gradle_file.match(/versionCode\s+(\d+)/)[1].to_i
+  new_version_code = current_version_code + 1
+
+  # Update version code
+  new_gradle = gradle_file.gsub(/versionCode\s+\d+/, "versionCode #{new_version_code}")
+  File.write(gradle_file_path, new_gradle)
+
+  UI.success "Incremented Android version code: #{current_version_code} → #{new_version_code}"
+  new_version_code
+end
+
 # ==================== iOS Platform ====================
 platform :ios do
   desc "Push a new beta build to TestFlight"
@@ -176,9 +193,7 @@ platform :android do
     update_android_version_from_tag
 
     # Increment version code
-    increment_version_code(
-      gradle_file_path: "android/app/build.gradle"
-    )
+    increment_android_version_code
 
     # Build the Android app bundle
     gradle(
@@ -223,9 +238,7 @@ platform :android do
     update_android_version_from_tag
 
     # Increment version code
-    increment_version_code(
-      gradle_file_path: "android/app/build.gradle"
-    )
+    increment_android_version_code
 
     # Build the Android app bundle
     gradle(
