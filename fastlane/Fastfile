@@ -40,7 +40,8 @@ platform :ios do
     # Commit version bump
     commit_version_bump(
       message: "Bump iOS build number [skip ci]",
-      xcodeproj: "ios/flash_pos.xcodeproj"
+      xcodeproj: "ios/flash_pos.xcodeproj",
+      force: true
     )
 
     # Add git tag
@@ -92,7 +93,8 @@ platform :ios do
     # Commit version bump
     commit_version_bump(
       message: "Release iOS v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')} [skip ci]",
-      xcodeproj: "ios/flash_pos.xcodeproj"
+      xcodeproj: "ios/flash_pos.xcodeproj",
+      force: true
     )
 
     # Add git tag
