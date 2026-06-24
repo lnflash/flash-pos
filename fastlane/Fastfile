@@ -34,8 +34,7 @@ platform :ios do
 
     # Upload to TestFlight
     upload_to_testflight(
-      skip_waiting_for_build_processing: true,
-      apple_id: ENV["APPLE_ID"]
+      skip_waiting_for_build_processing: true
     )
 
     # Commit version bump
