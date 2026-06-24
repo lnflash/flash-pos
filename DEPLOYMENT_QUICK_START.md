@@ -18,6 +18,37 @@ Before you can use automated deployment, complete the one-time setup:
 
 ## Daily Usage
 
+### Version Management with Git Tags
+
+The deployment system automatically sets version numbers from git tags:
+
+**Without git tag:**
+- Version stays at current (e.g., 0.3.3)
+- Build number auto-increments
+
+**With git tag:**
+```bash
+# Tag with new version before deploying
+git tag ios/v0.4.0
+git tag android/v0.4.0
+
+# Or use a single version tag for both
+git tag v0.4.0
+
+# Then deploy
+./deploy-ios.sh
+```
+
+**Tag Format:**
+- `ios/v1.2.3` - iOS-specific version
+- `android/v1.2.3` - Android-specific version
+- `v1.2.3` - Sets version for both platforms
+
+**When to create tags:**
+- ✅ For production releases
+- ✅ When version changes (0.3.3 → 0.4.0)
+- ❌ Not needed for TestFlight builds with same version
+
 ### Deploy to TestFlight (iOS Beta)
 
 ```bash

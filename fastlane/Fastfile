@@ -3,12 +3,64 @@
 
 default_platform(:ios)
 
+# ==================== Helper Functions ====================
+
+# Get version from latest git tag matching pattern
+def version_from_git_tag(platform)
+  # Try to get the latest tag for this platform
+  tag = sh("git describe --tags --match '#{platform}/v*' --abbrev=0 2>/dev/null || echo ''").strip
+
+  if tag.empty?
+    # Try generic version tag
+    tag = sh("git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo ''").strip
+  end
+
+  if tag.empty?
+    return nil
+  end
+
+  # Extract version number from tag (handles v1.2.3 or ios/v1.2.3 format)
+  version = tag.match(/v?(\d+\.\d+\.\d+)/)
+  version ? version[1] : nil
+end
+
+# Set iOS version from git tag if available
+def update_ios_version_from_tag
+  version = version_from_git_tag("ios")
+  if version
+    UI.success "📌 Setting iOS version to #{version} from git tag"
+    increment_version_number(
+      xcodeproj: "ios/flash_pos.xcodeproj",
+      version_number: version
+    )
+  else
+    UI.message "ℹ️  No git tag found, keeping current version"
+  end
+end
+
+# Set Android version from git tag if available
+def update_android_version_from_tag
+  version = version_from_git_tag("android")
+  if version
+    UI.success "📌 Setting Android version to #{version} from git tag"
+    # Update versionName in build.gradle
+    gradle_file = File.read("../android/app/build.gradle")
+    new_gradle = gradle_file.gsub(/versionName\s+"[\d.]+"/, "versionName \"#{version}\"")
+    File.write("../android/app/build.gradle", new_gradle)
+  else
+    UI.message "ℹ️  No git tag found, keeping current version"
+  end
+end
+
 # ==================== iOS Platform ====================
 platform :ios do
   desc "Push a new beta build to TestFlight"
   lane :beta do
     # Ensure we're on a clean git state
     ensure_git_status_clean
+
+    # Update version from git tag if present
+    update_ios_version_from_tag
 
     # Increment build number
     increment_build_number(
@@ -55,8 +107,8 @@ platform :ios do
     # Ensure we're on a clean git state
     ensure_git_status_clean
 
-    # Increment version number (optional - comment out if managing manually)
-    # increment_version_number(xcodeproj: "ios/flash_pos.xcodeproj")
+    # Update version from git tag if present
+    update_ios_version_from_tag
 
     # Increment build number
     increment_build_number(
@@ -120,6 +172,9 @@ platform :android do
     # Ensure we're on a clean git state
     ensure_git_status_clean
 
+    # Update version from git tag if present
+    update_android_version_from_tag
+
     # Increment version code
     increment_version_code(
       gradle_file_path: "android/app/build.gradle"
@@ -163,6 +218,9 @@ platform :android do
   lane :release do
     # Ensure we're on a clean git state
     ensure_git_status_clean
+
+    # Update version from git tag if present
+    update_android_version_from_tag
 
     # Increment version code
     increment_version_code(
