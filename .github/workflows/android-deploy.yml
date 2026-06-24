@@ -1,0 +1,116 @@
+name: Android Deploy
+
+on:
+  push:
+    tags:
+      - 'android/v*'
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'Fastlane lane to run (beta or release)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - release
+          - promote_to_beta
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Decode keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+
+      - name: Create gradle.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          cat > android/gradle.properties << EOF
+          MYAPP_UPLOAD_STORE_FILE=release.keystore
+          MYAPP_UPLOAD_KEY_ALIAS=$KEY_ALIAS
+          MYAPP_UPLOAD_STORE_PASSWORD=$KEYSTORE_PASSWORD
+          MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PASSWORD
+          EOF
+
+      - name: Setup Google Play credentials
+        env:
+          GOOGLE_PLAY_JSON_KEY: ${{ secrets.GOOGLE_PLAY_JSON_KEY }}
+        run: |
+          echo "$GOOGLE_PLAY_JSON_KEY" > google-play-key.json
+          echo "GOOGLE_PLAY_JSON_KEY_PATH=$(pwd)/google-play-key.json" >> $GITHUB_ENV
+
+      - name: Deploy to Internal Testing (Beta)
+        if: github.event.inputs.lane == 'beta' || contains(github.ref, 'beta')
+        env:
+          GOOGLE_PLAY_JSON_KEY_PATH: ${{ env.GOOGLE_PLAY_JSON_KEY_PATH }}
+        run: bundle exec fastlane android beta
+
+      - name: Deploy to Production (Release)
+        if: github.event.inputs.lane == 'release' || (!contains(github.ref, 'beta') && startsWith(github.ref, 'refs/tags/android/v'))
+        env:
+          GOOGLE_PLAY_JSON_KEY_PATH: ${{ env.GOOGLE_PLAY_JSON_KEY_PATH }}
+        run: bundle exec fastlane android release
+
+      - name: Promote to Beta
+        if: github.event.inputs.lane == 'promote_to_beta'
+        env:
+          GOOGLE_PLAY_JSON_KEY_PATH: ${{ env.GOOGLE_PLAY_JSON_KEY_PATH }}
+        run: bundle exec fastlane android promote_to_beta
+
+      - name: Upload build artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-logs
+          path: |
+            android/app/build/outputs
+            fastlane/report.xml
+
+      - name: Clean up sensitive files
+        if: always()
+        run: |
+          rm -f android/app/release.keystore
+          rm -f android/gradle.properties
+          rm -f google-play-key.json
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "Android deployment failed. Check the logs for details."

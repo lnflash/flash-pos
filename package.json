@@ -10,7 +10,13 @@
     "test": "jest",
     "aab-android": "cd android && ./gradlew bundleRelease && cd ..",
     "apk-android": "cd android && ./gradlew app:assembleRelease && cd ..",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "deploy:ios:beta": "bundle exec fastlane ios beta",
+    "deploy:ios:release": "bundle exec fastlane ios release",
+    "deploy:android:beta": "bundle exec fastlane android beta",
+    "deploy:android:release": "bundle exec fastlane android release",
+    "deploy:android:promote": "bundle exec fastlane android promote_to_beta",
+    "setup:ios:signing": "bundle exec fastlane ios setup_signing"
   },
   "dependencies": {
     "@apollo/client": "^3.12.6",

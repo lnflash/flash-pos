@@ -33,6 +33,7 @@ local.properties
 .cxx/
 *.keystore
 !debug.keystore
+android/gradle.properties
 
 # node.js
 #
@@ -75,3 +76,7 @@ yarn-error.log
 
 # env
 .env
+.env.fastlane
+google-play-key.json
+*.keystore
+!debug.keystore

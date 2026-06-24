@@ -1,0 +1,239 @@
+# Fastfile for flash_pos
+# This file contains the fastlane configuration for iOS and Android deployments
+
+default_platform(:ios)
+
+# ==================== iOS Platform ====================
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    # Ensure we're on a clean git state
+    ensure_git_status_clean
+
+    # Increment build number
+    increment_build_number(
+      xcodeproj: "ios/flash_pos.xcodeproj"
+    )
+
+    # Install CocoaPods dependencies
+    cocoapods(
+      podfile: "ios/Podfile"
+    )
+
+    # Build the app
+    build_app(
+      workspace: "ios/flash_pos.xcworkspace",
+      scheme: "flash_pos",
+      export_method: "app-store",
+      export_options: {
+        provisioningProfiles: {
+          "com.flash.pos" => "match AppStore com.flash.pos"
+        }
+      }
+    )
+
+    # Upload to TestFlight
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true,
+      apple_id: ENV["APPLE_ID"]
+    )
+
+    # Commit version bump
+    commit_version_bump(
+      message: "Bump iOS build number [skip ci]",
+      xcodeproj: "ios/flash_pos.xcodeproj"
+    )
+
+    # Add git tag
+    add_git_tag(
+      tag: "ios/v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')}-#{get_build_number(xcodeproj: 'ios/flash_pos.xcodeproj')}"
+    )
+  end
+
+  desc "Deploy a new version to the App Store"
+  lane :release do
+    # Ensure we're on a clean git state
+    ensure_git_status_clean
+
+    # Increment version number (optional - comment out if managing manually)
+    # increment_version_number(xcodeproj: "ios/flash_pos.xcodeproj")
+
+    # Increment build number
+    increment_build_number(
+      xcodeproj: "ios/flash_pos.xcodeproj"
+    )
+
+    # Install CocoaPods dependencies
+    cocoapods(
+      podfile: "ios/Podfile"
+    )
+
+    # Build the app
+    build_app(
+      workspace: "ios/flash_pos.xcworkspace",
+      scheme: "flash_pos",
+      export_method: "app-store",
+      export_options: {
+        provisioningProfiles: {
+          "com.flash.pos" => "match AppStore com.flash.pos"
+        }
+      }
+    )
+
+    # Upload to App Store
+    upload_to_app_store(
+      force: true,
+      submit_for_review: false,
+      automatic_release: false,
+      skip_metadata: false,
+      skip_screenshots: false,
+      precheck_include_in_app_purchases: false
+    )
+
+    # Commit version bump
+    commit_version_bump(
+      message: "Release iOS v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')} [skip ci]",
+      xcodeproj: "ios/flash_pos.xcodeproj"
+    )
+
+    # Add git tag
+    add_git_tag(
+      tag: "ios/v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')}"
+    )
+  end
+
+  desc "Setup code signing using match"
+  lane :setup_signing do
+    match(
+      type: "appstore",
+      app_identifier: "com.flash.pos",
+      readonly: is_ci
+    )
+  end
+end
+
+# ==================== Android Platform ====================
+platform :android do
+  desc "Deploy a new beta version to Google Play Internal Testing"
+  lane :beta do
+    # Ensure we're on a clean git state
+    ensure_git_status_clean
+
+    # Increment version code
+    increment_version_code(
+      gradle_file_path: "android/app/build.gradle"
+    )
+
+    # Build the Android app bundle
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: "android/"
+    )
+
+    # Upload to Google Play Internal Testing
+    upload_to_play_store(
+      track: "internal",
+      aab: "android/app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+
+    # Commit version bump
+    git_commit(
+      path: ["android/app/build.gradle"],
+      message: "Bump Android version code [skip ci]"
+    )
+
+    # Add git tag
+    version_name = get_version_name(
+      gradle_file_path: "android/app/build.gradle"
+    )
+    version_code = get_version_code(
+      gradle_file_path: "android/app/build.gradle"
+    )
+    add_git_tag(
+      tag: "android/v#{version_name}-#{version_code}"
+    )
+  end
+
+  desc "Deploy a new version to Google Play Production"
+  lane :release do
+    # Ensure we're on a clean git state
+    ensure_git_status_clean
+
+    # Increment version code
+    increment_version_code(
+      gradle_file_path: "android/app/build.gradle"
+    )
+
+    # Build the Android app bundle
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: "android/"
+    )
+
+    # Upload to Google Play Production (staged rollout)
+    upload_to_play_store(
+      track: "production",
+      aab: "android/app/build/outputs/bundle/release/app-release.aab",
+      rollout: "0.1",  # Start with 10% rollout
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false
+    )
+
+    # Commit version bump
+    version_name = get_version_name(
+      gradle_file_path: "android/app/build.gradle"
+    )
+    git_commit(
+      path: ["android/app/build.gradle"],
+      message: "Release Android v#{version_name} [skip ci]"
+    )
+
+    # Add git tag
+    add_git_tag(
+      tag: "android/v#{version_name}"
+    )
+  end
+
+  desc "Promote internal testing to beta"
+  lane :promote_to_beta do
+    upload_to_play_store(
+      track: "internal",
+      track_promote_to: "beta",
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Build APK for testing"
+  lane :build_apk do
+    gradle(
+      task: "assemble",
+      build_type: "Release",
+      project_dir: "android/"
+    )
+  end
+end
+
+# ==================== Helper functions ====================
+
+# Helper to get version name from gradle
+def get_version_name(gradle_file_path:)
+  gradle_file = File.read("../#{gradle_file_path}")
+  version_name = gradle_file.match(/versionName\s+"(.+?)"/)[1]
+  version_name
+end
+
+# Helper to get version code from gradle
+def get_version_code(gradle_file_path:)
+  gradle_file = File.read("../#{gradle_file_path}")
+  version_code = gradle_file.match(/versionCode\s+(\d+)/)[1]
+  version_code
+end
