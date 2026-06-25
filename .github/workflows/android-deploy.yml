@@ -82,7 +82,9 @@ jobs:
           org.gradle.parallel=false
           kotlin.daemon.jvmargs=-Xmx2g
           android.useAndroidX=true
+          newArchEnabled=true
           hermesEnabled=true
+          reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64
           MYAPP_UPLOAD_STORE_FILE=release.keystore
           MYAPP_UPLOAD_KEY_ALIAS=$KEY_ALIAS
           MYAPP_UPLOAD_STORE_PASSWORD=$KEYSTORE_PASSWORD
