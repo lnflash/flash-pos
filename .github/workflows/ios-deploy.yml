@@ -40,6 +40,16 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
+      - name: Create .env file
+        env:
+          FLASH_GRAPHQL_URI: ${{ secrets.FLASH_GRAPHQL_URI }}
+          FLASH_GRAPHQL_WS_URI: ${{ secrets.FLASH_GRAPHQL_WS_URI }}
+        run: |
+          cat > .env << EOF
+          FLASH_GRAPHQL_URI=$FLASH_GRAPHQL_URI
+          FLASH_GRAPHQL_WS_URI=$FLASH_GRAPHQL_WS_URI
+          EOF
+
       - name: Install CocoaPods
         run: |
           cd ios
