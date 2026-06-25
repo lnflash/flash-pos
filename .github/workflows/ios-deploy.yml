@@ -41,7 +41,18 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Create .env file
-        run: echo "${{ secrets.DOT_ENV }}" > .env
+        env:
+          DOT_ENV: ${{ secrets.DOT_ENV }}
+        run: printf '%s\n' "$DOT_ENV" > .env
+
+      - name: Verify .env file
+        run: |
+          echo "=== .env file check ==="
+          echo "File exists: $(test -f .env && echo yes || echo no)"
+          echo "File size: $(wc -c < .env) bytes"
+          echo "Line count: $(wc -l < .env)"
+          echo "Variables found:"
+          grep -oP '^[A-Z_]+=' .env || echo "WARNING: No variables found in .env!"
 
       - name: Install CocoaPods
         run: |
