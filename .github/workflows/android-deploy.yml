@@ -64,6 +64,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cat > android/gradle.properties << EOF
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=2g
           android.useAndroidX=true
           hermesEnabled=true
           MYAPP_UPLOAD_STORE_FILE=release.keystore
