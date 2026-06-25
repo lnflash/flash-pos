@@ -64,6 +64,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cat > android/gradle.properties << EOF
+          android.useAndroidX=true
+          hermesEnabled=true
           MYAPP_UPLOAD_STORE_FILE=release.keystore
           MYAPP_UPLOAD_KEY_ALIAS=$KEY_ALIAS
           MYAPP_UPLOAD_STORE_PASSWORD=$KEYSTORE_PASSWORD
