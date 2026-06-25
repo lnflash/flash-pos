@@ -73,8 +73,8 @@ end
 platform :ios do
   desc "Push a new beta build to TestFlight"
   lane :beta do
-    # Ensure we're on a clean git state
-    ensure_git_status_clean
+    # Ensure we're on a clean git state (skip in CI)
+    ensure_git_status_clean unless ENV['CI']
 
     # Update version from git tag if present
     update_ios_version_from_tag
@@ -186,8 +186,8 @@ end
 platform :android do
   desc "Deploy a new beta version to Google Play Internal Testing"
   lane :beta do
-    # Ensure we're on a clean git state
-    ensure_git_status_clean
+    # Ensure we're on a clean git state (skip in CI)
+    ensure_git_status_clean unless ENV['CI']
 
     # Update version from git tag if present
     update_android_version_from_tag
