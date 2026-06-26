@@ -94,6 +94,7 @@ platform :ios do
       workspace: "ios/flash_pos.xcworkspace",
       scheme: "flash_pos",
       export_method: "app-store",
+      xcargs: "CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER='match AppStore com.flash.pos' CODE_SIGN_IDENTITY='Apple Distribution'",
       export_options: {
         provisioningProfiles: {
           "com.flash.pos" => "match AppStore com.flash.pos"
@@ -142,6 +143,7 @@ platform :ios do
       workspace: "ios/flash_pos.xcworkspace",
       scheme: "flash_pos",
       export_method: "app-store",
+      xcargs: "CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER='match AppStore com.flash.pos' CODE_SIGN_IDENTITY='Apple Distribution'",
       export_options: {
         provisioningProfiles: {
           "com.flash.pos" => "match AppStore com.flash.pos"
