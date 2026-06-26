@@ -52,20 +52,6 @@ jobs:
           DOT_ENV: ${{ secrets.DOT_ENV }}
         run: printf '%s\n' "$DOT_ENV" > .env
 
-      - name: Verify .env file
-        run: |
-          echo "=== .env file check ==="
-          echo "File exists: $(test -f .env && echo yes || echo no)"
-          echo "File size: $(wc -c < .env) bytes"
-          echo "Line count: $(wc -l < .env)"
-          echo "Variables found:"
-          grep -oP '^[A-Z_]+=' .env || echo "WARNING: No variables found in .env!"
-
-      - name: Install CocoaPods
-        run: |
-          cd ios
-          bundle exec pod install
-
       - name: Cache CocoaPods
         uses: actions/cache@v4
         with:
@@ -73,6 +59,11 @@ jobs:
           key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
           restore-keys: |
             ${{ runner.os }}-pods-
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          bundle exec pod install
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1

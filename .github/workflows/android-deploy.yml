@@ -60,15 +60,6 @@ jobs:
           DOT_ENV: ${{ secrets.DOT_ENV }}
         run: printf '%s\n' "$DOT_ENV" > .env
 
-      - name: Verify .env file
-        run: |
-          echo "=== .env file check ==="
-          echo "File exists: $(test -f .env && echo yes || echo no)"
-          echo "File size: $(wc -c < .env) bytes"
-          echo "Line count: $(wc -l < .env)"
-          echo "Variables found:"
-          grep -oP '^[A-Z_]+=' .env || echo "WARNING: No variables found in .env!"
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
