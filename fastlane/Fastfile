@@ -76,6 +76,14 @@ platform :ios do
     # Ensure we're on a clean git state (skip in CI)
     ensure_git_status_clean unless ENV['CI']
 
+    # Setup App Store Connect API Key
+    api_key = app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_API_ISSUER_ID"],
+      key_content: ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true
+    )
+
     # Update version from git tag if present
     update_ios_version_from_tag
 
@@ -104,6 +112,7 @@ platform :ios do
 
     # Upload to TestFlight
     upload_to_testflight(
+      api_key: api_key,
       skip_waiting_for_build_processing: true
     )
 
@@ -124,6 +133,14 @@ platform :ios do
   lane :release do
     # Ensure we're on a clean git state
     ensure_git_status_clean
+
+    # Setup App Store Connect API Key
+    api_key = app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_API_ISSUER_ID"],
+      key_content: ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true
+    )
 
     # Update version from git tag if present
     update_ios_version_from_tag
@@ -153,6 +170,7 @@ platform :ios do
 
     # Upload to App Store
     upload_to_app_store(
+      api_key: api_key,
       force: true,
       submit_for_review: false,
       automatic_release: false,
