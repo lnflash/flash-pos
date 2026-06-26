@@ -174,10 +174,23 @@ platform :ios do
 
   desc "Setup code signing using match"
   lane :setup_signing do
+    if is_ci
+      create_keychain(
+        name: "ci_keychain",
+        password: ENV["MATCH_PASSWORD"],
+        default_keychain: true,
+        unlock: true,
+        timeout: 3600,
+        lock_when_sleeps: false
+      )
+    end
+
     match(
       type: "appstore",
       app_identifier: "com.flash.pos",
-      readonly: is_ci
+      readonly: is_ci,
+      keychain_name: is_ci ? "ci_keychain" : nil,
+      keychain_password: is_ci ? ENV["MATCH_PASSWORD"] : nil
     )
   end
 end
