@@ -118,7 +118,7 @@ jobs:
       - name: Push version bump
         if: success()
         run: |
-          git pull --rebase origin feat/automated-deployment
+          git pull --rebase --autostash origin feat/automated-deployment
           git push origin feat/automated-deployment --follow-tags
 
       - name: Upload build artifacts
