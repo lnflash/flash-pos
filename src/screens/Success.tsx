@@ -17,9 +17,13 @@ import Check from '../assets/icons/check.svg';
 // store
 import {resetAmount} from '../store/slices/amountSlice';
 import {resetInvoice} from '../store/slices/invoiceSlice';
-import {addTransaction} from '../store/slices/transactionHistorySlice';
 
 type Props = StackScreenProps<RootStackType, 'Success'>;
+
+const printButtonTextStyle = {color: '#002118'};
+const printButtonStyle = {backgroundColor: '#fff'};
+const doneButtonTextStyle = {color: '#fff'};
+const doneButtonStyle = {borderColor: '#fff', marginTop: 10};
 
 const Success: React.FC<Props> = ({navigation, route}) => {
   const {print, printSilently, printReceipt, printReceiptHTML} = usePrint();
@@ -90,7 +94,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
         <IconWrapper>
           <Icon source={Check} />
         </IconWrapper>
-        <Title>{route.params?.title || `The invoice has been paid`}</Title>
+        <Title>{route.params?.title || 'The invoice has been paid'}</Title>
         <PrimaryAmount>{`${currency.symbol} ${
           displayAmount || 0
         }`}</PrimaryAmount>
@@ -100,15 +104,15 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           icon={hasBeenPrinted ? 'rotate' : 'print'}
           btnText={hasBeenPrinted ? 'Reprint' : 'Print'}
           iconColor="#002118"
-          textStyle={{color: '#002118'}}
-          btnStyle={{backgroundColor: '#fff'}}
+          textStyle={printButtonTextStyle}
+          btnStyle={printButtonStyle}
           onPress={onPrintReceipt}
         />
         <SecondaryButton
           btnText="Done"
           iconColor="#fff"
-          textStyle={{color: '#fff'}}
-          btnStyle={{borderColor: '#fff', marginTop: 10}}
+          textStyle={doneButtonTextStyle}
+          btnStyle={doneButtonStyle}
           onPress={onDone}
         />
       </BtnsWrapper>

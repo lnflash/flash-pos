@@ -19,6 +19,7 @@ import {
 import {validateRewardConfig} from '../utils/rewardCalculations';
 import {toastShow} from '../utils/toast';
 import {sanitizeMerchantRewardId} from '../utils/validation';
+import {isRewardsEnabled as isRewardsFeatureEnabled} from '../utils/featureFlags';
 
 // env
 import {BTC_PAY_SERVER} from '@env';
@@ -32,6 +33,7 @@ const RewardsSettings = () => {
   const dispatch = useAppDispatch();
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventModeEnabled = useAppSelector(selectEventModeEnabled);
+  const rewardsFeatureEnabled = isRewardsFeatureEnabled();
 
   // Local state for reward configuration
   const [rewardRate, setRewardRate] = useState(
@@ -211,6 +213,14 @@ const RewardsSettings = () => {
   };
 
   const testMerchantRewardId = useCallback(async () => {
+    if (!rewardsFeatureEnabled) {
+      toastShow({
+        message: 'Rewards are disabled in this build.',
+        type: 'error',
+      });
+      return;
+    }
+
     if (!merchantRewardId.trim()) {
       toastShow({
         message: 'Please enter a Merchant Reward ID first',
@@ -262,7 +272,7 @@ const RewardsSettings = () => {
     } finally {
       setIsTestingMerchantId(false);
     }
-  }, [merchantRewardId]);
+  }, [merchantRewardId, rewardsFeatureEnabled]);
 
   const handleIsEnabledChange = (value: boolean) => {
     // Check if trying to enable rewards without valid merchant ID
@@ -317,6 +327,32 @@ const RewardsSettings = () => {
   const navigateToRegisteredCards = () => {
     navigation.navigate('RegisteredRewardCards');
   };
+
+  if (!rewardsFeatureEnabled) {
+    return (
+      <Wrapper>
+        <Header>
+          <BackButton onPress={onGoBack}>
+            <Icon
+              name={'chevron-back-outline'}
+              type="ionicon"
+              color="#ffffff"
+              size={24}
+            />
+          </BackButton>
+          <HeaderTitle>Reward Settings</HeaderTitle>
+          <HeaderSpacer />
+        </Header>
+
+        <DisabledContainer>
+          <DisabledTitle>Rewards Disabled</DisabledTitle>
+          <DisabledMessage>
+            Rewards are disabled in this build.
+          </DisabledMessage>
+        </DisabledContainer>
+      </Wrapper>
+    );
+  }
 
   return (
     <Wrapper>
@@ -529,6 +565,29 @@ const ContentWrapper = styled.View`
   max-width: 500px;
   align-self: center;
   width: 100%;
+`;
+
+const DisabledContainer = styled.View`
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+`;
+
+const DisabledTitle = styled.Text`
+  font-size: 24px;
+  font-family: 'Outfit-Bold';
+  text-align: center;
+  color: #000000;
+  margin-bottom: 12px;
+`;
+
+const DisabledMessage = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #5a5a5a;
+  line-height: 22px;
 `;
 
 const Container = styled.TouchableOpacity`

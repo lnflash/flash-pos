@@ -16,6 +16,7 @@ import {
   selectRewardConfig,
   selectEventConfig,
 } from '../store/slices/rewardSlice';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 // screens
 import {Keypad, Profile, Rewards, SupportChat} from '../screens';
@@ -32,12 +33,18 @@ const tabs = [
   {label: 'Profile', icon: 'cog-outline', iconActive: 'cog'},
 ];
 
+const tabBarStyle = {flex: 1};
+const renderTabBar = (props: BottomTabBarProps) => <MyTabBar {...props} />;
+
 const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
   const {buildHref} = useLinkBuilder();
   const rewardConfig = useAppSelector(selectRewardConfig);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   // Create dynamic tabs array based on standalone rewards setting
-  const dynamicTabs = rewardConfig.showStandaloneRewards
+  const shouldShowRewardsTab =
+    rewardsFeatureEnabled && rewardConfig.showStandaloneRewards;
+  const dynamicTabs = shouldShowRewardsTab
     ? tabs
     : tabs.filter(tab => tab.label !== 'Rewards');
 
@@ -45,7 +52,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
     <Wrapper>
       {state.routes.map((route, index) => {
         // Skip rendering Rewards tab if standalone rewards are disabled
-        if (route.name === 'Rewards' && !rewardConfig.showStandaloneRewards) {
+        if (route.name === 'Rewards' && !shouldShowRewardsTab) {
           return null;
         }
 
@@ -54,14 +61,14 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
 
         // Find the correct tab configuration for this route
         const tabConfig = dynamicTabs.find(tab => {
-          if (route.name === 'Keypad') return tab.label === 'POS';
-          if (route.name === 'Rewards') return tab.label === 'Rewards';
-          if (route.name === 'Support') return tab.label === 'Support';
-          if (route.name === 'Profile') return tab.label === 'Profile';
+          if (route.name === 'Keypad') {return tab.label === 'POS';}
+          if (route.name === 'Rewards') {return tab.label === 'Rewards';}
+          if (route.name === 'Support') {return tab.label === 'Support';}
+          if (route.name === 'Profile') {return tab.label === 'Profile';}
           return false;
         });
 
-        if (!tabConfig) return null;
+        if (!tabConfig) {return null;}
 
         const onPress = () => {
           const event = navigation.emit({
@@ -94,7 +101,7 @@ const MyTabBar = ({state, descriptors, navigation}: BottomTabBarProps) => {
             testID={options.tabBarButtonTestID}
             onPress={onPress}
             onLongPress={onLongPress}
-            style={{flex: 1}}>
+            style={tabBarStyle}>
             <Icon
               name={isFocused ? tabConfig.iconActive : tabConfig.icon}
               size={24}
@@ -114,6 +121,9 @@ export const HomeTabs = () => {
   const {username} = useAppSelector(state => state.user);
   const rewardConfig = useAppSelector(selectRewardConfig);
   const eventConfig = useAppSelector(selectEventConfig);
+  const rewardsFeatureEnabled = isRewardsEnabled();
+  const shouldShowRewardsTab =
+    rewardsFeatureEnabled && rewardConfig.showStandaloneRewards;
 
   // Determine header title based on event mode
   const isEventActive = eventConfig.eventModeEnabled && eventConfig.eventActive;
@@ -124,7 +134,8 @@ export const HomeTabs = () => {
 
   return (
     <Tab.Navigator
-      tabBar={props => <MyTabBar {...props} />}
+      tabBar={renderTabBar}
+      detachInactiveScreens={false}
       screenOptions={{
         headerShadowVisible: false,
         headerTitle: headerTitle,
@@ -133,7 +144,7 @@ export const HomeTabs = () => {
         animation: 'shift',
       }}>
       <Tab.Screen name="Keypad" component={Keypad} />
-      {rewardConfig.showStandaloneRewards && (
+      {shouldShowRewardsTab && (
         <Tab.Screen
           name="Rewards"
           component={Rewards}

@@ -20,7 +20,7 @@ const InvoiceQRCode: React.FC<Props> = ({errMessage}) => {
 
   return (
     <QrCodeWrapper>
-      {!!errMessage ? (
+      {errMessage ? (
         <ErrContainer width={width}>
           <Icon
             name={'triangle-exclamation'}

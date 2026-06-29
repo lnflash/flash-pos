@@ -39,3 +39,16 @@ export const RealtimePrice = gql`
     }
   }
 `;
+
+export const LnInvoicePaymentStatusQuery = gql`
+  query lnInvoicePaymentStatusQuery($input: LnInvoicePaymentStatusInput!) {
+    lnInvoicePaymentStatus(input: $input) {
+      __typename
+      errors {
+        message
+        __typename
+      }
+      status
+    }
+  }
+`;

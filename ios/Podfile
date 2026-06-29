@@ -5,6 +5,10 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
+# Note: New Architecture disabled — flash-pos uses Paper-era view managers
+# (@rneui RC, react-native-animatable) that crash under Fabric interop.
+# Enable only after migrating off @rneui/react-native-animatable.
+
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
@@ -36,5 +40,14 @@ target 'flash_pos' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    installer.pods_project.targets.each do |target|
+      # Fix fmt consteval error with Xcode 26.4+ clang
+      if target.name == 'fmt'
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+        end
+      end
+    end
   end
 end

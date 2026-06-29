@@ -24,9 +24,9 @@ export const readFlashcard = async () => {
 
     const tag = await NfcManager.getTag();
     dismiss();
-    if (tag) return tag;
+    if (tag) {return tag;}
   } catch (error) {
-    console.error({error}, `can't fetch the Ndef payload`);
+    console.error({error}, 'can\'t fetch the Ndef payload');
     Alert.alert(
       'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
     );

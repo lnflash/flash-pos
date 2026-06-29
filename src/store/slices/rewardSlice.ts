@@ -1,4 +1,5 @@
 import {createSlice, createSelector} from '@reduxjs/toolkit';
+import {isRewardsEnabled} from '../../utils/featureFlags';
 
 interface RewardState {
   rewardRate: number; // Percentage (e.g., 0.02 for 2%)
@@ -22,7 +23,7 @@ interface RewardState {
   eventCustomerRewardLimit: number; // Max rewards per customer
   eventUniqueCustomersOnly: boolean; // Only count unique customers
   eventTrackBy: 'flashcard' | 'phone' | 'email' | 'none'; // Tracking method
-  eventRewardedCustomers: string[]; // Array of customer IDs who received rewards
+  eventCustomerRewardCount: Record<string, number>; // Reward count by customer ID
 
   // Transaction Filters
   eventMinPurchaseAmount: number; // Minimum purchase to qualify (sats)
@@ -54,7 +55,6 @@ const getDefaultConfiguration = () => {
       MIN_REWARD_SATS,
       MAX_REWARD_SATS,
       STANDALONE_REWARD_SATS,
-      REWARDS_ENABLED,
       PULL_PAYMENT_ID,
       // Event Mode environment variables
       EVENT_MODE_ENABLED,
@@ -82,7 +82,7 @@ const getDefaultConfiguration = () => {
       maximumReward: parseInt(MAX_REWARD_SATS || '1000', 10),
       defaultReward: parseInt(STANDALONE_REWARD_SATS || '21', 10),
       merchantRewardId: PULL_PAYMENT_ID || '',
-      isEnabled: (REWARDS_ENABLED || 'true').toLowerCase() === 'true',
+      isEnabled: isRewardsEnabled(),
       showStandaloneRewards: false, // Default to off
 
       // Event Mode defaults
@@ -105,7 +105,7 @@ const getDefaultConfiguration = () => {
         | 'phone'
         | 'email'
         | 'none',
-      eventRewardedCustomers: [],
+      eventCustomerRewardCount: {},
 
       // Transaction Filter defaults
       eventMinPurchaseAmount: parseInt(EVENT_MIN_PURCHASE_AMOUNT || '500', 10),
@@ -139,7 +139,7 @@ const getDefaultConfiguration = () => {
       maximumReward: 1000, // Maximum 1000 sats
       defaultReward: 21, // Current fixed amount for standalone rewards
       merchantRewardId: '', // Empty by default, user must configure
-      isEnabled: true, // Rewards enabled by default
+      isEnabled: false, // Rewards disabled when env configuration is unavailable
       showStandaloneRewards: false, // Default to off
 
       // Event Mode hardcoded defaults
@@ -153,7 +153,7 @@ const getDefaultConfiguration = () => {
       eventCustomerRewardLimit: 1, // One reward per customer
       eventUniqueCustomersOnly: true, // Only unique customers count
       eventTrackBy: 'flashcard' as const, // Use flashcard by default
-      eventRewardedCustomers: [],
+      eventCustomerRewardCount: {},
 
       // Transaction Filter defaults
       eventMinPurchaseAmount: 500, // 500 sats minimum
@@ -386,7 +386,7 @@ export const rewardSlice = createSlice({
       eventActive: state.eventModeEnabled && state.isEnabled, // Only activate if both enabled and rewards enabled
       eventTotalRewardsGiven: 0, // Reset counters
       eventCustomersRewarded: 0,
-      eventRewardedCustomers: [],
+      eventCustomerRewardCount: {},
       error: '',
     }),
     deactivateEvent: state => ({
@@ -397,10 +397,15 @@ export const rewardSlice = createSlice({
     trackEventReward: (state, action) => {
       const {rewardAmount, customerId} = action.payload;
       const newTotalRewards = state.eventTotalRewardsGiven + rewardAmount;
+      const currentCustomerRewardCount = customerId
+        ? state.eventCustomerRewardCount[customerId] || 0
+        : 0;
+      const nextCustomerRewardCount = currentCustomerRewardCount + 1;
 
       // Check if customer already rewarded
-      const isNewCustomer =
-        customerId && !state.eventRewardedCustomers.includes(customerId);
+      const isNewCustomer = Boolean(
+        customerId && currentCustomerRewardCount === 0,
+      );
       const newCustomersRewarded = isNewCustomer
         ? state.eventCustomersRewarded + 1
         : state.eventCustomersRewarded;
@@ -418,10 +423,12 @@ export const rewardSlice = createSlice({
         ...state,
         eventTotalRewardsGiven: newTotalRewards,
         eventCustomersRewarded: newCustomersRewarded,
-        eventRewardedCustomers:
-          isNewCustomer && customerId
-            ? [...state.eventRewardedCustomers, customerId]
-            : state.eventRewardedCustomers,
+        eventCustomerRewardCount: customerId
+          ? {
+              ...state.eventCustomerRewardCount,
+              [customerId]: nextCustomerRewardCount,
+            }
+          : state.eventCustomerRewardCount,
         eventActive: shouldDeactivate ? false : state.eventActive,
         error: '',
       };
@@ -430,7 +437,7 @@ export const rewardSlice = createSlice({
       ...state,
       eventTotalRewardsGiven: 0,
       eventCustomersRewarded: 0,
-      eventRewardedCustomers: [],
+      eventCustomerRewardCount: {},
       eventActive: state.eventModeEnabled, // Re-activate if enabled
       error: '',
     }),
@@ -469,7 +476,8 @@ export const selectMaximumReward = (state: any) => state.reward.maximumReward;
 export const selectDefaultReward = (state: any) => state.reward.defaultReward;
 export const selectMerchantRewardId = (state: any) =>
   state.reward.merchantRewardId;
-export const selectIsRewardEnabled = (state: any) => state.reward.isEnabled;
+export const selectIsRewardEnabled = (state: any) =>
+  isRewardsEnabled() && state.reward.isEnabled;
 export const selectShowStandaloneRewards = (state: any) =>
   state.reward.showStandaloneRewards;
 
@@ -505,8 +513,9 @@ export const selectRewardConfig = createSelector(
 
 // Event Mode selectors
 export const selectEventModeEnabled = (state: any) =>
-  state.reward.eventModeEnabled;
-export const selectEventActive = (state: any) => state.reward.eventActive;
+  isRewardsEnabled() && state.reward.eventModeEnabled;
+export const selectEventActive = (state: any) =>
+  isRewardsEnabled() && state.reward.eventActive;
 export const selectEventRewardLimit = (state: any) =>
   state.reward.eventRewardLimit;
 export const selectEventRewardRate = (state: any) =>
@@ -523,8 +532,8 @@ export const selectEventCustomersRewarded = (state: any) =>
 // Event tracking selectors
 export const selectEventCustomerRewardLimit = (state: any) =>
   state.reward.eventCustomerRewardLimit;
-export const selectEventRewardedCustomers = (state: any) =>
-  state.reward.eventRewardedCustomers;
+export const selectEventCustomerRewardCount = (state: any) =>
+  state.reward.eventCustomerRewardCount;
 export const selectEventMinPurchaseAmount = (state: any) =>
   state.reward.eventMinPurchaseAmount;
 export const selectEventBudgetSats = (state: any) =>
@@ -548,7 +557,7 @@ export const selectEventConfig = createSelector(
     selectEventTotalRewardsGiven,
     selectEventCustomersRewarded,
     selectEventCustomerRewardLimit,
-    selectEventRewardedCustomers,
+    selectEventCustomerRewardCount,
     selectEventMinPurchaseAmount,
     selectEventBudgetSats,
     selectEventBudgetWarningPercent,
@@ -565,7 +574,7 @@ export const selectEventConfig = createSelector(
     eventTotalRewardsGiven,
     eventCustomersRewarded,
     eventCustomerRewardLimit,
-    eventRewardedCustomers,
+    eventCustomerRewardCount,
     eventMinPurchaseAmount,
     eventBudgetSats,
     eventBudgetWarningPercent,
@@ -581,7 +590,7 @@ export const selectEventConfig = createSelector(
     eventTotalRewardsGiven,
     eventCustomersRewarded,
     eventCustomerRewardLimit,
-    eventRewardedCustomers,
+    eventCustomerRewardCount,
     eventMinPurchaseAmount,
     eventBudgetSats,
     eventBudgetWarningPercent,

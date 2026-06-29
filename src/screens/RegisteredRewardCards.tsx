@@ -11,6 +11,7 @@ import {PrimaryButton, SecondaryButton} from '../components';
 
 // hooks
 import {useFlashcard} from '../hooks/useFlashcard';
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 const {width: screenWidth} = Dimensions.get('window');
 
@@ -27,6 +28,7 @@ const RegisteredRewardCards: React.FC = () => {
   const [storedCards, setStoredCards] = useState<StoredCardInfo[]>([]);
   const [_loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   const loadStoredCards = useCallback(async () => {
     try {
@@ -42,8 +44,10 @@ const RegisteredRewardCards: React.FC = () => {
   }, [getAllStoredCards]);
 
   useEffect(() => {
-    loadStoredCards();
-  }, [loadStoredCards]);
+    if (rewardsFeatureEnabled) {
+      loadStoredCards();
+    }
+  }, [loadStoredCards, rewardsFeatureEnabled]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -183,6 +187,25 @@ const RegisteredRewardCards: React.FC = () => {
       </EmptySubtext>
     </EmptyContainer>
   );
+
+  if (!rewardsFeatureEnabled) {
+    return (
+      <Wrapper>
+        <Container>
+          <DisabledContainer>
+            <DisabledTitle>Rewards Disabled</DisabledTitle>
+            <DisabledText>
+              Registered reward cards are disabled in this build.
+            </DisabledText>
+          </DisabledContainer>
+        </Container>
+
+        <ButtonWrapper>
+          <PrimaryButton btnText="Back" onPress={() => navigation.goBack()} />
+        </ButtonWrapper>
+      </Wrapper>
+    );
+  }
 
   return (
     <Wrapper>
@@ -371,4 +394,27 @@ const EmptySubtext = styled.Text`
   color: #999999;
   text-align: center;
   line-height: ${scale(18)}px;
+`;
+
+const DisabledContainer = styled.View`
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: ${scale(40)}px;
+`;
+
+const DisabledTitle = styled.Text`
+  font-size: ${scale(isLargeDevice ? 28 : 24)}px;
+  font-family: 'Outfit-Bold';
+  text-align: center;
+  color: #000000;
+  margin-bottom: ${scale(12)}px;
+`;
+
+const DisabledText = styled.Text`
+  font-size: ${scale(isLargeDevice ? 16 : 14)}px;
+  font-family: 'Outfit-Regular';
+  text-align: center;
+  color: #5a5a5a;
+  line-height: ${scale(22)}px;
 `;

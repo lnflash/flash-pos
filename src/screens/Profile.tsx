@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {useNavigation} from '@react-navigation/native';
@@ -8,11 +8,11 @@ import {TextButton, PinModal} from '../components';
 
 // store
 import {useAppDispatch, useAppSelector} from '../store/hooks';
-import {store} from '../store';
 import {resetUserData} from '../store/slices/userSlice';
 import {resetAmount} from '../store/slices/amountSlice';
 import {
   selectHasPin,
+  loadPinState,
   setPin,
   authenticatePin,
   removePin,
@@ -23,7 +23,8 @@ import {
 } from '../store/slices/pinSlice';
 import {selectEventModeEnabled} from '../store/slices/rewardSlice';
 
-// env
+// utils
+import {isRewardsEnabled} from '../utils/featureFlags';
 
 import {Account, Security, Settings, Transactions} from '../components/profile';
 
@@ -32,14 +33,15 @@ export type PinMode = 'setup' | 'verify' | 'change' | 'remove';
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
+const logoutButtonStyle = {marginTop: 20, marginBottom: 150};
+
 const Profile = () => {
   const navigation = useNavigation<Props>();
 
   const dispatch = useAppDispatch();
 
-  const {username} = useAppSelector(state => state.user);
-  const {transactions} = useAppSelector(state => state.transactionHistory);
   const eventModeEnabled = useAppSelector(selectEventModeEnabled);
+  const rewardsFeatureEnabled = isRewardsEnabled();
 
   // PIN management
 
@@ -50,6 +52,10 @@ const Profile = () => {
   const [pinModalMode, setPinModalMode] = useState<PinMode>('verify');
   const [isViewRewardSettings, setIsViewRewardSettings] = useState(false);
 
+  useEffect(() => {
+    dispatch(loadPinState());
+  }, [dispatch]);
+
   const onLogout = () => {
     dispatch(resetUserData());
     dispatch(resetAmount());
@@ -58,8 +64,14 @@ const Profile = () => {
 
   const onViewRewardSettings = () => {
     setPinError('');
-    setIsViewRewardSettings(true);
     dispatch(clearResults());
+
+    if (!rewardsFeatureEnabled) {
+      navigation.navigate('RewardsSettings');
+      return;
+    }
+
+    setIsViewRewardSettings(true);
 
     if (!hasPin) {
       // First time setup - create PIN
@@ -73,23 +85,18 @@ const Profile = () => {
   };
 
   const handleVerifyOldPin = async (oldPin: string): Promise<boolean> => {
-    return new Promise(resolve => {
-      dispatch(verifyPinOnly(oldPin));
-
-      // Wait for the verification result
-      setTimeout(() => {
-        const currentState = store.getState();
-        const result = currentState.pin.lastVerificationResult;
-        resolve(result === 'success');
-      }, 100);
-    });
+    try {
+      return await dispatch(verifyPinOnly(oldPin)).unwrap();
+    } catch {
+      return false;
+    }
   };
 
-  const handlePinSuccess = (pin: string, oldPin?: string) => {
+  const handlePinSuccess = async (pin: string, oldPin?: string) => {
     dispatch(clearResults());
 
     if (pinModalMode === 'setup') {
-      dispatch(setPin(pin));
+      await dispatch(setPin(pin));
       setPinModalVisible(false);
       if (isViewRewardSettings) {
         setIsViewRewardSettings(false);
@@ -97,59 +104,41 @@ const Profile = () => {
       }
     } else if (pinModalMode === 'change') {
       if (oldPin) {
-        dispatch(changePin({oldPin, newPin: pin}));
-
-        // Check if the change was successful
-        setTimeout(() => {
-          const currentState = store.getState();
-          if (currentState.pin.lastOperationResult === 'success') {
-            setPinModalVisible(false);
-            setPinError('');
-            // Could add success toast here
-          } else {
-            setPinError('Failed to change PIN. Please try again.');
-          }
-        }, 100);
+        const changed = await dispatch(changePin({oldPin, newPin: pin})).unwrap();
+        if (changed) {
+          setPinModalVisible(false);
+          setPinError('');
+        } else {
+          setPinError('Failed to change PIN. Please try again.');
+        }
       }
     } else if (pinModalMode === 'remove') {
       // Remove mode - verify PIN first, then remove if correct
       dispatch(clearAuthentication());
-      dispatch(authenticatePin(pin));
-
-      // Check if authentication was successful
-      setTimeout(() => {
-        const currentState = store.getState();
-        if (currentState.pin.isAuthenticated) {
-          // PIN is correct, proceed with removal
-          dispatch(removePin());
-          setPinModalVisible(false);
-          setPinError('');
-          // Could add success toast here
-        } else {
-          setPinError('Incorrect PIN. Cannot remove PIN protection.');
-        }
-      }, 100);
+      const authenticated = await dispatch(authenticatePin(pin)).unwrap();
+      if (authenticated) {
+        await dispatch(removePin());
+        setPinModalVisible(false);
+        setPinError('');
+      } else {
+        setPinError('Incorrect PIN. Cannot remove PIN protection.');
+      }
     } else {
       // Verify mode - clear any previous authentication state first
       dispatch(clearAuthentication());
 
       // Then verify the PIN
-      dispatch(authenticatePin(pin));
-
-      // Check if authentication was successful
-      setTimeout(() => {
-        const currentState = store.getState();
-        if (currentState.pin.isAuthenticated) {
-          setPinModalVisible(false);
-          setPinError('');
-          if (isViewRewardSettings) {
-            setIsViewRewardSettings(false);
-            navigation.navigate('RewardsSettings');
-          }
-        } else {
-          setPinError('Incorrect PIN. Please try again.');
+      const authenticated = await dispatch(authenticatePin(pin)).unwrap();
+      if (authenticated) {
+        setPinModalVisible(false);
+        setPinError('');
+        if (isViewRewardSettings) {
+          setIsViewRewardSettings(false);
+          navigation.navigate('RewardsSettings');
         }
-      }, 100);
+      } else {
+        setPinError('Incorrect PIN. Please try again.');
+      }
     }
   };
 
@@ -174,13 +163,17 @@ const Profile = () => {
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
       <Account />
-      <Settings onViewRewardSettings={onViewRewardSettings} eventModeEnabled={eventModeEnabled} onViewEventSettings={onViewEventSettings} />
+      <Settings
+        onViewRewardSettings={onViewRewardSettings}
+        eventModeEnabled={eventModeEnabled}
+        onViewEventSettings={onViewEventSettings}
+      />
 
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />
       <Transactions />
       <TextButton
         title="Logout"
-        btnStyle={{marginTop: 20, marginBottom: 150}}
+        btnStyle={logoutButtonStyle}
         onPress={onLogout}
       />
       <PinModal

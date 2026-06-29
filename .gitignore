@@ -32,7 +32,7 @@ local.properties
 *.hprof
 .cxx/
 *.keystore
-!debug.keystore
+android/app/release/
 android/gradle.properties
 
 # node.js

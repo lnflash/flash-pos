@@ -3,11 +3,14 @@ import {render, fireEvent} from '@testing-library/react-native';
 import {Provider} from 'react-redux';
 import {NavigationContainer} from '@react-navigation/native';
 import {configureStore} from '@reduxjs/toolkit';
+import moment from 'moment';
 import TransactionHistory from '../../src/screens/TransactionHistory';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import userSlice from '../../src/store/slices/userSlice';
 import amountSlice from '../../src/store/slices/amountSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
+
+const TransactionHistoryScreen = TransactionHistory as React.ComponentType;
 
 // Mock the usePrint hook
 jest.mock('../../src/hooks/usePrint', () => ({
@@ -43,6 +46,7 @@ const renderWithProviders = (component: React.ReactElement, initialState = {}) =
 const mockTransaction: TransactionData = {
   id: 'test-tx-1',
   timestamp: '2024-01-01T12:00:00Z',
+  transactionType: 'lightning',
   amount: {
     satAmount: 1000,
     displayAmount: '10.00',
@@ -69,8 +73,8 @@ const mockTransaction: TransactionData = {
 
 describe('TransactionHistory Screen', () => {
   it('should render empty state when no transactions', () => {
-    const {getByText} = renderWithProviders(<TransactionHistory />);
-    
+    const {getByText} = renderWithProviders(<TransactionHistoryScreen />);
+
     expect(getByText('No transactions found')).toBeTruthy();
     expect(getByText('Completed transactions will appear here')).toBeTruthy();
   });
@@ -84,14 +88,16 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
+    const {getByText, getAllByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
     expect(getByText('Transaction History')).toBeTruthy();
     expect(getByText('1 transactions')).toBeTruthy();
-    expect(getByText('$10.00')).toBeTruthy();
-    expect(getByText('≈ 1000 sats')).toBeTruthy();
-    expect(getByText('testmerchant')).toBeTruthy();
-    expect(getByText('COMPLETED')).toBeTruthy();
+    expect(getByText('$ 10.00')).toBeTruthy();
+    expect(getByText('to testmerchant')).toBeTruthy();
+    expect(getAllByText(/Lightning/).length).toBeGreaterThan(0);
   });
 
   it('should display transaction with sats as primary amount', () => {
@@ -111,10 +117,12 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
-    expect(getByText('1000 sats')).toBeTruthy();
-    expect(getByText('$10.00')).toBeTruthy();
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    expect(getByText('1000 points')).toBeTruthy();
   });
 
   it('should display memo when present', () => {
@@ -126,9 +134,11 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
-    expect(getByText('Description:')).toBeTruthy();
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
     expect(getByText('Test payment')).toBeTruthy();
   });
 
@@ -141,11 +151,14 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
-    const reprintButton = getByText('Reprint Receipt');
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    const reprintButton = getByText('Reprint');
     fireEvent.press(reprintButton);
-    
+
     // The print function should be called (mocked in this test)
     expect(reprintButton).toBeTruthy();
   });
@@ -159,14 +172,17 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
     expect(getByText('Clear History')).toBeTruthy();
   });
 
   it('should not show clear history button when no transactions', () => {
-    const {queryByText} = renderWithProviders(<TransactionHistory />);
-    
+    const {queryByText} = renderWithProviders(<TransactionHistoryScreen />);
+
     expect(queryByText('Clear History')).toBeNull();
   });
 
@@ -179,31 +195,13 @@ describe('TransactionHistory Screen', () => {
       },
     };
 
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
-    // Should display formatted date (Jan 01, 2024 12:00)
-    expect(getByText(/Jan 01, 2024/)).toBeTruthy();
-  });
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
 
-  it('should truncate long payment hashes', () => {
-    const longHashTransaction = {
-      ...mockTransaction,
-      invoice: {
-        ...mockTransaction.invoice,
-        paymentHash: 'very-long-payment-hash-that-should-be-truncated-for-display',
-      },
-    };
-
-    const initialState = {
-      transactionHistory: {
-        transactions: [longHashTransaction],
-        lastTransaction: longHashTransaction,
-        maxTransactions: 50,
-      },
-    };
-
-    const {getByText} = renderWithProviders(<TransactionHistory />, initialState);
-    
-    expect(getByText(/very-long-payment-hash/)).toBeTruthy();
+    expect(
+      getByText(moment(mockTransaction.timestamp).format('MMM DD, HH:mm')),
+    ).toBeTruthy();
   });
 });

@@ -16,7 +16,18 @@ import rootReducer from './reducers';
 const persistConfig = {
   key: 'root',
   storage: AsyncStorage,
-  whitelist: ['user', 'amount', 'transactionHistory', 'reward', 'pin'],
+  whitelist: ['user', 'amount', 'transactionHistory'],
+  migrate: (state: any) => {
+    if (!state) {
+      return Promise.resolve(state);
+    }
+
+    const persistedState = {...state};
+    delete persistedState.pin;
+    delete persistedState.reward;
+
+    return Promise.resolve(persistedState);
+  },
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

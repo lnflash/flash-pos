@@ -12,6 +12,8 @@ import {setUserData} from '../store/slices/userSlice';
 
 type Props = StackScreenProps<RootStackType, 'Auth'>;
 
+const currencyPickerButtonStyle = {paddingVertical: 10};
+
 const Auth: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {toggleLoading} = useActivityIndicator();
@@ -20,7 +22,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
   const [err, setErr] = useState<string>();
 
   const onStart = async () => {
-    if (!value) return;
+    if (!value) {return;}
 
     toggleLoading(true);
     const username = value.trim();
@@ -64,7 +66,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
           </Container>
           <Container>
             <Label>Select your currency $</Label>
-            <CurrencyPicker btnStyle={{paddingVertical: 10}} />
+            <CurrencyPicker btnStyle={currencyPickerButtonStyle} />
           </Container>
         </InnerWrapper>
       </KeyboardAwareScrollView>
