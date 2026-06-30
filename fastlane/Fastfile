@@ -303,7 +303,8 @@ platform :android do
 
     # Add git tag
     add_git_tag(
-      tag: "android/v#{version_name}"
+      tag: "android/v#{version_name}",
+      force: true
     )
   end
 
