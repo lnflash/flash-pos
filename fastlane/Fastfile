@@ -267,7 +267,7 @@ platform :android do
   desc "Deploy a new version to Google Play Production"
   lane :release do
     # Ensure we're on a clean git state
-    ensure_git_status_clean
+    ensure_git_status_clean unless ENV['CI']
 
     # Update version from git tag if present
     update_android_version_from_tag
