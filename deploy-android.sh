@@ -2,7 +2,7 @@
 
 # Load environment variables from .env.fastlane
 if [ -f .env.fastlane ]; then
-  export $(cat .env.fastlane | grep -v '^#' | xargs)
+  set -a; . ./.env.fastlane; set +a
 else
   echo "Error: .env.fastlane file not found!"
   echo "Please create it with your credentials."
