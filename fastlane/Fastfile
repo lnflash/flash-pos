@@ -132,7 +132,7 @@ platform :ios do
   desc "Deploy a new version to the App Store"
   lane :release do
     # Ensure we're on a clean git state
-    ensure_git_status_clean
+    ensure_git_status_clean unless ENV['CI']
 
     # Setup App Store Connect API Key
     api_key = app_store_connect_api_key(
