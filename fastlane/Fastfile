@@ -188,7 +188,8 @@ platform :ios do
 
     # Add git tag
     add_git_tag(
-      tag: "ios/v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')}"
+      tag: "ios/v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')}",
+      force: true
     )
   end
 
