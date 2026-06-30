@@ -9,7 +9,7 @@ on:
 jobs:
   ios-build:
     name: iOS Build Check
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout repository
@@ -46,7 +46,7 @@ jobs:
             -scheme flash_pos \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             build CODE_SIGNING_ALLOWED=NO
 
   android-build:
@@ -81,6 +81,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Create gradle.properties
+        run: cp android/gradle.properties.example android/gradle.properties
 
       - name: Build Android app (Debug)
         run: |
