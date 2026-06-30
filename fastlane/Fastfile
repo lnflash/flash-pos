@@ -174,8 +174,8 @@ platform :ios do
       force: true,
       submit_for_review: false,
       automatic_release: false,
-      skip_metadata: false,
-      skip_screenshots: false,
+      skip_metadata: true,
+      skip_screenshots: true,
       precheck_include_in_app_purchases: false
     )
 
