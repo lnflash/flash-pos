@@ -29,5 +29,8 @@ jobs:
       - name: Typecheck
         run: yarn typecheck
 
+      - name: Provision .env for tests
+        run: cp .env.example .env
+
       - name: Test
         run: yarn test --runInBand
