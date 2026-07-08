@@ -1,0 +1,15 @@
+# iOS App Identifier
+app_identifier("com.flash.pos")
+
+# Apple ID for App Store Connect
+apple_id(ENV["APPLE_ID"])
+
+# iOS Team ID
+itc_team_id(ENV["ITC_TEAM_ID"])
+team_id(ENV["TEAM_ID"])
+
+# Android package name
+package_name("com.flash_pos")
+
+# JSON key file path for Google Play
+json_key_file(ENV["GOOGLE_PLAY_JSON_KEY_PATH"])
