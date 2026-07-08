@@ -1,5 +1,11 @@
 import 'react-native-gesture-handler/jestSetup';
 
+// CI runs Node 20, which has no global WebSocket. graphql-ws's createClient
+// needs one at module load (src/graphql/ApolloClient.ts), so App.test.tsx
+// (which imports App) fails to run. Node 22+ provides it globally, masking
+// this locally. `ws` is already a dependency.
+global.WebSocket = require('ws');
+
 /* global jest */
 
 jest.mock('@rneui/themed', () => {
