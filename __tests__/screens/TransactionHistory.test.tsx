@@ -12,11 +12,13 @@ import invoiceSlice from '../../src/store/slices/invoiceSlice';
 
 const TransactionHistoryScreen = TransactionHistory as React.ComponentType;
 
-// Mock the usePrint hook
+// Mock the usePrint hook — capture printReceipt calls so tests can assert
+// on the exact ReceiptData the screen hands to the printer
+const mockPrintReceipt = jest.fn();
 jest.mock('../../src/hooks/usePrint', () => ({
   __esModule: true,
   default: () => ({
-    printReceipt: jest.fn(),
+    printReceipt: mockPrintReceipt,
   }),
 }));
 
@@ -73,6 +75,10 @@ const mockTransaction: TransactionData = {
 };
 
 describe('TransactionHistory Screen', () => {
+  beforeEach(() => {
+    mockPrintReceipt.mockClear();
+  });
+
   it('should render empty state when no transactions', () => {
     const {getByText} = renderWithProviders(<TransactionHistoryScreen />);
 
@@ -294,8 +300,99 @@ describe('TransactionHistory Screen', () => {
     const reprintButton = getByText('Reprint');
     fireEvent.press(reprintButton);
 
-    // The print function should be called (mocked in this test)
-    expect(reprintButton).toBeTruthy();
+    // A sale reprints with its amounts exactly as stored — unsigned
+    expect(mockPrintReceipt).toHaveBeenCalledTimes(1);
+    expect(mockPrintReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        satAmount: 1000,
+        displayAmount: '10.00',
+        transactionType: 'lightning',
+      }),
+    );
+  });
+
+  it('should reprint a refund with signed amounts, never like a sale receipt', () => {
+    const mockRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-1',
+      transactionType: 'refund',
+      refundOf: mockTransaction.id,
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: -800,
+        displayAmount: '8.00',
+        isPrimaryAmountSats: false,
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [mockRefund],
+        lastTransaction: mockRefund,
+        maxTransactions: 50,
+      },
+    };
+
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    fireEvent.press(getByText('Reprint'));
+
+    // The receipt fiat must carry the sign — '$ 8.00' on paper would be
+    // indistinguishable from a sale receipt
+    expect(mockPrintReceipt).toHaveBeenCalledTimes(1);
+    expect(mockPrintReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        satAmount: -800,
+        displayAmount: '-8.00',
+        transactionType: 'refund',
+      }),
+    );
+  });
+
+  it('should reprint a positive-stored refund with signed amounts (issue #64)', () => {
+    // Legacy rows persisted before refund-sign normalization can still carry
+    // a positive amount — the receipt must sign them anyway
+    const legacyRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-legacy',
+      transactionType: 'refund',
+      refundOf: mockTransaction.id,
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: 800,
+        displayAmount: '8.00',
+        isPrimaryAmountSats: false,
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [legacyRefund],
+        lastTransaction: legacyRefund,
+        maxTransactions: 50,
+      },
+    };
+
+    const {getByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    fireEvent.press(getByText('Reprint'));
+
+    expect(mockPrintReceipt).toHaveBeenCalledTimes(1);
+    expect(mockPrintReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        satAmount: -800,
+        displayAmount: '-8.00',
+        transactionType: 'refund',
+      }),
+    );
   });
 
   it('should show clear history button when transactions exist', () => {

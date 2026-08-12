@@ -222,12 +222,42 @@ export const calculateSalesTotal = (
 };
 
 /**
+ * Receipt-facing amounts for a transaction. Refunds always come out
+ * negative — both the sat amount and the fiat display string — even if the
+ * refund was stored with a positive amount (issue #64), so a reprinted
+ * refund receipt is never mistakable for a sale receipt. Sales pass
+ * through as stored.
+ *
+ * Shared by the history rows (formatTransactionAmount) and the receipt
+ * builder (TransactionHistory reprint → usePrint), so the two surfaces
+ * can never disagree on refund signs.
+ *
+ * @param transaction - Transaction to derive receipt amounts from
+ * @returns Signed satAmount and displayAmount for ReceiptData
+ */
+export const getReceiptAmounts = (
+  transaction: TransactionData,
+): {satAmount: number; displayAmount: string} => {
+  const {satAmount, displayAmount} = transaction.amount;
+
+  if (transaction.transactionType === 'refund') {
+    return {
+      satAmount: -Math.abs(satAmount),
+      displayAmount: `-${displayAmount.replace(/^-/, '')}`,
+    };
+  }
+
+  return {satAmount, displayAmount};
+};
+
+/**
  * User-facing primary amount string for a transaction row.
  *
  * Sales render as stored ('1000 points' / '$ 10.00'). Refunds always render
  * signed — '-800 points' / '-$ 8.00' — even if the refund was stored with a
  * positive amount (issue #64), so a refund is never visually mistakable for
- * a sale.
+ * a sale. Sign rules come from getReceiptAmounts so rows and receipts
+ * always agree.
  *
  * @param transaction - Transaction to format
  * @returns Primary amount display string
@@ -235,19 +265,19 @@ export const calculateSalesTotal = (
 export const formatTransactionAmount = (
   transaction: TransactionData,
 ): string => {
-  const {satAmount, displayAmount, currency, isPrimaryAmountSats} =
-    transaction.amount;
+  const {currency, isPrimaryAmountSats} = transaction.amount;
+  const {satAmount, displayAmount} = getReceiptAmounts(transaction);
+
+  if (isPrimaryAmountSats) {
+    return `${satAmount} points`;
+  }
 
   if (transaction.transactionType === 'refund') {
-    if (isPrimaryAmountSats) {
-      return `${-Math.abs(satAmount)} points`;
-    }
+    // Fiat-primary refunds carry the sign ahead of the symbol: '-$ 8.00'
     return `-${currency.symbol} ${displayAmount.replace(/^-/, '')}`;
   }
 
-  return isPrimaryAmountSats
-    ? `${satAmount} points`
-    : `${currency.symbol} ${displayAmount}`;
+  return `${currency.symbol} ${displayAmount}`;
 };
 
 /**

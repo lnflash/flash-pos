@@ -3,6 +3,7 @@ import {
   getSalesContribution,
   createRefundTransaction,
   formatTransactionAmount,
+  getReceiptAmounts,
   validateTransactionData,
 } from '../../src/utils/transactionHelpers';
 
@@ -217,6 +218,72 @@ describe('formatTransactionAmount', () => {
     });
 
     expect(formatTransactionAmount(refund)).toBe('-$ 8.00');
+  });
+});
+
+describe('getReceiptAmounts', () => {
+  it('passes sale amounts through as stored', () => {
+    const sale = makeSale('s1', 1000, {
+      amount: {
+        satAmount: 1000,
+        displayAmount: '10.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(getReceiptAmounts(sale)).toEqual({
+      satAmount: 1000,
+      displayAmount: '10.00',
+    });
+  });
+
+  it('signs both amounts for a refund stored negative sats / unsigned fiat', () => {
+    const refund = makeRefund('r1', -800, {
+      amount: {
+        satAmount: -800,
+        displayAmount: '8.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(getReceiptAmounts(refund)).toEqual({
+      satAmount: -800,
+      displayAmount: '-8.00',
+    });
+  });
+
+  it('signs both amounts for a refund stored positive (issue #64)', () => {
+    const refund = makeRefund('r1', 800, {
+      amount: {
+        satAmount: 800,
+        displayAmount: '8.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(getReceiptAmounts(refund)).toEqual({
+      satAmount: -800,
+      displayAmount: '-8.00',
+    });
+  });
+
+  it('does not double the sign when a refund displayAmount is already negative', () => {
+    const refund = makeRefund('r1', -800, {
+      amount: {
+        satAmount: -800,
+        displayAmount: '-8.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(getReceiptAmounts(refund)).toEqual({
+      satAmount: -800,
+      displayAmount: '-8.00',
+    });
   });
 });
 

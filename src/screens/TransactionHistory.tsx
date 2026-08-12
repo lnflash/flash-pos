@@ -24,7 +24,10 @@ import {
 } from '../store/slices/transactionHistorySlice';
 
 // utils
-import {formatTransactionAmount} from '../utils/transactionHelpers';
+import {
+  formatTransactionAmount,
+  getReceiptAmounts,
+} from '../utils/transactionHelpers';
 
 const {width: screenWidth} = Dimensions.get('window');
 
@@ -57,11 +60,14 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   };
 
   const onReprintTransaction = (transaction: TransactionData) => {
+    // Refund amounts print signed — same sign rules as the history rows,
+    // so a reprinted refund receipt can never read like a sale receipt.
+    const {satAmount, displayAmount} = getReceiptAmounts(transaction);
     const receiptData: ReceiptData = {
       id: transaction.id,
       timestamp: transaction.timestamp,
-      satAmount: transaction.amount.satAmount,
-      displayAmount: transaction.amount.displayAmount,
+      satAmount,
+      displayAmount,
       currency: transaction.amount.currency,
       isPrimaryAmountSats: transaction.amount.isPrimaryAmountSats,
       username: transaction.merchant.username,
