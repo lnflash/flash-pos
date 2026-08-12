@@ -1,5 +1,7 @@
 import {createSlice, PayloadAction, createSelector} from '@reduxjs/toolkit';
 
+import {calculateSalesTotal} from '../../utils/transactionHelpers';
+
 const initialState: TransactionHistoryState = {
   transactions: [],
   lastTransaction: undefined,
@@ -125,6 +127,9 @@ export const selectTransactionStatistics = createSelector(
     const standaloneCount = transactions.filter(
       (t: TransactionData) => t.transactionType === 'standalone',
     ).length;
+    const refundCount = transactions.filter(
+      (t: TransactionData) => t.transactionType === 'refund',
+    ).length;
     const withRewardsCount = transactions.filter(
       (t: TransactionData) => t.reward && t.reward.rewardAmount > 0,
     ).length;
@@ -132,18 +137,23 @@ export const selectTransactionStatistics = createSelector(
       (sum: number, t: TransactionData) => sum + (t.reward?.rewardAmount || 0),
       0,
     );
+    // Net sales: sale amounts add, refund amounts deduct (issue #64)
+    const totalSales = calculateSalesTotal(transactions);
 
     return {
       totalTransactions,
       lightningCount,
       externalCount,
       standaloneCount,
+      refundCount,
       withRewardsCount,
       totalRewardsDistributed,
+      totalSales,
       transactionTypes: {
         lightning: lightningCount,
         external: externalCount,
         standalone: standaloneCount,
+        refund: refundCount,
       },
     };
   },

@@ -141,6 +141,87 @@ export const createStandaloneTransaction = (params: {
 };
 
 /**
+ * Create a refund transaction data object
+ *
+ * Refunds are stored with a NEGATIVE satAmount so that any summation over
+ * transaction amounts deducts them from the sales total by construction
+ * (issue #64: refunds were added to the sales total instead of deducted).
+ *
+ * @param params - Refund parameters (satAmount may be passed positive or
+ *   negative; it is normalized to negative)
+ * @returns Complete TransactionData object for the refund
+ */
+export const createRefundTransaction = (params: {
+  amount: {
+    satAmount: number;
+    displayAmount: string;
+    currency: CurrencyItem;
+    isPrimaryAmountSats: boolean;
+  };
+  merchant: {
+    username: string;
+  };
+  refundOf?: string;
+  memo?: string;
+}): TransactionData => {
+  return {
+    id: `refund_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    transactionType: 'refund',
+    paymentMethod: 'lightning',
+    amount: {
+      ...params.amount,
+      satAmount: -Math.abs(params.amount.satAmount),
+    },
+    merchant: params.merchant,
+    invoice: {
+      paymentHash: '', // Refunds are outgoing payments, no invoice of our own
+      paymentRequest: '',
+      paymentSecret: '',
+    },
+    memo: params.memo || 'Refund',
+    status: 'completed',
+    refundOf: params.refundOf,
+  };
+};
+
+/**
+ * Signed sat amount a transaction contributes to the sales total.
+ *
+ * Sales add their amount; refunds always SUBTRACT theirs — even if a refund
+ * was stored with a positive satAmount (defensive against issue #64, where
+ * refund amounts were added to the sales total instead of deducted).
+ *
+ * @param transaction - Transaction to evaluate
+ * @returns Signed contribution in sats
+ */
+export const getSalesContribution = (transaction: TransactionData): number => {
+  const satAmount = transaction.amount?.satAmount || 0;
+
+  if (transaction.transactionType === 'refund') {
+    return -Math.abs(satAmount);
+  }
+
+  return satAmount;
+};
+
+/**
+ * Net sales total for a list of transactions, in sats.
+ * Sales add; refunds deduct.
+ *
+ * @param transactions - Transactions to total
+ * @returns Net sales total in sats
+ */
+export const calculateSalesTotal = (
+  transactions: TransactionData[],
+): number => {
+  return transactions.reduce(
+    (sum, transaction) => sum + getSalesContribution(transaction),
+    0,
+  );
+};
+
+/**
  * Create reward data from calculation result
  * @param calculation - Result from calculateReward function
  * @param isStandalone - Whether this is a standalone reward
@@ -170,7 +251,15 @@ export const validateTransactionData = (
 ) => {
   const errors: string[] = [];
 
-  if (
+  if (transactionData.transactionType === 'refund') {
+    // Refunds must be stored negative so they deduct from the sales total
+    if (
+      !transactionData.amount?.satAmount ||
+      transactionData.amount.satAmount >= 0
+    ) {
+      errors.push('Refund amount must be negative (a deduction from sales)');
+    }
+  } else if (
     !transactionData.amount?.satAmount ||
     transactionData.amount.satAmount < 0
   ) {

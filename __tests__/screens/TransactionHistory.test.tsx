@@ -94,10 +94,43 @@ describe('TransactionHistory Screen', () => {
     );
 
     expect(getByText('Transaction History')).toBeTruthy();
-    expect(getByText('1 transactions')).toBeTruthy();
+    expect(getByText(/1 transactions/)).toBeTruthy();
+    expect(getByText(/1000 points in sales/)).toBeTruthy();
     expect(getByText('$ 10.00')).toBeTruthy();
     expect(getByText('to testmerchant')).toBeTruthy();
     expect(getAllByText(/Lightning/).length).toBeGreaterThan(0);
+  });
+
+  it('should deduct refunds from the sales total in the header (issue #64)', () => {
+    const mockRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-1',
+      transactionType: 'refund',
+      refundOf: mockTransaction.id,
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: -400,
+        displayAmount: '4.00',
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [mockRefund, mockTransaction],
+        lastTransaction: mockRefund,
+        maxTransactions: 50,
+      },
+    };
+
+    const {getByText, getAllByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    // 1000 sale - 400 refund = 600, NOT 1400
+    expect(getByText(/600 points in sales/)).toBeTruthy();
+    expect(getAllByText(/Refund/).length).toBeGreaterThan(0);
   });
 
   it('should display transaction with sats as primary amount', () => {

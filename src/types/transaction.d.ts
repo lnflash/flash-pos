@@ -1,5 +1,5 @@
 // Transaction type enumeration for different payment flows
-type TransactionType = 'lightning' | 'rewards-only' | 'standalone';
+type TransactionType = 'lightning' | 'rewards-only' | 'standalone' | 'refund';
 
 // Payment method types for tracking how the payment was made
 type PaymentMethod =
@@ -32,6 +32,7 @@ interface TransactionData {
   };
   memo?: string;
   status: 'pending' | 'completed' | 'failed';
+  refundOf?: string; // id of the original transaction this refund reverses
   reward?: {
     rewardAmount: number; // Reward sats earned
     rewardRate: number; // Percentage rate used (e.g., 0.02 for 2%)

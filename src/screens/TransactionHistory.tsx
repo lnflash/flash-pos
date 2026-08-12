@@ -20,6 +20,9 @@ import Refresh from '../assets/icons/refresh.svg';
 // store
 import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
 
+// utils
+import {calculateSalesTotal} from '../utils/transactionHelpers';
+
 const {width: screenWidth} = Dimensions.get('window');
 
 // Responsive scaling functions
@@ -103,19 +106,26 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
     const standaloneCount = transactions.filter(
       t => t.transactionType === 'standalone',
     ).length;
+    const refundCount = transactions.filter(
+      t => t.transactionType === 'refund',
+    ).length;
     const withRewardsCount = transactions.filter(t => t.reward).length;
     const totalRewardsGiven = transactions.reduce(
       (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
       0,
     );
+    // Net sales: sale amounts add, refund amounts deduct (issue #64)
+    const totalSales = calculateSalesTotal(transactions);
 
     return {
       total: transactions.length,
       lightning: lightningCount,
       external: externalCount,
       standalone: standaloneCount,
+      refunds: refundCount,
       withRewards: withRewardsCount,
       totalRewards: totalRewardsGiven,
+      totalSales,
     };
   }, [transactions]);
 
@@ -128,6 +138,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         return {icon: '💳', label: 'External Payment', color: '#FF9500'};
       case 'standalone':
         return {icon: '🏷️', label: 'Reward Only', color: '#6C757D'};
+      case 'refund':
+        return {icon: '↩️', label: 'Refund', color: '#B31B1B'};
       default:
         return {icon: '📄', label: 'Transaction', color: '#6C757D'};
     }
@@ -268,6 +280,12 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           <HeaderTitle>Transaction History</HeaderTitle>
           <HeaderSubtitle>
             {statistics.total} transactions
+            {statistics.total > 0 && (
+              <>
+                {' • '}
+                {statistics.totalSales} points in sales
+              </>
+            )}
             {statistics.totalRewards > 0 && (
               <>
                 {' • '}

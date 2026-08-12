@@ -4,6 +4,7 @@ import {
   updateTransactionStatus,
   clearTransactionHistory,
   removeTransaction,
+  selectTransactionStatistics,
 } from '../../src/store/slices/transactionHistorySlice';
 
 describe('transactionHistorySlice', () => {
@@ -137,6 +138,62 @@ describe('transactionHistorySlice', () => {
       const state = store.getState();
       expect(state.transactionHistory.transactions).toHaveLength(0);
       expect(state.transactionHistory.lastTransaction).toBeUndefined();
+    });
+  });
+
+  describe('selectTransactionStatistics — sales total (issue #64)', () => {
+    const mockRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-1',
+      transactionType: 'refund',
+      refundOf: 'test-tx-1',
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: -400,
+        displayAmount: '4.00',
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+
+    it('sums sale amounts when there are only sales', () => {
+      store.dispatch(addTransaction({...mockTransaction, id: 'sale-1'}));
+      store.dispatch(addTransaction({...mockTransaction, id: 'sale-2'}));
+
+      const stats = selectTransactionStatistics(store.getState());
+      expect(stats.totalSales).toBe(2000);
+      expect(stats.refundCount).toBe(0);
+    });
+
+    it('deducts a refund from the sales total instead of adding it', () => {
+      store.dispatch(addTransaction({...mockTransaction, id: 'sale-1'}));
+      store.dispatch(addTransaction(mockRefund));
+
+      const stats = selectTransactionStatistics(store.getState());
+      expect(stats.totalSales).toBe(600); // 1000 sale - 400 refund
+      expect(stats.refundCount).toBe(1);
+    });
+
+    it('returns a negative total when history contains only a refund', () => {
+      store.dispatch(addTransaction(mockRefund));
+
+      const stats = selectTransactionStatistics(store.getState());
+      expect(stats.totalSales).toBe(-400);
+      expect(stats.refundCount).toBe(1);
+      expect(stats.totalTransactions).toBe(1);
+    });
+
+    it('deducts a refund even if it was stored with a positive amount', () => {
+      store.dispatch(addTransaction({...mockTransaction, id: 'sale-1'}));
+      store.dispatch(
+        addTransaction({
+          ...mockRefund,
+          amount: {...mockRefund.amount, satAmount: 400},
+        }),
+      );
+
+      const stats = selectTransactionStatistics(store.getState());
+      expect(stats.totalSales).toBe(600);
     });
   });
 });
