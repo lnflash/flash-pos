@@ -141,6 +141,146 @@ export const createStandaloneTransaction = (params: {
 };
 
 /**
+ * Create a refund transaction data object
+ *
+ * Refunds are stored with a NEGATIVE satAmount so that any summation over
+ * transaction amounts deducts them from the sales total by construction
+ * (issue #64: refunds were added to the sales total instead of deducted).
+ *
+ * @param params - Refund parameters (satAmount may be passed positive or
+ *   negative; it is normalized to negative)
+ * @returns Complete TransactionData object for the refund
+ */
+export const createRefundTransaction = (params: {
+  amount: {
+    satAmount: number;
+    displayAmount: string;
+    currency: CurrencyItem;
+    isPrimaryAmountSats: boolean;
+  };
+  merchant: {
+    username: string;
+  };
+  refundOf?: string;
+  memo?: string;
+}): TransactionData => {
+  return {
+    id: `refund_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    transactionType: 'refund',
+    paymentMethod: 'lightning',
+    amount: {
+      ...params.amount,
+      satAmount: -Math.abs(params.amount.satAmount),
+    },
+    merchant: params.merchant,
+    invoice: {
+      paymentHash: '', // Refunds are outgoing payments, no invoice of our own
+      paymentRequest: '',
+      paymentSecret: '',
+    },
+    memo: params.memo || 'Refund',
+    status: 'completed',
+    refundOf: params.refundOf,
+  };
+};
+
+/**
+ * Signed sat amount a transaction contributes to the sales total.
+ *
+ * Sales add their amount; refunds always SUBTRACT theirs — even if a refund
+ * was stored with a positive satAmount (defensive against issue #64, where
+ * refund amounts were added to the sales total instead of deducted).
+ *
+ * @param transaction - Transaction to evaluate
+ * @returns Signed contribution in sats
+ */
+export const getSalesContribution = (transaction: TransactionData): number => {
+  const satAmount = transaction.amount?.satAmount || 0;
+
+  if (transaction.transactionType === 'refund') {
+    return -Math.abs(satAmount);
+  }
+
+  return satAmount;
+};
+
+/**
+ * Net sales total for a list of transactions, in sats.
+ * Sales add; refunds deduct.
+ *
+ * @param transactions - Transactions to total
+ * @returns Net sales total in sats
+ */
+export const calculateSalesTotal = (
+  transactions: TransactionData[],
+): number => {
+  return transactions.reduce(
+    (sum, transaction) => sum + getSalesContribution(transaction),
+    0,
+  );
+};
+
+/**
+ * Receipt-facing amounts for a transaction. Refunds always come out
+ * negative — both the sat amount and the fiat display string — even if the
+ * refund was stored with a positive amount (issue #64), so a reprinted
+ * refund receipt is never mistakable for a sale receipt. Sales pass
+ * through as stored.
+ *
+ * Shared by the history rows (formatTransactionAmount) and the receipt
+ * builder (TransactionHistory reprint → usePrint), so the two surfaces
+ * can never disagree on refund signs.
+ *
+ * @param transaction - Transaction to derive receipt amounts from
+ * @returns Signed satAmount and displayAmount for ReceiptData
+ */
+export const getReceiptAmounts = (
+  transaction: TransactionData,
+): {satAmount: number; displayAmount: string} => {
+  const {satAmount, displayAmount} = transaction.amount;
+
+  if (transaction.transactionType === 'refund') {
+    return {
+      satAmount: -Math.abs(satAmount),
+      displayAmount: `-${displayAmount.replace(/^-/, '')}`,
+    };
+  }
+
+  return {satAmount, displayAmount};
+};
+
+/**
+ * User-facing primary amount string for a transaction row.
+ *
+ * Sales render as stored ('1000 points' / '$ 10.00'). Refunds always render
+ * signed — '-800 points' / '-$ 8.00' — even if the refund was stored with a
+ * positive amount (issue #64), so a refund is never visually mistakable for
+ * a sale. Sign rules come from getReceiptAmounts so rows and receipts
+ * always agree.
+ *
+ * @param transaction - Transaction to format
+ * @returns Primary amount display string
+ */
+export const formatTransactionAmount = (
+  transaction: TransactionData,
+): string => {
+  const {currency, isPrimaryAmountSats} = transaction.amount;
+  const {satAmount, displayAmount} = getReceiptAmounts(transaction);
+
+  if (isPrimaryAmountSats) {
+    return `${satAmount} points`;
+  }
+
+  if (transaction.transactionType === 'refund') {
+    // Fiat-primary refunds carry the sign ahead of the symbol: '-$ 8.00'
+    return `-${currency.symbol} ${displayAmount.replace(/^-/, '')}`;
+  }
+
+  return `${currency.symbol} ${displayAmount}`;
+};
+
+/**
  * Create reward data from calculation result
  * @param calculation - Result from calculateReward function
  * @param isStandalone - Whether this is a standalone reward
@@ -170,11 +310,29 @@ export const validateTransactionData = (
 ) => {
   const errors: string[] = [];
 
-  if (
+  if (transactionData.transactionType === 'refund') {
+    // Refunds must be stored negative so they deduct from the sales total
+    if (
+      !transactionData.amount?.satAmount ||
+      transactionData.amount.satAmount >= 0
+    ) {
+      errors.push('Refund amount must be negative (a deduction from sales)');
+    }
+  } else if (
     !transactionData.amount?.satAmount ||
     transactionData.amount.satAmount < 0
   ) {
-    if (transactionData.transactionType !== 'standalone') {
+    // Zero-amount rewards-only transactions are how standalone NFC-card taps
+    // are recorded by the Rewards screen — the reward is the substance there.
+    const isZeroAmountReward =
+      transactionData.transactionType === 'rewards-only' &&
+      transactionData.amount?.satAmount === 0 &&
+      (transactionData.reward?.rewardAmount ?? 0) > 0;
+
+    if (
+      transactionData.transactionType !== 'standalone' &&
+      !isZeroAmountReward
+    ) {
       errors.push(
         'Amount must be greater than 0 for non-standalone transactions',
       );

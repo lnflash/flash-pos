@@ -18,7 +18,16 @@ import Check from '../assets/icons/check.svg';
 import Refresh from '../assets/icons/refresh.svg';
 
 // store
-import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
+import {
+  clearTransactionHistory,
+  selectTransactionStatistics,
+} from '../store/slices/transactionHistorySlice';
+
+// utils
+import {
+  formatTransactionAmount,
+  getReceiptAmounts,
+} from '../utils/transactionHelpers';
 
 const {width: screenWidth} = Dimensions.get('window');
 
@@ -34,7 +43,8 @@ type FilterType =
   | 'with-rewards'
   | 'lightning'
   | 'external'
-  | 'standalone';
+  | 'standalone'
+  | 'refund';
 
 const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const navigations = useNavigation<NavigationProp>();
@@ -50,11 +60,14 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   };
 
   const onReprintTransaction = (transaction: TransactionData) => {
+    // Refund amounts print signed — same sign rules as the history rows,
+    // so a reprinted refund receipt can never read like a sale receipt.
+    const {satAmount, displayAmount} = getReceiptAmounts(transaction);
     const receiptData: ReceiptData = {
       id: transaction.id,
       timestamp: transaction.timestamp,
-      satAmount: transaction.amount.satAmount,
-      displayAmount: transaction.amount.displayAmount,
+      satAmount,
+      displayAmount,
       currency: transaction.amount.currency,
       isPrimaryAmountSats: transaction.amount.isPrimaryAmountSats,
       username: transaction.merchant.username,
@@ -74,7 +87,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const filteredTransactions = React.useMemo(() => {
     switch (activeFilter) {
       case 'with-rewards':
-        return transactions.filter(transaction => transaction.reward);
+        // Matches selectTransactionsWithRewards / the statistics count
+        return transactions.filter(
+          transaction =>
+            transaction.reward && transaction.reward.rewardAmount > 0,
+        );
       case 'lightning':
         return transactions.filter(
           transaction => transaction.transactionType === 'lightning',
@@ -87,37 +104,31 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         return transactions.filter(
           transaction => transaction.transactionType === 'standalone',
         );
+      case 'refund':
+        return transactions.filter(
+          transaction => transaction.transactionType === 'refund',
+        );
       default:
         return transactions;
     }
   }, [transactions, activeFilter]);
 
-  // Enhanced statistics calculation
-  const statistics = React.useMemo(() => {
-    const lightningCount = transactions.filter(
-      t => t.transactionType === 'lightning',
-    ).length;
-    const externalCount = transactions.filter(
-      t => t.transactionType === 'rewards-only',
-    ).length;
-    const standaloneCount = transactions.filter(
-      t => t.transactionType === 'standalone',
-    ).length;
-    const withRewardsCount = transactions.filter(t => t.reward).length;
-    const totalRewardsGiven = transactions.reduce(
-      (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
-      0,
-    );
-
-    return {
-      total: transactions.length,
-      lightning: lightningCount,
-      external: externalCount,
-      standalone: standaloneCount,
-      withRewards: withRewardsCount,
-      totalRewards: totalRewardsGiven,
-    };
-  }, [transactions]);
+  // Statistics come from the single shared selector
+  // (selectTransactionStatistics) — only the field names are mapped here.
+  const stats = useAppSelector(selectTransactionStatistics);
+  const statistics = React.useMemo(
+    () => ({
+      total: stats.totalTransactions,
+      lightning: stats.lightningCount,
+      external: stats.externalCount,
+      standalone: stats.standaloneCount,
+      refunds: stats.refundCount,
+      withRewards: stats.withRewardsCount,
+      totalRewards: stats.totalRewardsDistributed,
+      totalSales: stats.totalSales,
+    }),
+    [stats],
+  );
 
   // Get transaction type badge info
   const getTransactionTypeBadge = (transaction: TransactionData) => {
@@ -128,6 +139,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         return {icon: '💳', label: 'External Payment', color: '#FF9500'};
       case 'standalone':
         return {icon: '🏷️', label: 'Reward Only', color: '#6C757D'};
+      case 'refund':
+        return {icon: '↩️', label: 'Refund', color: '#B31B1B'};
       default:
         return {icon: '📄', label: 'Transaction', color: '#6C757D'};
     }
@@ -157,11 +170,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         {/* Compact header with amount and status/badges in one row */}
         <CompactHeader>
           <AmountAndMerchant>
-            <PrimaryAmount>
-              {item.amount.isPrimaryAmountSats
-                ? `${item.amount.satAmount} points`
-                : `${item.amount.currency.symbol} ${item.amount.displayAmount}`}
-            </PrimaryAmount>
+            <PrimaryAmount>{formatTransactionAmount(item)}</PrimaryAmount>
             <MerchantText>to {item.merchant.username}</MerchantText>
           </AmountAndMerchant>
 
@@ -251,6 +260,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           ? 'No external payment transactions found'
           : activeFilter === 'standalone'
           ? 'No standalone reward transactions found'
+          : activeFilter === 'refund'
+          ? 'No refund transactions found'
           : 'No transactions found'}
       </EmptyText>
       <EmptySubtext>
@@ -268,6 +279,12 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           <HeaderTitle>Transaction History</HeaderTitle>
           <HeaderSubtitle>
             {statistics.total} transactions
+            {statistics.total > 0 && (
+              <>
+                {' • '}
+                {statistics.totalSales} points in sales
+              </>
+            )}
             {statistics.totalRewards > 0 && (
               <>
                 {' • '}
@@ -325,6 +342,16 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
                   onPress={() => setActiveFilter('standalone')}>
                   <FilterButtonText active={activeFilter === 'standalone'}>
                     🏷️ Rewards ({statistics.standalone})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+
+              {statistics.refunds > 0 && (
+                <FilterButton
+                  active={activeFilter === 'refund'}
+                  onPress={() => setActiveFilter('refund')}>
+                  <FilterButtonText active={activeFilter === 'refund'}>
+                    ↩️ Refunds ({statistics.refunds})
                   </FilterButtonText>
                 </FilterButton>
               )}

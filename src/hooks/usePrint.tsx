@@ -111,9 +111,13 @@ const usePrint = () => {
   };
 
   const printReceipt = (receiptData: ReceiptData) => {
+    const headline =
+      receiptData.transactionType === 'refund'
+        ? 'Refund completed'
+        : 'Sale completed';
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
-    PrinterModule.printText('Sale completed\n');
+    PrinterModule.printText(`${headline}\n`);
     PrinterModule.printText(
       `${receiptData.currency.symbol} ${receiptData.displayAmount}\n`,
     );
@@ -139,11 +143,15 @@ const usePrint = () => {
   };
 
   const printReceiptHTML = async (receiptData: ReceiptData) => {
+    const headline =
+      receiptData.transactionType === 'refund'
+        ? 'Refund completed'
+        : 'Sale completed';
     await RNPrint.print({
       html: `
           <div style="display: flex;flex-direction: column;">
             <div style="display: flex;flex-direction: column;align-items: center;">
-              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 13; font-weight: 600">Sale completed</p>
+              <p style="padding: 0; margin: 0; margin-bottom: 10px; font-size: 13; font-weight: 600">${headline}</p>
               <p style="padding: 0; margin: 0; font-size: 10">${
                 receiptData.currency.symbol
               } ${receiptData.displayAmount}</p>
