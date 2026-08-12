@@ -57,7 +57,10 @@ describe('transactionHistorySlice', () => {
     });
 
     it('should not set lastTransaction when status is not completed', () => {
-      const pendingTransaction = {...mockTransaction, status: 'pending' as const};
+      const pendingTransaction = {
+        ...mockTransaction,
+        status: 'pending' as const,
+      };
       store.dispatch(addTransaction(pendingTransaction));
 
       const state = store.getState();
@@ -65,8 +68,16 @@ describe('transactionHistorySlice', () => {
     });
 
     it('should maintain transactions in chronological order (newest first)', () => {
-      const transaction1 = {...mockTransaction, id: 'tx-1', timestamp: '2024-01-01T12:00:00Z'};
-      const transaction2 = {...mockTransaction, id: 'tx-2', timestamp: '2024-01-01T13:00:00Z'};
+      const transaction1 = {
+        ...mockTransaction,
+        id: 'tx-1',
+        timestamp: '2024-01-01T12:00:00Z',
+      };
+      const transaction2 = {
+        ...mockTransaction,
+        id: 'tx-2',
+        timestamp: '2024-01-01T13:00:00Z',
+      };
 
       store.dispatch(addTransaction(transaction1));
       store.dispatch(addTransaction(transaction2));
@@ -86,25 +97,116 @@ describe('transactionHistorySlice', () => {
       const state = store.getState();
       expect(state.transactionHistory.transactions).toHaveLength(50);
     });
+
+    it('should drop a transaction that fails validation instead of recording it', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const invalidTransaction = {
+        ...mockTransaction,
+        merchant: {username: ''},
+      };
+
+      store.dispatch(addTransaction(invalidTransaction));
+
+      const state = store.getState();
+      expect(state.transactionHistory.transactions).toHaveLength(0);
+      expect(state.transactionHistory.lastTransaction).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('should drop a zero-amount refund', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      store.dispatch(
+        addTransaction({
+          ...mockTransaction,
+          id: 'refund-zero',
+          transactionType: 'refund',
+          amount: {...mockTransaction.amount, satAmount: 0},
+          invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+        }),
+      );
+
+      const state = store.getState();
+      expect(state.transactionHistory.transactions).toHaveLength(0);
+      warnSpy.mockRestore();
+    });
+
+    it('should normalize a positive-stored refund to a negative amount (issue #64)', () => {
+      store.dispatch(
+        addTransaction({
+          ...mockTransaction,
+          id: 'refund-positive',
+          transactionType: 'refund',
+          refundOf: mockTransaction.id,
+          amount: {...mockTransaction.amount, satAmount: 400},
+          invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+        }),
+      );
+
+      const state = store.getState();
+      expect(state.transactionHistory.transactions).toHaveLength(1);
+      expect(state.transactionHistory.transactions[0].amount.satAmount).toBe(
+        -400,
+      );
+    });
+
+    it('should record the zero-amount rewards-only shape dispatched for NFC card taps', () => {
+      // The Rewards screen records standalone NFC taps as rewards-only with
+      // satAmount 0 — the validation gate must not drop this real flow.
+      store.dispatch(
+        addTransaction({
+          ...mockTransaction,
+          id: 'nfc-tap-1',
+          transactionType: 'rewards-only',
+          paymentMethod: 'lightning',
+          amount: {...mockTransaction.amount, satAmount: 0},
+          invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+          reward: {
+            rewardAmount: 21,
+            rewardRate: 0.02,
+            wasMinimumApplied: false,
+            wasMaximumApplied: false,
+            isStandalone: true,
+            timestamp: '2024-01-01T12:00:00Z',
+          },
+        }),
+      );
+
+      const state = store.getState();
+      expect(state.transactionHistory.transactions).toHaveLength(1);
+      expect(state.transactionHistory.transactions[0].id).toBe('nfc-tap-1');
+    });
   });
 
   describe('updateTransactionStatus', () => {
     it('should update transaction status', () => {
-      const pendingTransaction = {...mockTransaction, status: 'pending' as const};
+      const pendingTransaction = {
+        ...mockTransaction,
+        status: 'pending' as const,
+      };
       store.dispatch(addTransaction(pendingTransaction));
-      store.dispatch(updateTransactionStatus({id: mockTransaction.id, status: 'completed'}));
+      store.dispatch(
+        updateTransactionStatus({id: mockTransaction.id, status: 'completed'}),
+      );
 
       const state = store.getState();
       expect(state.transactionHistory.transactions[0].status).toBe('completed');
     });
 
     it('should update lastTransaction when status becomes completed', () => {
-      const pendingTransaction = {...mockTransaction, status: 'pending' as const};
+      const pendingTransaction = {
+        ...mockTransaction,
+        status: 'pending' as const,
+      };
       store.dispatch(addTransaction(pendingTransaction));
-      store.dispatch(updateTransactionStatus({id: mockTransaction.id, status: 'completed'}));
+      store.dispatch(
+        updateTransactionStatus({id: mockTransaction.id, status: 'completed'}),
+      );
 
       const state = store.getState();
-      expect(state.transactionHistory.lastTransaction?.id).toBe(mockTransaction.id);
+      expect(state.transactionHistory.lastTransaction?.id).toBe(
+        mockTransaction.id,
+      );
     });
   });
 

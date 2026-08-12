@@ -222,6 +222,35 @@ export const calculateSalesTotal = (
 };
 
 /**
+ * User-facing primary amount string for a transaction row.
+ *
+ * Sales render as stored ('1000 points' / '$ 10.00'). Refunds always render
+ * signed — '-800 points' / '-$ 8.00' — even if the refund was stored with a
+ * positive amount (issue #64), so a refund is never visually mistakable for
+ * a sale.
+ *
+ * @param transaction - Transaction to format
+ * @returns Primary amount display string
+ */
+export const formatTransactionAmount = (
+  transaction: TransactionData,
+): string => {
+  const {satAmount, displayAmount, currency, isPrimaryAmountSats} =
+    transaction.amount;
+
+  if (transaction.transactionType === 'refund') {
+    if (isPrimaryAmountSats) {
+      return `${-Math.abs(satAmount)} points`;
+    }
+    return `-${currency.symbol} ${displayAmount.replace(/^-/, '')}`;
+  }
+
+  return isPrimaryAmountSats
+    ? `${satAmount} points`
+    : `${currency.symbol} ${displayAmount}`;
+};
+
+/**
  * Create reward data from calculation result
  * @param calculation - Result from calculateReward function
  * @param isStandalone - Whether this is a standalone reward
@@ -263,7 +292,17 @@ export const validateTransactionData = (
     !transactionData.amount?.satAmount ||
     transactionData.amount.satAmount < 0
   ) {
-    if (transactionData.transactionType !== 'standalone') {
+    // Zero-amount rewards-only transactions are how standalone NFC-card taps
+    // are recorded by the Rewards screen — the reward is the substance there.
+    const isZeroAmountReward =
+      transactionData.transactionType === 'rewards-only' &&
+      transactionData.amount?.satAmount === 0 &&
+      (transactionData.reward?.rewardAmount ?? 0) > 0;
+
+    if (
+      transactionData.transactionType !== 'standalone' &&
+      !isZeroAmountReward
+    ) {
       errors.push(
         'Amount must be greater than 0 for non-standalone transactions',
       );

@@ -18,10 +18,13 @@ import Check from '../assets/icons/check.svg';
 import Refresh from '../assets/icons/refresh.svg';
 
 // store
-import {clearTransactionHistory} from '../store/slices/transactionHistorySlice';
+import {
+  clearTransactionHistory,
+  selectTransactionStatistics,
+} from '../store/slices/transactionHistorySlice';
 
 // utils
-import {calculateSalesTotal} from '../utils/transactionHelpers';
+import {formatTransactionAmount} from '../utils/transactionHelpers';
 
 const {width: screenWidth} = Dimensions.get('window');
 
@@ -37,7 +40,8 @@ type FilterType =
   | 'with-rewards'
   | 'lightning'
   | 'external'
-  | 'standalone';
+  | 'standalone'
+  | 'refund';
 
 const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const navigations = useNavigation<NavigationProp>();
@@ -77,7 +81,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
   const filteredTransactions = React.useMemo(() => {
     switch (activeFilter) {
       case 'with-rewards':
-        return transactions.filter(transaction => transaction.reward);
+        // Matches selectTransactionsWithRewards / the statistics count
+        return transactions.filter(
+          transaction =>
+            transaction.reward && transaction.reward.rewardAmount > 0,
+        );
       case 'lightning':
         return transactions.filter(
           transaction => transaction.transactionType === 'lightning',
@@ -90,44 +98,31 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         return transactions.filter(
           transaction => transaction.transactionType === 'standalone',
         );
+      case 'refund':
+        return transactions.filter(
+          transaction => transaction.transactionType === 'refund',
+        );
       default:
         return transactions;
     }
   }, [transactions, activeFilter]);
 
-  // Enhanced statistics calculation
-  const statistics = React.useMemo(() => {
-    const lightningCount = transactions.filter(
-      t => t.transactionType === 'lightning',
-    ).length;
-    const externalCount = transactions.filter(
-      t => t.transactionType === 'rewards-only',
-    ).length;
-    const standaloneCount = transactions.filter(
-      t => t.transactionType === 'standalone',
-    ).length;
-    const refundCount = transactions.filter(
-      t => t.transactionType === 'refund',
-    ).length;
-    const withRewardsCount = transactions.filter(t => t.reward).length;
-    const totalRewardsGiven = transactions.reduce(
-      (sum, transaction) => sum + (transaction.reward?.rewardAmount || 0),
-      0,
-    );
-    // Net sales: sale amounts add, refund amounts deduct (issue #64)
-    const totalSales = calculateSalesTotal(transactions);
-
-    return {
-      total: transactions.length,
-      lightning: lightningCount,
-      external: externalCount,
-      standalone: standaloneCount,
-      refunds: refundCount,
-      withRewards: withRewardsCount,
-      totalRewards: totalRewardsGiven,
-      totalSales,
-    };
-  }, [transactions]);
+  // Statistics come from the single shared selector
+  // (selectTransactionStatistics) — only the field names are mapped here.
+  const stats = useAppSelector(selectTransactionStatistics);
+  const statistics = React.useMemo(
+    () => ({
+      total: stats.totalTransactions,
+      lightning: stats.lightningCount,
+      external: stats.externalCount,
+      standalone: stats.standaloneCount,
+      refunds: stats.refundCount,
+      withRewards: stats.withRewardsCount,
+      totalRewards: stats.totalRewardsDistributed,
+      totalSales: stats.totalSales,
+    }),
+    [stats],
+  );
 
   // Get transaction type badge info
   const getTransactionTypeBadge = (transaction: TransactionData) => {
@@ -169,11 +164,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
         {/* Compact header with amount and status/badges in one row */}
         <CompactHeader>
           <AmountAndMerchant>
-            <PrimaryAmount>
-              {item.amount.isPrimaryAmountSats
-                ? `${item.amount.satAmount} points`
-                : `${item.amount.currency.symbol} ${item.amount.displayAmount}`}
-            </PrimaryAmount>
+            <PrimaryAmount>{formatTransactionAmount(item)}</PrimaryAmount>
             <MerchantText>to {item.merchant.username}</MerchantText>
           </AmountAndMerchant>
 
@@ -263,6 +254,8 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           ? 'No external payment transactions found'
           : activeFilter === 'standalone'
           ? 'No standalone reward transactions found'
+          : activeFilter === 'refund'
+          ? 'No refund transactions found'
           : 'No transactions found'}
       </EmptyText>
       <EmptySubtext>
@@ -343,6 +336,16 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
                   onPress={() => setActiveFilter('standalone')}>
                   <FilterButtonText active={activeFilter === 'standalone'}>
                     🏷️ Rewards ({statistics.standalone})
+                  </FilterButtonText>
+                </FilterButton>
+              )}
+
+              {statistics.refunds > 0 && (
+                <FilterButton
+                  active={activeFilter === 'refund'}
+                  onPress={() => setActiveFilter('refund')}>
+                  <FilterButtonText active={activeFilter === 'refund'}>
+                    ↩️ Refunds ({statistics.refunds})
                   </FilterButtonText>
                 </FilterButton>
               )}

@@ -1,6 +1,9 @@
 import {createSlice, PayloadAction, createSelector} from '@reduxjs/toolkit';
 
-import {calculateSalesTotal} from '../../utils/transactionHelpers';
+import {
+  calculateSalesTotal,
+  validateTransactionData,
+} from '../../utils/transactionHelpers';
 
 const initialState: TransactionHistoryState = {
   transactions: [],
@@ -13,7 +16,31 @@ export const transactionHistorySlice = createSlice({
   initialState,
   reducers: {
     addTransaction: (state, action: PayloadAction<TransactionData>) => {
-      const newTransaction = action.payload;
+      let newTransaction = action.payload;
+
+      // Refunds must deduct from sales: normalize the sign at the store
+      // boundary so a positive-stored refund can never inflate the sales
+      // total (issue #64).
+      if (newTransaction.transactionType === 'refund') {
+        newTransaction = {
+          ...newTransaction,
+          amount: {
+            ...newTransaction.amount,
+            satAmount: -Math.abs(newTransaction.amount.satAmount),
+          },
+        };
+      }
+
+      // Reject payloads that fail validation (e.g. zero-amount refunds,
+      // missing merchant) instead of silently recording bad data.
+      const validation = validateTransactionData(newTransaction);
+      if (!validation.isValid) {
+        console.warn(
+          '[transactionHistory] Dropped invalid transaction:',
+          validation.errors.join('; '),
+        );
+        return;
+      }
 
       // Add to beginning of array (most recent first)
       state.transactions.unshift(newTransaction);

@@ -2,6 +2,7 @@ import {
   calculateSalesTotal,
   getSalesContribution,
   createRefundTransaction,
+  formatTransactionAmount,
   validateTransactionData,
 } from '../../src/utils/transactionHelpers';
 
@@ -166,6 +167,59 @@ describe('createRefundTransaction', () => {
   });
 });
 
+describe('formatTransactionAmount', () => {
+  it('renders a sats-primary sale as stored', () => {
+    expect(formatTransactionAmount(makeSale('s1', 1000))).toBe('1000 points');
+  });
+
+  it('renders a fiat-primary sale as stored', () => {
+    const sale = makeSale('s1', 1000, {
+      amount: {
+        satAmount: 1000,
+        displayAmount: '10.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(formatTransactionAmount(sale)).toBe('$ 10.00');
+  });
+
+  it('renders a sats-primary refund negative', () => {
+    expect(formatTransactionAmount(makeRefund('r1', -400))).toBe('-400 points');
+  });
+
+  it('renders a sats-primary refund negative even when stored positive (issue #64)', () => {
+    expect(formatTransactionAmount(makeRefund('r1', 400))).toBe('-400 points');
+  });
+
+  it('renders a fiat-primary refund with a minus sign', () => {
+    const refund = makeRefund('r1', -800, {
+      amount: {
+        satAmount: -800,
+        displayAmount: '8.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(formatTransactionAmount(refund)).toBe('-$ 8.00');
+  });
+
+  it('does not double the sign when a refund displayAmount is already negative', () => {
+    const refund = makeRefund('r1', -800, {
+      amount: {
+        satAmount: -800,
+        displayAmount: '-8.00',
+        currency: usd,
+        isPrimaryAmountSats: false,
+      },
+    });
+
+    expect(formatTransactionAmount(refund)).toBe('-$ 8.00');
+  });
+});
+
 describe('validateTransactionData (refunds)', () => {
   it('accepts a refund with a negative amount', () => {
     const result = validateTransactionData(makeRefund('r1', -500));
@@ -201,5 +255,36 @@ describe('validateTransactionData (refunds)', () => {
     const result = validateTransactionData(makeSale('s1', 100));
 
     expect(result.isValid).toBe(true);
+  });
+
+  it('accepts the zero-amount rewards-only shape the Rewards screen records for NFC taps', () => {
+    const nfcTap = makeSale('nfc-1', 0, {
+      transactionType: 'rewards-only',
+      paymentMethod: 'lightning',
+      reward: {
+        rewardAmount: 21,
+        rewardRate: 0.02,
+        wasMinimumApplied: false,
+        wasMaximumApplied: false,
+        isStandalone: true,
+        timestamp: '2024-01-01T12:00:00Z',
+      },
+    });
+
+    expect(validateTransactionData(nfcTap)).toEqual({
+      isValid: true,
+      errors: [],
+    });
+  });
+
+  it('still rejects a zero-amount rewards-only transaction without a reward', () => {
+    const result = validateTransactionData(
+      makeSale('s1', 0, {
+        transactionType: 'rewards-only',
+        paymentMethod: 'card',
+      }),
+    );
+
+    expect(result.isValid).toBe(false);
   });
 });

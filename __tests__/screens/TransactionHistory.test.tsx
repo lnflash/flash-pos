@@ -32,14 +32,15 @@ const createTestStore = (initialState = {}) => {
   });
 };
 
-const renderWithProviders = (component: React.ReactElement, initialState = {}) => {
+const renderWithProviders = (
+  component: React.ReactElement,
+  initialState = {},
+) => {
   const store = createTestStore(initialState);
   return render(
     <Provider store={store}>
-      <NavigationContainer>
-        {component}
-      </NavigationContainer>
-    </Provider>
+      <NavigationContainer>{component}</NavigationContainer>
+    </Provider>,
   );
 };
 
@@ -131,6 +132,107 @@ describe('TransactionHistory Screen', () => {
     // 1000 sale - 400 refund = 600, NOT 1400
     expect(getByText(/600 points in sales/)).toBeTruthy();
     expect(getAllByText(/Refund/).length).toBeGreaterThan(0);
+  });
+
+  it('should render a fiat-primary refund with a minus sign, not like a sale', () => {
+    const mockRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-1',
+      transactionType: 'refund',
+      refundOf: mockTransaction.id,
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: -400,
+        displayAmount: '4.00',
+        isPrimaryAmountSats: false,
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [mockRefund, mockTransaction],
+        lastTransaction: mockRefund,
+        maxTransactions: 50,
+      },
+    };
+
+    const {getByText, queryByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    expect(getByText('-$ 4.00')).toBeTruthy();
+    expect(queryByText('$ 4.00')).toBeNull();
+    // The sale keeps its unsigned rendering
+    expect(getByText('$ 10.00')).toBeTruthy();
+  });
+
+  it('should offer a Refunds filter chip that shows only refund rows', () => {
+    const mockRefund: TransactionData = {
+      ...mockTransaction,
+      id: 'refund-tx-1',
+      transactionType: 'refund',
+      refundOf: mockTransaction.id,
+      amount: {
+        ...mockTransaction.amount,
+        satAmount: -400,
+        displayAmount: '4.00',
+      },
+      invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+      memo: 'Refund',
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [mockRefund, mockTransaction],
+        lastTransaction: mockRefund,
+        maxTransactions: 50,
+      },
+    };
+
+    const {getByText, queryByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    const refundChip = getByText(/Refunds \(1\)/);
+    expect(refundChip).toBeTruthy();
+
+    fireEvent.press(refundChip);
+
+    // Refund row stays, sale row is filtered out
+    expect(getByText('-$ 4.00')).toBeTruthy();
+    expect(queryByText('$ 10.00')).toBeNull();
+  });
+
+  it('should not count a zero-amount reward in the With Rewards chip', () => {
+    const zeroRewardTransaction: TransactionData = {
+      ...mockTransaction,
+      reward: {
+        rewardAmount: 0,
+        rewardRate: 0.02,
+        wasMinimumApplied: false,
+        wasMaximumApplied: false,
+        isStandalone: false,
+        timestamp: '2024-01-01T12:00:00Z',
+      },
+    };
+    const initialState = {
+      transactionHistory: {
+        transactions: [zeroRewardTransaction],
+        lastTransaction: zeroRewardTransaction,
+        maxTransactions: 50,
+      },
+    };
+
+    const {queryByText} = renderWithProviders(
+      <TransactionHistoryScreen />,
+      initialState,
+    );
+
+    // Statistics come from selectTransactionStatistics, which only counts
+    // rewards with rewardAmount > 0 — the chip must agree with it.
+    expect(queryByText(/With Rewards/)).toBeNull();
   });
 
   it('should display transaction with sats as primary amount', () => {
