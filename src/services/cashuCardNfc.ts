@@ -12,9 +12,23 @@
  *    entitlement listing our AID (`D2760000850102`) in Info.plist, or
  *    `requestTechnology` rejects. See `docs/06-nfc-integration.md`.
  *
- * Reader mode and Host Card Emulation are mutually exclusive on Android — a
- * session started here suppresses HCE until `cancelTechnologyRequest` runs,
- * which is why every path below is wrapped in try/finally.
+ * Why every path below is wrapped in try/finally — and why an abandoned session
+ * is a payment bug, not just a leak:
+ *
+ * `requestTechnology` sets a pending `techRequest` inside the native module and
+ * never times out on Android; it stays pending until a tag arrives. While it is
+ * pending, `parseNfcIntent` claims every discovered tag for the IsoDep session
+ * and returns without emitting `NfcManagerDiscoverTag`. That event is what
+ * `FlashcardProvider` (contexts/Flashcard.tsx) listens on, so a session left
+ * open here silently swallows BoltCard taps app-wide, on the live payment path.
+ *
+ * Note we are *not* in Android reader mode: `FlashcardProvider` already calls
+ * `registerTagEvent()` at app start, so `NfcManagerAndroid.requestTechnology`
+ * skips its own registration and `enableReaderMode` is never called. The
+ * suppression above comes from the pending `techRequest`, not from reader mode.
+ *
+ * Anything that can start a session must therefore also be able to end one —
+ * see `cancelCardSession`, which screens call on unmount.
  */
 import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 
@@ -39,6 +53,26 @@ export interface CardSessionOptions {
 }
 
 /**
+ * Ends any in-flight IsoDep session, from outside the `withCardSession` frame.
+ *
+ * `withCardSession`'s `finally` only runs once a tag arrives or the read fails.
+ * If the user starts a read and walks away — navigating back, backgrounding the
+ * screen — nothing resolves and the pending `techRequest` keeps swallowing
+ * BoltCard taps. Call this from an unmount cleanup and from any Cancel control.
+ *
+ * Safe to call when no session is open: cancelling nothing rejects with
+ * `ERR_NO_TECH_REQ`, which is not an error worth surfacing.
+ */
+export async function cancelCardSession(): Promise<void> {
+  try {
+    await NfcManager.cancelTechnologyRequest();
+  } catch {
+    // No session to cancel, or the bridge is gone. Either way there is nothing
+    // left to clean up and nobody to tell.
+  }
+}
+
+/**
  * Runs `fn` inside an IsoDep reader session, always tearing the session down.
  *
  * The technology request resolves when a card enters the field, so the promise
@@ -52,13 +86,10 @@ export async function withCardSession<T>(
   try {
     return await fn(nfcTransceiver);
   } finally {
-    // Never let a failed read strand the reader session — that blocks HCE and
-    // every subsequent tap until the app restarts.
-    try {
-      await NfcManager.cancelTechnologyRequest();
-    } catch {
-      // Teardown failure must not mask the original error.
-    }
+    // Never let a failed read strand the session — a pending techRequest
+    // swallows every subsequent tap app-wide, including BoltCard payments.
+    // cancelCardSession never throws, so it cannot mask the original error.
+    await cancelCardSession();
   }
 }
 

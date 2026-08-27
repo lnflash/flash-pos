@@ -41,19 +41,44 @@ Related repos:
 The split is deliberate: every byte of protocol logic is exercised in CI with a
 fake transceiver, and only the thin transport needs hardware.
 
-## Reader mode vs HCE — read this before extending
+## A stranded session breaks BoltCard payments — read this before extending
 
-Android cannot be an NFC reader and a Host Card Emulation target at the same
-time. `enableReaderMode` suppresses HCE for the life of the session. Our card is
-a passive secure element, so the terminal **must** be the reader.
+An open IsoDep session does not just leak: it silently swallows taps on the live
+payment path. The mechanism:
 
-Consequence: if Flash POS ever also wants to accept taps from Cashu *phone*
-wallets (which use HCE/NDEF, as [Numo](https://github.com/cashubtc/Numo) does),
-the app has to switch modes explicitly. It cannot serve both at once.
+1. `NfcManager.requestTechnology(NfcTech.IsoDep)` sets a pending `techRequest`
+   in the native module. On Android it **never times out** — it stays pending
+   until a tag enters the field.
+2. While it is pending, the native `parseNfcIntent` claims every discovered tag
+   for that session and returns early *without* emitting
+   `NfcManagerDiscoverTag`.
+3. `FlashcardProvider` (`src/contexts/Flashcard.tsx`, mounted around the whole
+   tree in `App.tsx`) listens on exactly that event. No event, no `handleTag` —
+   the merchant's BoltCard tap does nothing, anywhere in the app.
 
-Every session here is wrapped in `try/finally` around
-`cancelTechnologyRequest()`. A stranded reader session blocks HCE and every
-subsequent tap until the app restarts.
+So: start a read on the bring-up screen, don't tap, navigate away, and card
+payments stop working until the app restarts.
+
+Two defences, both required:
+
+- `withCardSession` wraps the read in `try/finally` around
+  `cancelCardSession()`. This covers the read completing or failing.
+- `cancelCardSession()` is also exported for callers to invoke directly, because
+  that `finally` **cannot run** while the request is still pending. Any screen
+  that can start a session must cancel it on unmount (`CashuCardDebug` does) and
+  should offer a visible Cancel control while a read is in flight.
+
+Note we are **not** in Android reader mode. `FlashcardProvider` already calls
+`registerTagEvent()` with no options at app start, so `isReaderModeEnabled` is
+false and `NfcManagerAndroid.requestTechnology` skips its own registration —
+`enableReaderMode` is never called. The tap suppression above comes from the
+pending `techRequest`, not from reader mode.
+
+That distinction matters if Flash POS ever also wants to accept taps from Cashu
+*phone* wallets (HCE/NDEF, as [Numo](https://github.com/cashubtc/Numo) does):
+true reader mode and Host Card Emulation genuinely are mutually exclusive on
+Android, so adopting reader mode later would add a second, separate constraint
+on top of this one.
 
 ## Running it on hardware
 
@@ -71,14 +96,14 @@ subsequent tap until the app restarts.
    cd tools/cardctl && python3 cardctl.py selftest
    ```
 
-3. Run a **dev** build of Flash POS and navigate to `CashuCardDebug`:
+3. Run a **dev** build of Flash POS and open **Profile → Settings → Cashu card
+   (dev)**. Both the row and the route are gated on `__DEV__`, so the screen is
+   absent from release builds and unreachable in production.
 
-   ```js
-   navigation.navigate('CashuCardDebug');
-   ```
-
-   The screen is registered only under `__DEV__`, so it is absent from release
-   builds and unreachable in production.
+   `RootStackType` declares `CashuCardDebug` unconditionally, so
+   `navigation.navigate('CashuCardDebug')` typechecks in a release build but
+   fails at runtime with an unhandled `NAVIGATE` action. Gate any other call
+   site on `__DEV__`, the way `src/screens/Profile.tsx` does.
 
 4. Tap. A pubkey on screen means the applet is installed, the AID selected over
    NFC, and the card's crypto answered.

@@ -43,6 +43,21 @@ export class CardError extends Error {
   }
 }
 
+/**
+ * The card accepted the command (0x9000) but the framing was wrong — a short
+ * response, a wrong-length body.
+ *
+ * Deliberately *not* a `CardError`: there is no status word to report, and
+ * pretending `sw === 0` would let retry logic misread a framing bug as a card
+ * refusal. `describeCardFailure` renders these through its plain-`Error` branch.
+ */
+export class CardProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CardProtocolError';
+  }
+}
+
 const hex16 = (n: number) => n.toString(16).toUpperCase().padStart(4, '0');
 
 /**
@@ -84,6 +99,15 @@ export function buildApdu(
 ): number[] {
   const apdu = [cla, ins, p1, p2];
   if (data && data.length > 0) {
+    // Short-form Lc is a single byte. Without this guard a 300-byte payload
+    // pushes `300`, which the native bridge truncates to 0x2c — a silently
+    // corrupt length on the wire. The commands that will carry payloads
+    // (LOAD_PROOF, VERIFY_PIN, SPEND_PROOF) are the ones that move money.
+    if (data.length > 255) {
+      throw new CardProtocolError(
+        `APDU data too long for short Lc: ${data.length} bytes (max 255)`,
+      );
+    }
     apdu.push(data.length, ...data);
   }
   if (le !== undefined) {
@@ -98,8 +122,7 @@ export function buildApdu(
  */
 export function parseResponse(response: number[], context: string): number[] {
   if (response.length < 2) {
-    throw new CardError(
-      0,
+    throw new CardProtocolError(
       `${context}: truncated response (${response.length} bytes)`,
     );
   }
@@ -136,22 +159,35 @@ export interface CardInfo {
  * do not support partial selection.
  *
  * Resolves to the 2-byte applet version the applet returns on SELECT.
+ *
+ * The trailing 0x00 is Le, making this a Case-4 GlobalPlatform SELECT. It is
+ * load-bearing on iOS: `NFCISO7816APDU initWithData:` parses a Case-3 command
+ * (no Le) as expectedResponseLength -1, CoreNFC then sends no Le, and the card
+ * answers with a status word only — so the applet version would come back empty
+ * and `readCard` would silently fall back to the GET_INFO version.
  */
 export async function selectApplet(transceive: Transceiver): Promise<number[]> {
   let lastError: unknown;
   for (const aid of [PACKAGE_AID, APPLET_AID]) {
     try {
       return parseResponse(
-        await transceive([0x00, 0xa4, 0x04, 0x00, aid.length, ...aid]),
+        await transceive([0x00, 0xa4, 0x04, 0x00, aid.length, ...aid, 0x00]),
         'SELECT',
       );
     } catch (error) {
+      // Only "applet not found" earns a second attempt. A transport failure —
+      // the card left the field mid-SELECT — must surface as itself; retrying
+      // on a dead handle would report a card that moved as a card running the
+      // wrong software.
+      if (!(error instanceof CardError) || error.sw !== 0x6a82) {
+        throw error;
+      }
       lastError = error;
     }
   }
   throw lastError instanceof Error
     ? lastError
-    : new CardError(0, 'SELECT: no applet found');
+    : new CardError(0x6a82, 'SELECT');
 }
 
 export async function getInfo(transceive: Transceiver): Promise<CardInfo> {
@@ -160,8 +196,7 @@ export async function getInfo(transceive: Transceiver): Promise<CardInfo> {
     context: 'GET_INFO',
   });
   if (body.length < 8) {
-    throw new CardError(
-      0,
+    throw new CardProtocolError(
       `GET_INFO: expected 8 bytes, got ${body.length}`,
     );
   }
@@ -190,8 +225,7 @@ export async function getPubkey(transceive: Transceiver): Promise<number[]> {
     context: 'GET_PUBKEY',
   });
   if (body.length !== 33) {
-    throw new CardError(
-      0,
+    throw new CardProtocolError(
       `GET_PUBKEY: expected 33 bytes, got ${body.length}`,
     );
   }
@@ -205,8 +239,7 @@ export async function getBalance(transceive: Transceiver): Promise<number> {
     context: 'GET_BALANCE',
   });
   if (body.length !== 4) {
-    throw new CardError(
-      0,
+    throw new CardProtocolError(
       `GET_BALANCE: expected 4 bytes, got ${body.length}`,
     );
   }

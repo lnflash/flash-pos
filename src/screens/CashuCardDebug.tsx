@@ -1,12 +1,16 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, ScrollView} from 'react-native';
 import styled from 'styled-components/native';
 
 // components
-import {TextButton} from '../components';
+// Imported from the leaf, not the `../components` barrel: the barrel pulls in
+// the printer and currency-picker modules, which a dev NFC harness has no need
+// of and which drag native modules into this screen's tests.
+import TextButton from '../components/buttons/TextButton';
 
 // services
 import {
+  cancelCardSession,
   describeCardFailure,
   isCardReadingSupported,
   readCardOverNfc,
@@ -15,6 +19,7 @@ import type {CardSummary} from '../services/cashuCard';
 
 const contentStyle = {padding: 20};
 const readButtonStyle = {marginTop: 24, marginBottom: 16};
+const cancelButtonStyle = {marginTop: 12, marginBottom: 8};
 const pubkeyLabelStyle = {marginTop: 12};
 
 /**
@@ -34,21 +39,53 @@ const CashuCardDebug = () => {
   const [summary, setSummary] = useState<CardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // `reading` drives the UI; the ref is what `onRead` reads, so the guard is
+  // correct even for two presses inside a single render tick.
+  const readingRef = useRef(false);
+
   useEffect(() => {
     isCardReadingSupported().then(setSupported);
   }, []);
 
+  // An IsoDep request never times out on Android — it stays pending until a
+  // card arrives. Leaving this screen mid-read would strand it, and a pending
+  // session swallows every BoltCard tap app-wide, on the live payment path.
+  useEffect(
+    () => () => {
+      cancelCardSession();
+    },
+    [],
+  );
+
   const onRead = useCallback(async () => {
+    // A second requestTechnology rejects with ERR_MULTI_REQ, and its teardown
+    // then cancels the first, still-pending session. Both reads would fail.
+    if (readingRef.current) {
+      return;
+    }
+    readingRef.current = true;
     setReading(true);
     setError(null);
     setSummary(null);
     try {
-      setSummary(await readCardOverNfc({alertMessage: 'Hold the Cashu card to the phone'}));
+      setSummary(
+        await readCardOverNfc({
+          alertMessage: 'Hold the Cashu card to the phone',
+        }),
+      );
     } catch (err) {
       setError(describeCardFailure(err));
     } finally {
+      readingRef.current = false;
       setReading(false);
     }
+  }, []);
+
+  // Ends the session without leaving the screen. `withCardSession`'s own
+  // teardown cannot run until a tag arrives, so this is the only way out of a
+  // read that was started by mistake.
+  const onCancel = useCallback(() => {
+    cancelCardSession();
   }, []);
 
   return (
@@ -70,9 +107,20 @@ const CashuCardDebug = () => {
         icon="wifi"
         title={reading ? 'Waiting for tap…' : 'Read card'}
         btnStyle={readButtonStyle}
+        disabled={reading}
         onPress={onRead}
       />
-      {reading && <ActivityIndicator />}
+      {reading && (
+        <>
+          <ActivityIndicator />
+          <TextButton
+            icon="xmark"
+            title="Cancel read"
+            btnStyle={cancelButtonStyle}
+            onPress={onCancel}
+          />
+        </>
+      )}
 
       {error && (
         <ErrorBox>

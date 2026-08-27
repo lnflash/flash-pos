@@ -7,9 +7,17 @@ type Props = {
 
   eventModeEnabled?: boolean;
   onViewEventSettings?: () => void;
+
+  /** Dev builds only — see the `__DEV__` row below. */
+  onViewCashuCardDebug?: () => void;
 };
 
-const Settings: React.FC<Props> = ({onViewRewardSettings, eventModeEnabled, onViewEventSettings}) => {
+const Settings: React.FC<Props> = ({
+  onViewRewardSettings,
+  eventModeEnabled,
+  onViewEventSettings,
+  onViewCashuCardDebug,
+}) => {
 
   return (
     <Wrapper>
@@ -34,6 +42,19 @@ const Settings: React.FC<Props> = ({onViewRewardSettings, eventModeEnabled, onVi
         </Container>
       )}
 
+      {/* Cashu card bring-up harness. The screen is only registered under
+          __DEV__ (src/routes/index.tsx), so this row must be too — otherwise a
+          release build offers a row that dead-ends in an unhandled NAVIGATE. */}
+      {__DEV__ && onViewCashuCardDebug && (
+        <Container activeOpacity={0.5} onPress={onViewCashuCardDebug}>
+          <Icon name={'card-outline'} type="ionicon" />
+          <Column>
+            <Key>Cashu card (dev)</Key>
+            <Value>Read-only NFC bring-up harness</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+      )}
     </Wrapper>
   );
 };

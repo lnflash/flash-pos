@@ -2,6 +2,7 @@
 import {
   APPLET_AID,
   CardError,
+  CardProtocolError,
   PACKAGE_AID,
   buildApdu,
   describeStatusWord,
@@ -30,6 +31,7 @@ const PUBKEY_BODY = [0x02, ...Array.from({length: 32}, (_, i) => i + 1)];
 function fakeCard(
   overrides: {
     selectFails?: number[];
+    selectThrows?: unknown;
     infoBody?: number[];
     pubkeyBody?: number[];
     balanceBody?: number[];
@@ -41,11 +43,19 @@ function fakeCard(
     const [cla, ins] = apdu;
 
     if (cla === 0x00 && ins === 0xa4) {
+      // A transport failure — the card left the field mid-SELECT.
+      if (overrides.selectThrows !== undefined) {
+        throw overrides.selectThrows;
+      }
       const aidLength = apdu[4];
       if (overrides.selectFails?.includes(aidLength)) {
         return sw(0x6a82);
       }
-      return ok([1, 0]);
+      // Real cards obey Le. A Case-3 SELECT (header + Lc + AID, no Le) asks
+      // for no response body, so the card answers with a status word only —
+      // which is exactly what iOS produces when the Le byte is omitted.
+      const hasLe = apdu.length > 5 + aidLength;
+      return hasLe ? ok([1, 0]) : ok([]);
     }
     if (cla === 0xb0 && ins === 0x01) {
       return ok(overrides.infoBody ?? INFO_BODY);
@@ -79,6 +89,21 @@ describe('buildApdu', () => {
   it('omits the length byte for empty data rather than sending Lc=0', () => {
     expect(buildApdu(0x01, {data: []})).toEqual([0xb0, 0x01, 0x00, 0x00]);
   });
+
+  it('accepts the largest payload short-form Lc can express', () => {
+    const data = Array.from({length: 255}, () => 0xaa);
+    expect(buildApdu(0x20, {data})[4]).toBe(255);
+  });
+
+  // Regression: an unchecked push writes `300` as an "Lc byte"; the native
+  // bridge truncates it to 0x2c and the card reads a silently corrupt length.
+  // The commands that will carry payloads are the ones that move money.
+  it('refuses a payload too long for short-form Lc instead of truncating it', () => {
+    const data = Array.from({length: 300}, () => 0xaa);
+
+    expect(() => buildApdu(0x20, {data})).toThrow(CardProtocolError);
+    expect(() => buildApdu(0x20, {data})).toThrow(/300 bytes/);
+  });
 });
 
 describe('parseResponse', () => {
@@ -102,6 +127,22 @@ describe('parseResponse', () => {
 
   it('rejects a response too short to contain a status word', () => {
     expect(() => parseResponse([0x90], 'TEST')).toThrow(/truncated/);
+  });
+
+  // A framing failure is not a card refusal. Reporting it as CardError with
+  // sw = 0 would both read as "unexpected status word (0x0000)" to a merchant
+  // and let retry logic branching on `sw` misclassify it.
+  it('reports a framing failure as CardProtocolError, not a status word', () => {
+    expect(() => parseResponse([0x90], 'TEST')).toThrow(CardProtocolError);
+    expect(() => parseResponse([0x90], 'TEST')).not.toThrow(CardError);
+    try {
+      parseResponse([0x90], 'TEST');
+    } catch (error) {
+      expect((error as Error).message).toBe(
+        'TEST: truncated response (1 bytes)',
+      );
+      expect((error as Error).message).not.toMatch(/status word/);
+    }
   });
 });
 
@@ -127,7 +168,7 @@ describe('selectApplet', () => {
     await selectApplet(card.transceive);
     expect(card.sent).toHaveLength(1);
     expect(card.sent[0]).toEqual([
-      0x00, 0xa4, 0x04, 0x00, PACKAGE_AID.length, ...PACKAGE_AID,
+      0x00, 0xa4, 0x04, 0x00, PACKAGE_AID.length, ...PACKAGE_AID, 0x00,
     ]);
   });
 
@@ -136,7 +177,7 @@ describe('selectApplet', () => {
     await selectApplet(card.transceive);
     expect(card.sent).toHaveLength(2);
     expect(card.sent[1]).toEqual([
-      0x00, 0xa4, 0x04, 0x00, APPLET_AID.length, ...APPLET_AID,
+      0x00, 0xa4, 0x04, 0x00, APPLET_AID.length, ...APPLET_AID, 0x00,
     ]);
   });
 
@@ -152,6 +193,36 @@ describe('selectApplet', () => {
   it('returns the applet version reported by SELECT', async () => {
     const card = fakeCard();
     expect(await selectApplet(card.transceive)).toEqual([1, 0]);
+  });
+
+  // Regression: without the trailing Le byte this is an ISO 7816 Case-3
+  // command. iOS parses it as expectedResponseLength -1, CoreNFC sends no Le,
+  // and the card returns a status word only — so the version silently
+  // disappears. The fake card only yields a body when Le is present, so
+  // dropping the byte fails this test.
+  it('sends a Case-4 SELECT with Le so the card returns the version body', async () => {
+    const card = fakeCard();
+    const version = await selectApplet(card.transceive);
+
+    expect(card.sent[0][card.sent[0].length - 1]).toBe(0x00);
+    expect(card.sent[0]).toHaveLength(5 + PACKAGE_AID.length + 1);
+    expect(version).toEqual([1, 0]);
+  });
+
+  // A card that moved out of the field is not a card with the wrong software.
+  it('rethrows a transport failure instead of retrying on a dead handle', async () => {
+    const card = fakeCard({selectThrows: new Error('tag was lost')});
+
+    await expect(selectApplet(card.transceive)).rejects.toThrow('tag was lost');
+    // Exactly one attempt: no fallback SELECT on a handle that is already gone.
+    expect(card.sent).toHaveLength(1);
+  });
+
+  it('rethrows a non-6A82 status word without trying the fallback AID', async () => {
+    const card = fakeCard({selectThrows: new CardError(0x6e00, 'SELECT')});
+
+    await expect(selectApplet(card.transceive)).rejects.toThrow(/wrong CLA/);
+    expect(card.sent).toHaveLength(1);
   });
 });
 
@@ -218,6 +289,23 @@ describe('getPubkey', () => {
     const card = fakeCard({pubkeyBody: [0x02, 0x03]});
     await expect(getPubkey(card.transceive)).rejects.toThrow(
       /expected 33 bytes/,
+    );
+  });
+
+  // The card answered 0x9000. Dressing a length mismatch up as a status-word
+  // failure produces "…got 2 failed: unexpected status word (0x0000)" in front
+  // of a merchant, and lies to anything branching on `sw`.
+  it('reports a wrong-length body as CardProtocolError with a clean message', async () => {
+    const card = fakeCard({pubkeyBody: [0x02, 0x03]});
+
+    await expect(getPubkey(card.transceive)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+    await expect(getPubkey(card.transceive)).rejects.not.toBeInstanceOf(
+      CardError,
+    );
+    await expect(getPubkey(card.transceive)).rejects.toThrow(
+      'GET_PUBKEY: expected 33 bytes, got 2',
     );
   });
 });

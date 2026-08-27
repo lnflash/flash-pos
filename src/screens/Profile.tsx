@@ -160,6 +160,15 @@ const Profile = () => {
     navigation.navigate('EventSettings');
   };
 
+  // CashuCardDebug is registered only under __DEV__, so the navigate call has
+  // to be gated too — in a release build the route does not exist.
+  const onViewCashuCardDebug = () => {
+    if (!__DEV__) {
+      return;
+    }
+    navigation.navigate('CashuCardDebug');
+  };
+
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
       <Account />
@@ -167,6 +176,7 @@ const Profile = () => {
         onViewRewardSettings={onViewRewardSettings}
         eventModeEnabled={eventModeEnabled}
         onViewEventSettings={onViewEventSettings}
+        onViewCashuCardDebug={onViewCashuCardDebug}
       />
 
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />

@@ -1,13 +1,14 @@
 import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 
 import {
+  cancelCardSession,
   describeCardFailure,
   isCardReadingSupported,
   nfcTransceiver,
   readCardOverNfc,
   withCardSession,
 } from '../../src/services/cashuCardNfc';
-import {CardError} from '../../src/services/cashuCard';
+import {CardError, CardProtocolError} from '../../src/services/cashuCard';
 
 jest.mock('react-native-nfc-manager', () => ({
   __esModule: true,
@@ -83,7 +84,7 @@ describe('withCardSession', () => {
     ).rejects.toThrow(/PIN required/);
   });
 
-  it('propagates a teardown failure never occurring on the happy path', async () => {
+  it('swallows a teardown failure on the happy path', async () => {
     mockNfc.cancelTechnologyRequest.mockRejectedValue(new Error('teardown boom'));
     await expect(withCardSession(async () => 'ok')).resolves.toBe('ok');
   });
@@ -99,6 +100,23 @@ describe('withCardSession', () => {
     expect(mockNfc.requestTechnology).toHaveBeenCalledWith(NfcTech.IsoDep, {
       alertMessage: 'Tap to pay',
     });
+  });
+});
+
+describe('cancelCardSession', () => {
+  // The escape hatch for a session withCardSession's own `finally` cannot
+  // reach: requestTechnology stays pending until a tag arrives, and while it
+  // is pending the native module swallows every BoltCard tap app-wide.
+  it('cancels an in-flight technology request', async () => {
+    await cancelCardSession();
+    expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws when there is no session to cancel', async () => {
+    mockNfc.cancelTechnologyRequest.mockRejectedValue(
+      new Error('ERR_NO_TECH_REQ'),
+    );
+    await expect(cancelCardSession()).resolves.toBeUndefined();
   });
 });
 
@@ -150,6 +168,17 @@ describe('describeCardFailure', () => {
     expect(describeCardFailure(new CardError(0x6983, 'SPEND_PROOF'))).toContain(
       'card locked',
     );
+  });
+
+  // A framing failure has no status word to report. It must render as its own
+  // plain sentence, not "… failed: unexpected status word (0x0000)".
+  it('renders a protocol error without inventing a status word', () => {
+    const message = describeCardFailure(
+      new CardProtocolError('GET_PUBKEY: expected 33 bytes, got 12'),
+    );
+
+    expect(message).toBe('GET_PUBKEY: expected 33 bytes, got 12');
+    expect(message).not.toMatch(/status word/);
   });
 
   it('handles plain errors and non-errors', () => {
