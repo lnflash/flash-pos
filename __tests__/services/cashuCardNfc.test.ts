@@ -3,6 +3,7 @@ import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 import {
   cancelCardSession,
   describeCardFailure,
+  isUserCancel,
   isCardReadingSupported,
   nfcTransceiver,
   readCardOverNfc,
@@ -274,5 +275,23 @@ describe('describeCardFailure', () => {
         describeCardFailure(new NfcError.NfcErrorBase('ERR_MULTI_REQ')),
       ).toBe('ERR_MULTI_REQ');
     });
+  });
+});
+
+describe('isUserCancel', () => {
+  it('is true for a UserCancel — the iOS system sheet\'s Cancel lands here', () => {
+    expect(isUserCancel(new NfcError.UserCancel())).toBe(true);
+  });
+
+  it('is false for every other NFC failure', () => {
+    expect(isUserCancel(new NfcError.RadioDisabled())).toBe(false);
+    expect(isUserCancel(new NfcError.TagConnectionLost())).toBe(false);
+    expect(isUserCancel(new NfcError.Timeout())).toBe(false);
+  });
+
+  it('is false for plain errors and non-errors', () => {
+    expect(isUserCancel(new Error('boom'))).toBe(false);
+    expect(isUserCancel('cancel')).toBe(false);
+    expect(isUserCancel(null)).toBe(false);
   });
 });

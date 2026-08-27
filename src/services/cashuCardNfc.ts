@@ -164,6 +164,25 @@ function nfcErrorMessages(): ReadonlyArray<readonly [NfcErrorClass, string]> {
   return messageTable;
 }
 
+/**
+ * True when the operator cancelled the read themselves.
+ *
+ * On Android this is our own `cancelTechnologyRequest`. On iOS it is also the
+ * Cancel button on the system scanning sheet, which is *the only* cancel
+ * available there — `requestTechnology` presents a modal `NFCTagReaderSession`
+ * over the app, so any in-app Cancel control is behind it and unreachable.
+ * That path rejects with `UserCancel` and never touches our UI state, so a
+ * screen that suppresses the error using only its own "did I press cancel?"
+ * flag still paints a red failure box on iOS.
+ *
+ * Callers should treat this as "not an error" rather than tracking cancellation
+ * themselves.
+ */
+export function isUserCancel(error: unknown): boolean {
+  const cls = (NfcError as Partial<typeof NfcError> | undefined)?.UserCancel;
+  return typeof cls === 'function' && error instanceof cls;
+}
+
 /** Turns any thrown value into something worth showing a merchant. */
 export function describeCardFailure(error: unknown): string {
   if (error instanceof CardError) {

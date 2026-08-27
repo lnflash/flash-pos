@@ -12,6 +12,7 @@ import TextButton from '../components/buttons/TextButton';
 import {
   cancelCardSession,
   describeCardFailure,
+  isUserCancel,
   isCardReadingSupported,
   readCardOverNfc,
 } from '../services/cashuCardNfc';
@@ -84,7 +85,12 @@ const CashuCardDebug = () => {
     } catch (err) {
       // The rejection a cancel produces is the merchant's own doing — reporting
       // it as a card failure is a false alarm.
-      if (!cancelledRef.current) {
+      //
+      // Both conditions are needed. `cancelledRef` catches our own in-app
+      // Cancel; `isUserCancel` catches the iOS system scanning sheet, which is
+      // modal over the app and so is the *only* cancel reachable there. The ref
+      // is never set on that path.
+      if (!cancelledRef.current && !isUserCancel(err)) {
         setError(describeCardFailure(err));
       }
     } finally {

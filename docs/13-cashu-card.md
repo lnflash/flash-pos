@@ -120,8 +120,20 @@ arguments, so `error.message` is always empty and the class *is* the diagnosis.
 "Card left the field", plus `Timeout`, `SessionInvalidated`, `SystemBusy` and
 others), so "the radio is off" and "the card moved" are distinguishable on the
 first hardware session. An unmapped class falls back to its own name rather than
-a generic sentence. Pressing **Cancel read** shows no error at all — the screen
-tracks the deliberate cancel and suppresses the box.
+a generic sentence.
+
+A cancel shows no error at all, on either platform, but for two different
+reasons — and both are needed:
+
+- **Android** — the in-app **Cancel read** button sets a flag the screen checks
+  before painting the box.
+- **iOS** — that button is unreachable. `requestTechnology` presents a modal
+  system scanning sheet over the app, so the only cancel available is the
+  sheet's own, which rejects with `UserCancel` without touching the screen's
+  flag. `isUserCancel(err)` catches that path.
+
+Suppressing on the flag alone leaves a false "Read cancelled" failure on iOS —
+the exact platform where the operator has no other way to cancel.
 
 ## Platform requirements
 

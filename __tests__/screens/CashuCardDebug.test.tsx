@@ -14,9 +14,12 @@ jest.mock('../../src/services/cashuCardNfc', () => ({
   cancelCardSession: (...args: unknown[]) => mockCancelCardSession(...args),
   isCardReadingSupported: () => mockIsCardReadingSupported(),
   readCardOverNfc: (...args: unknown[]) => mockReadCardOverNfc(...args),
-  // Not mocked away: the merchant-facing text is part of what we assert.
+  // Not mocked away: the merchant-facing text is part of what we assert, and
+  // the real cancel predicate is what decides whether an error shows at all.
   describeCardFailure: jest.requireActual('../../src/services/cashuCardNfc')
     .describeCardFailure,
+  isUserCancel: jest.requireActual('../../src/services/cashuCardNfc')
+    .isUserCancel,
 }));
 
 const SUMMARY: CardSummary = {
@@ -144,6 +147,25 @@ describe('CashuCardDebug session lifecycle', () => {
   // away does not setState on a screen that is gone. That has no rendered tree
   // left to assert against, so it is covered by inspection here rather than by
   // a query.
+  it('shows no error when the read rejects with UserCancel and Cancel was never pressed', async () => {
+    // This is the iOS path. `requestTechnology` presents a modal system
+    // scanning sheet over the app, so the in-app Cancel control is unreachable
+    // — the operator can only cancel from the sheet, which rejects with
+    // UserCancel without ever touching `cancelledRef`. Suppression therefore
+    // cannot depend on our own flag alone.
+    const pending = deferred<CardSummary>();
+    mockReadCardOverNfc.mockReturnValueOnce(pending.promise);
+    const {getByText, queryByText} = await renderScreen();
+
+    fireEvent.press(getByText('Read card'));
+    await act(async () => {
+      pending.reject(new NfcError.UserCancel());
+    });
+
+    await waitFor(() => expect(queryByText('Waiting for tap…')).toBeNull());
+    expect(queryByText('Read cancelled')).toBeNull();
+  });
+
   it('settles an unmount-abandoned read without throwing', async () => {
     const pending = deferred<CardSummary>();
     mockReadCardOverNfc.mockReturnValue(pending.promise);
