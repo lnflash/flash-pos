@@ -16,6 +16,7 @@ import {
   TransactionHistory,
   RegisteredRewardCards,
   EventSettings,
+  CashuCardDebug,
 } from '../screens';
 
 // hooks
@@ -135,6 +136,18 @@ const Root = () => {
           animation: 'slide_from_right',
         }}
       />
+      {/* Cashu card bring-up harness. Dev builds only — it is a hardware
+          debugging tool, not merchant-facing. */}
+      {__DEV__ && (
+        <Stack.Screen
+          name="CashuCardDebug"
+          component={CashuCardDebug}
+          options={{
+            headerTitle: 'Cashu card',
+            animation: 'slide_from_right',
+          }}
+        />
+      )}
     </Stack.Navigator>
   );
 };

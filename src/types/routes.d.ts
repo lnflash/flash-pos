@@ -15,6 +15,7 @@ type RootStackType = {
   RegisteredRewardCards: undefined;
   EventSettings: undefined;
   SupportChat: undefined;
+  CashuCardDebug: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility
