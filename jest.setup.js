@@ -54,4 +54,14 @@ jest.mock('react-native-nfc-manager', () => ({
     DiscoverTag: 'DiscoverTag',
     SessionClosed: 'SessionClosed',
   },
+  NfcTech: {
+    Ndef: 'Ndef',
+    IsoDep: 'IsoDep',
+  },
+  // Real classes, not stand-ins: `describeCardFailure`
+  // (src/services/cashuCardNfc.ts) tells NFC failure modes apart with
+  // `instanceof`, and every one of these is constructed with no message, so the
+  // class is the whole diagnosis. This submodule only imports `Platform`, so it
+  // is safe to load in the jest environment.
+  NfcError: jest.requireActual('react-native-nfc-manager/src/NfcError'),
 }));

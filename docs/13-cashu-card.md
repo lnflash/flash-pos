@@ -111,9 +111,21 @@ on top of this one.
 The screen runs **SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE** only. Nothing
 is written and no proof is spent, so it is safe against a loaded card.
 
+### Reading the error box
+
+`react-native-nfc-manager` constructs every one of its error classes with no
+arguments, so `error.message` is always empty and the class *is* the diagnosis.
+`describeCardFailure` maps them (`UserCancel` → "Read cancelled",
+`RadioDisabled` → "NFC is turned off", `TagConnectionLost`/`TagNotConnected` →
+"Card left the field", plus `Timeout`, `SessionInvalidated`, `SystemBusy` and
+others), so "the radio is off" and "the card moved" are distinguishable on the
+first hardware session. An unmapped class falls back to its own name rather than
+a generic sentence. Pressing **Cancel read** shows no error at all — the screen
+tracks the deliberate cancel and suppresses the box.
+
 ## Platform requirements
 
-**Android** — nothing extra. Reader mode needs no manifest entry.
+**Android** — nothing extra; IsoDep needs no manifest entry.
 
 **iOS** — ISO 7816 requires the AID to be declared up front:
 

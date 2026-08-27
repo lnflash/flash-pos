@@ -1,4 +1,4 @@
-import NfcManager, {NfcTech} from 'react-native-nfc-manager';
+import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 
 import {
   cancelCardSession,
@@ -10,6 +10,9 @@ import {
 } from '../../src/services/cashuCardNfc';
 import {CardError, CardProtocolError} from '../../src/services/cashuCard';
 
+// The bridge is stubbed, but `NfcError` is the *real* class hierarchy: the
+// describeCardFailure tests below assert on `instanceof`, so hand-rolled
+// look-alikes would pass while a rename upstream shipped a silent regression.
 jest.mock('react-native-nfc-manager', () => ({
   __esModule: true,
   default: {
@@ -20,6 +23,7 @@ jest.mock('react-native-nfc-manager', () => ({
     isoDepHandler: {transceive: jest.fn()},
   },
   NfcTech: {IsoDep: 'IsoDep'},
+  NfcError: jest.requireActual('react-native-nfc-manager/src/NfcError'),
 }));
 
 const mockNfc = NfcManager as unknown as {
@@ -70,12 +74,14 @@ describe('withCardSession', () => {
       }),
     ).rejects.toThrow('card yanked');
 
-    // A stranded reader session blocks HCE and every later tap.
+    // A stranded session swallows every later tap, app-wide.
     expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalledTimes(1);
   });
 
   it('does not let a teardown failure mask the original error', async () => {
-    mockNfc.cancelTechnologyRequest.mockRejectedValue(new Error('teardown boom'));
+    mockNfc.cancelTechnologyRequest.mockRejectedValue(
+      new Error('teardown boom'),
+    );
 
     await expect(
       withCardSession(async () => {
@@ -85,7 +91,9 @@ describe('withCardSession', () => {
   });
 
   it('swallows a teardown failure on the happy path', async () => {
-    mockNfc.cancelTechnologyRequest.mockRejectedValue(new Error('teardown boom'));
+    mockNfc.cancelTechnologyRequest.mockRejectedValue(
+      new Error('teardown boom'),
+    );
     await expect(withCardSession(async () => 'ok')).resolves.toBe('ok');
   });
 
@@ -185,5 +193,86 @@ describe('describeCardFailure', () => {
     expect(describeCardFailure(new Error('boom'))).toBe('boom');
     expect(describeCardFailure('nope')).toBe('Card read failed');
     expect(describeCardFailure(new Error(''))).toBe('Card read failed');
+  });
+
+  // Every nfc-manager error class is constructed with no arguments, so
+  // `error.message` is the empty string for all of them. Without a class-based
+  // map, "you cancelled", "the radio is off" and "the card moved" all render as
+  // the same four words — on the one screen whose entire job is telling
+  // hardware failure modes apart.
+  describe('NFC transport errors', () => {
+    it.each([
+      ['UserCancel', () => new NfcError.UserCancel(), 'Read cancelled'],
+      [
+        'RadioDisabled',
+        () => new NfcError.RadioDisabled(),
+        'NFC is turned off',
+      ],
+      [
+        'TagConnectionLost',
+        () => new NfcError.TagConnectionLost(),
+        'Card left the field — hold it still',
+      ],
+      [
+        'TagNotConnected',
+        () => new NfcError.TagNotConnected(),
+        'Card left the field — hold it still',
+      ],
+      [
+        'RetryExceeded',
+        () => new NfcError.RetryExceeded(),
+        'Card stopped responding — hold it still',
+      ],
+      [
+        'TagResponseError',
+        () => new NfcError.TagResponseError(),
+        'The card returned a malformed response',
+      ],
+      ['Timeout', () => new NfcError.Timeout(), 'Timed out waiting for a tap'],
+      [
+        'SessionInvalidated',
+        () => new NfcError.SessionInvalidated(),
+        'NFC session ended — try again',
+      ],
+      [
+        'SystemBusy',
+        () => new NfcError.SystemBusy(),
+        'NFC is busy — wait a moment and try again',
+      ],
+      [
+        'UnsupportedFeature',
+        () => new NfcError.UnsupportedFeature(),
+        'This device cannot read ISO 7816 cards',
+      ],
+    ])('describes %s distinctly', (_name, build, expected) => {
+      expect(describeCardFailure(build())).toBe(expected);
+    });
+
+    it('gives every mapped class a distinct message where the causes differ', () => {
+      const messages = [
+        describeCardFailure(new NfcError.UserCancel()),
+        describeCardFailure(new NfcError.RadioDisabled()),
+        describeCardFailure(new NfcError.TagConnectionLost()),
+        describeCardFailure(new NfcError.Timeout()),
+        describeCardFailure(new NfcError.SystemBusy()),
+      ];
+      expect(new Set(messages).size).toBe(messages.length);
+      expect(messages).not.toContain('Card read failed');
+    });
+
+    // Unmapped but still message-less: naming the class beats a generic
+    // sentence, and it points straight at the branch that needs adding.
+    it('falls back to the class name for an unmapped NFC error', () => {
+      expect(describeCardFailure(new NfcError.SecurityViolation())).toBe(
+        'SecurityViolation',
+      );
+    });
+
+    // The base class is the one that does carry the native error string.
+    it('prefers a real message over the class name', () => {
+      expect(
+        describeCardFailure(new NfcError.NfcErrorBase('ERR_MULTI_REQ')),
+      ).toBe('ERR_MULTI_REQ');
+    });
   });
 });

@@ -18,7 +18,6 @@ const Settings: React.FC<Props> = ({
   onViewEventSettings,
   onViewCashuCardDebug,
 }) => {
-
   return (
     <Wrapper>
       <Label>Settings</Label>

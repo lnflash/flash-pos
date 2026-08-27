@@ -1,13 +1,13 @@
 /**
  * Cashu NFC card — React Native IsoDep transport.
  *
- * Puts the phone into NFC *reader* mode and exchanges ISO 7816 APDUs with a
+ * Opens an IsoDep technology request and exchanges ISO 7816 APDUs with a
  * cashu-javacard applet. This is a different NFC role from the existing
  * Flashcard/BoltCard path in `contexts/Flashcard.tsx`, which reads NDEF text
  * off a tag — here we drive a smartcard conversation.
  *
  * Platform notes:
- *  - Android: `NfcTech.IsoDep`, no extra manifest entry needed for reader mode.
+ *  - Android — nothing extra; `NfcTech.IsoDep` needs no manifest entry.
  *  - iOS: requires the `com.apple.developer.nfc.readersession.iso7816.select-identifiers`
  *    entitlement listing our AID (`D2760000850102`) in Info.plist, or
  *    `requestTechnology` rejects. See `docs/06-nfc-integration.md`.
@@ -30,7 +30,7 @@
  * Anything that can start a session must therefore also be able to end one —
  * see `cancelCardSession`, which screens call on unmount.
  */
-import NfcManager, {NfcTech} from 'react-native-nfc-manager';
+import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 
 import {
   CardError,
@@ -73,7 +73,7 @@ export async function cancelCardSession(): Promise<void> {
 }
 
 /**
- * Runs `fn` inside an IsoDep reader session, always tearing the session down.
+ * Runs `fn` inside an IsoDep session, always tearing the session down.
  *
  * The technology request resolves when a card enters the field, so the promise
  * is pending for as long as the user takes to tap.
@@ -114,13 +114,75 @@ export async function isCardReadingSupported(): Promise<boolean> {
   }
 }
 
+/**
+ * Transport failures, translated.
+ *
+ * Every `react-native-nfc-manager` error class is constructed with no
+ * arguments (`new UserCancel()`, `new RadioDisabled()`, … — see
+ * `src/NfcError.js` in the package), so `error.message` is always the empty
+ * string. Without this table the whole NFC transport error space collapses to
+ * one generic sentence and "the radio is off", "the card left the field" and
+ * "you pressed Cancel" become indistinguishable — which is exactly what this
+ * bring-up harness exists to tell apart.
+ *
+ * The classes are siblings under `NfcErrorBase` with no inheritance between
+ * them, so match order does not matter. `NfcErrorBase` itself is deliberately
+ * absent: it carries the raw native error string as its message, which is more
+ * useful than anything we could substitute.
+ *
+ * Read defensively — a test that mocks the package without `NfcError` should
+ * degrade to the generic branch, not crash.
+ */
+type NfcErrorClass = new (...args: never[]) => Error;
+
+let messageTable: ReadonlyArray<readonly [NfcErrorClass, string]> | null = null;
+
+function nfcErrorMessages(): ReadonlyArray<readonly [NfcErrorClass, string]> {
+  if (messageTable) {
+    return messageTable;
+  }
+  const classes = NfcError as Partial<typeof NfcError> | undefined;
+  if (!classes) {
+    return [];
+  }
+  const table: ReadonlyArray<readonly [NfcErrorClass | undefined, string]> = [
+    [classes.UserCancel, 'Read cancelled'],
+    [classes.RadioDisabled, 'NFC is turned off'],
+    [classes.TagConnectionLost, 'Card left the field — hold it still'],
+    [classes.TagNotConnected, 'Card left the field — hold it still'],
+    [classes.RetryExceeded, 'Card stopped responding — hold it still'],
+    [classes.TagResponseError, 'The card returned a malformed response'],
+    [classes.Timeout, 'Timed out waiting for a tap'],
+    [classes.SessionInvalidated, 'NFC session ended — try again'],
+    [classes.SystemBusy, 'NFC is busy — wait a moment and try again'],
+    [classes.UnsupportedFeature, 'This device cannot read ISO 7816 cards'],
+  ];
+  messageTable = table.filter(
+    (entry): entry is readonly [NfcErrorClass, string] =>
+      typeof entry[0] === 'function',
+  );
+  return messageTable;
+}
+
 /** Turns any thrown value into something worth showing a merchant. */
 export function describeCardFailure(error: unknown): string {
   if (error instanceof CardError) {
     return error.message;
   }
   if (error instanceof Error) {
-    return error.message || 'Card read failed';
+    for (const [ErrorClass, message] of nfcErrorMessages()) {
+      if (error instanceof ErrorClass) {
+        return message;
+      }
+    }
+    if (error.message) {
+      return error.message;
+    }
+    // An unmapped, message-less NFC class still names itself
+    // (`SecurityViolation` beats "Card read failed"). A bare `Error` names
+    // nothing useful, so it falls through to the generic sentence.
+    const className = error.constructor?.name;
+    return className && className !== 'Error' ? className : 'Card read failed';
   }
   return 'Card read failed';
 }

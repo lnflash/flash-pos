@@ -43,6 +43,12 @@ const CashuCardDebug = () => {
   // correct even for two presses inside a single render tick.
   const readingRef = useRef(false);
 
+  // A deliberate cancel rejects the in-flight read exactly like a hardware
+  // failure does, so without this the Cancel control paints a red error box for
+  // something the merchant asked for. Set by `onCancel` and by the unmount
+  // cleanup; cleared when a new read starts.
+  const cancelledRef = useRef(false);
+
   useEffect(() => {
     isCardReadingSupported().then(setSupported);
   }, []);
@@ -52,6 +58,7 @@ const CashuCardDebug = () => {
   // session swallows every BoltCard tap app-wide, on the live payment path.
   useEffect(
     () => () => {
+      cancelledRef.current = true;
       cancelCardSession();
     },
     [],
@@ -64,6 +71,7 @@ const CashuCardDebug = () => {
       return;
     }
     readingRef.current = true;
+    cancelledRef.current = false;
     setReading(true);
     setError(null);
     setSummary(null);
@@ -74,7 +82,11 @@ const CashuCardDebug = () => {
         }),
       );
     } catch (err) {
-      setError(describeCardFailure(err));
+      // The rejection a cancel produces is the merchant's own doing — reporting
+      // it as a card failure is a false alarm.
+      if (!cancelledRef.current) {
+        setError(describeCardFailure(err));
+      }
     } finally {
       readingRef.current = false;
       setReading(false);
@@ -85,6 +97,7 @@ const CashuCardDebug = () => {
   // teardown cannot run until a tag arrives, so this is the only way out of a
   // read that was started by mistake.
   const onCancel = useCallback(() => {
+    cancelledRef.current = true;
     cancelCardSession();
   }, []);
 
