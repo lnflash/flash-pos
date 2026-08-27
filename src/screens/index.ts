@@ -12,6 +12,7 @@ import TransactionHistory from './TransactionHistory';
 import RegisteredRewardCards from './RegisteredRewardCards';
 import EventSettings from './EventSettings';
 import SupportChat from './SupportChat';
+import CashuCardDebug from './CashuCardDebug';
 
 export {
   Auth,
@@ -28,4 +29,5 @@ export {
   RegisteredRewardCards,
   EventSettings,
   SupportChat,
+  CashuCardDebug,
 };

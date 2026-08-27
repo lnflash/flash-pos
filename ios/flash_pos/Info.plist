@@ -84,6 +84,11 @@
 	<array>
 		<string>D2760000850100</string>
 		<string>D2760000850101</string>
+		<!-- cashu-javacard: package AID, then the applet AID. iOS will only
+		     SELECT identifiers listed here, so both forms are declared to match
+		     the prefix-then-full fallback in src/services/cashuCard.ts. -->
+		<string>D2760000850102</string>
+		<string>D276000085010201</string>
 	</array>
 </dict>
 </plist>
