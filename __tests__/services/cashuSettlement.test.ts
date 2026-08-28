@@ -1404,6 +1404,30 @@ describe('stored schema versioning', () => {
     expect(blob.entries[0].unit).toBe(LEGACY_UNIT);
   });
 
+  // The downgrade-then-rollforward shape: a newer build wrote real values, a
+  // downgraded build read them forward and re-stamped the blob at its own
+  // version, and now the rollout has resumed. The version tag says v0; the
+  // fields say otherwise. An arm that overwrites unconditionally replaces the
+  // real mint with the stand-in — the adapter then falls back to the
+  // configured mint, the proof is rejected as unknown, and owed money is
+  // booked as lost.
+  it('never overwrites a field a "v0" entry already carries', async () => {
+    await record({amount: 40});
+    const carried = {
+      ...asV0(stored()[0]),
+      mintUrl: 'https://forge.flashapp.me',
+      unit: 'sat',
+    };
+    mockStore[QUEUE_KEY] = JSON.stringify([carried]);
+
+    const queue = await listSettlements();
+    expect(queue[0].mintUrl).toBe('https://forge.flashapp.me');
+    expect(queue[0].unit).toBe('sat');
+    expect((await pendingExposure()).totals).toEqual({
+      sat: {amount: 40, count: 1},
+    });
+  });
+
   it('still settles a v0 entry rather than stranding it', async () => {
     await record({amount: 40});
     mockStore[QUEUE_KEY] = JSON.stringify([asV0(stored()[0])]);
@@ -1531,6 +1555,34 @@ describe('corruption outlives the write that hides it', () => {
     expect(
       Object.keys(mockStore).filter(k => k.startsWith(`${CORRUPT_QUEUE_KEY}:`)),
     ).toEqual([quarantineKeyFor('{ not json')]);
+  });
+
+  // Distinct keys bounded storage; this bounds the write *rate*. Without it,
+  // every poll of a corrupt queue re-wrote byte-identical copies — an exposure
+  // banner polling once a second ground the Keychain at two writes per second
+  // for as long as the app stayed open, since taps may be hours apart.
+  it('writes the quarantine copy once, not on every poll of a corrupt queue', async () => {
+    const {setSecure} = jest.requireMock(
+      '../../src/services/secureStorage',
+    ) as {setSecure: jest.Mock};
+    mockStore[QUEUE_KEY] = '{ not json';
+
+    await listSettlements(); // first detection: copy, pointer, marker
+    const afterFirst = setSecure.mock.calls.length;
+
+    for (let i = 0; i < 5; i++) {
+      await listSettlements();
+      await hasUnsettledForCard(CARD);
+    }
+    expect(setSecure.mock.calls.length).toBe(afterFirst);
+
+    // A relaunch forgets what this process wrote and must re-verify the copy —
+    // the guard is an in-process rate bound, not a durable claim.
+    relaunch();
+    await listSettlements();
+    // The content copy and the bare pointer are rewritten; the marker already
+    // exists and is not.
+    expect(setSecure.mock.calls.length).toBe(afterFirst + 2);
   });
 
   it('keeps the CLEAR_SPENT gate shut while exposure is unknown', async () => {

@@ -14,7 +14,6 @@ import {
   parseResponse,
   readCard,
   selectApplet,
-  __signArbitraryForTests as signArbitrary,
   resignWitness,
   spendProof,
   toHex,
@@ -605,69 +604,6 @@ describe('spendProof', () => {
   });
 });
 
-describe('signArbitrary', () => {
-  // The recovery path: it consumes nothing, so P1 carries no slot.
-  it('sends INS 21 with no slot in P1, Lc 32, Le 40', async () => {
-    const card = fakeCard();
-    await signArbitrary(card.transceive, MESSAGE);
-
-    expect(card.sent).toHaveLength(1);
-    expect(card.sent[0]).toEqual([
-      0xb0,
-      0x21,
-      0x00,
-      0x00,
-      0x20,
-      ...MESSAGE,
-      0x40,
-    ]);
-  });
-
-  it('never sends SPEND_PROOF — recovery must not burn a second slot', async () => {
-    const card = fakeCard();
-    await signArbitrary(card.transceive, MESSAGE);
-    expect(card.sent.filter(a => a[1] === 0x20)).toEqual([]);
-  });
-
-  it('returns the 64-byte witness', async () => {
-    const card = fakeCard();
-    expect(await signArbitrary(card.transceive, MESSAGE)).toEqual(SIGNATURE);
-  });
-
-  it.each([[0], [31], [33]])(
-    'refuses a %i-byte message without touching the card',
-    async length => {
-      const card = fakeCard();
-      const message = Array.from({length}, () => 0x01);
-
-      await expect(
-        signArbitrary(card.transceive, message),
-      ).rejects.toBeInstanceOf(CardProtocolError);
-      await expect(signArbitrary(card.transceive, message)).rejects.toThrow(
-        `SIGN_ARBITRARY: message must be 32 bytes, got ${length}`,
-      );
-      expect(card.sent).toEqual([]);
-    },
-  );
-
-  it('rejects a wrong-length signature', async () => {
-    const card = fakeCard({signature: Array.from({length: 32}, () => 0x01)});
-    await expect(signArbitrary(card.transceive, MESSAGE)).rejects.toThrow(
-      'SIGN_ARBITRARY: expected a 64-byte signature, got 32',
-    );
-  });
-
-  it('surfaces a signing failure as a CardError', async () => {
-    const card = fakeCard({signStatusWord: 0x6f00});
-    await expect(
-      signArbitrary(card.transceive, MESSAGE),
-    ).rejects.toBeInstanceOf(CardError);
-    await expect(signArbitrary(card.transceive, MESSAGE)).rejects.toThrow(
-      /SIGN_ARBITRARY failed: the card failed to sign/,
-    );
-  });
-});
-
 // SIGN_ARBITRARY needs no PIN and consumes nothing, so an exported "sign these
 // 32 bytes" is an oracle for a BIP-340 signature under the card's P2PK identity
 // over anything a caller picks. The only shipped entry point derives the
@@ -709,11 +645,24 @@ describe('resignWitness', () => {
     );
   });
 
+  it('rejects a wrong-length signature', async () => {
+    const card = fakeCard({signature: Array.from({length: 32}, () => 0x01)});
+    await expect(resignWitness(card.transceive, ENTRY)).rejects.toThrow(
+      'SIGN_ARBITRARY: expected a 64-byte signature, got 32',
+    );
+  });
+
   // Regression: the unconstrained form was exported, so any caller holding a
   // Transceiver could get the card to sign bytes of their choosing.
   it('is the only signer the module exposes', () => {
+    // Both the plain name and the test-seam alias: a `__` prefix is a naming
+    // convention, not an access control, so the seam was an exported oracle
+    // for a signature over any 32 bytes a caller picked.
     expect(
       (cardModule as Record<string, unknown>).signArbitrary,
+    ).toBeUndefined();
+    expect(
+      (cardModule as Record<string, unknown>).__signArbitraryForTests,
     ).toBeUndefined();
   });
 });

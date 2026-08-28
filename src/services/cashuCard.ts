@@ -424,7 +424,11 @@ async function signArbitrary(
   transceive: Transceiver,
   message: number[],
 ): Promise<number[]> {
-  assertMessage(message, 'SIGN_ARBITRARY');
+  // No length guard here on purpose: the only caller is `resignWitness`, which
+  // always passes a 32-byte sha256. The guard lives in `spendProof`, where the
+  // message is a real parameter. A guard on an unreachable branch is dead code
+  // that then demands a test seam to cover it — which is how the module
+  // briefly grew an exported signing oracle.
   return assertSignature(
     await send(transceive, INS.SIGN_ARBITRARY, {
       data: message,
@@ -452,11 +456,3 @@ export async function resignWitness(
   return signArbitrary(transceive, recoveryMessage(entry));
 }
 
-/**
- * Test-only view of the raw SIGN_ARBITRARY framing.
- *
- * Exported solely so the APDU codec tests can assert the bytes on the wire and
- * the length guards, which `resignWitness` cannot reach with a wrong-sized
- * message. Not for production callers — see `signArbitrary`.
- */
-export const __signArbitraryForTests = signArbitrary;

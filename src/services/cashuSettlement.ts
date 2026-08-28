@@ -117,6 +117,14 @@ export const MAX_QUEUE_ENTRIES = 200;
  * a constraint on future bumps: a new version may add fields, but it must never
  * remove one this build requires or change one's type, or a downgraded build
  * will read its entries as corrupt.
+ *
+ * And a constraint on migration arms: an arm must supply a field only when it
+ * is absent and never overwrite one that is present, because a downgraded
+ * build re-stamps a newer blob at its own version while preserving the newer
+ * fields — so the version tag alone cannot prove a field is missing. (Do not
+ * "fix" that by stamping the read version back: a v1 build would then write
+ * entries lacking the v2 field under a v2 tag, and the v2 validator drops them
+ * as corrupt, which is worse.)
  */
 export const QUEUE_SCHEMA_VERSION = 1;
 
@@ -498,6 +506,16 @@ function isV0Entry(
  * `withQueue` refuses to overwrite a corrupt queue whose corruption it could
  * not persist, because that write is what makes the loss invisible.
  */
+/**
+ * Quarantine keys already written by this process. `quarantine` runs from
+ * every read path, a corrupt blob is only cleared by the next write, and taps
+ * may be hours apart — so an exposure banner polling `pendingExposure()` once
+ * a second would otherwise grind the Keychain at two writes per second over
+ * bytes that are identical every time. Content-keyed, so a *different* corrupt
+ * blob still gets its copy written.
+ */
+const quarantineWritten = new Set<string>();
+
 async function quarantine(raw: string): Promise<boolean> {
   const detectedAt = Date.now();
   const quarantineKey = quarantineKeyFor(raw);
@@ -508,8 +526,11 @@ async function quarantine(raw: string): Promise<boolean> {
     // every poll cannot grow storage without bound. The bare key is a
     // convenience pointer at the most recent bytes and is deliberately allowed
     // to be overwritten.
-    await setSecure(quarantineKey, raw);
-    await setSecure(CORRUPT_QUEUE_KEY, raw);
+    if (!quarantineWritten.has(quarantineKey)) {
+      await setSecure(quarantineKey, raw);
+      await setSecure(CORRUPT_QUEUE_KEY, raw);
+      quarantineWritten.add(quarantineKey);
+    }
   } catch {
     // nothing further to do — the read path continues degraded
   }
@@ -629,11 +650,22 @@ function unwrap(parsed: unknown): {
  */
 function migrate(version: number, elements: unknown[]): SettlementEntry[] {
   if (version === 0) {
-    return elements.filter(isV0Entry).map(e => ({
-      ...e,
-      mintUrl: LEGACY_MINT_URL,
-      unit: LEGACY_UNIT,
-    }));
+    // Fill only what is absent, never overwrite what is present. The entry may
+    // genuinely carry these fields despite the v0 tag: a newer build wrote
+    // them, a downgraded build read the blob forward (fields ride through) and
+    // re-stamped it at its own version on the next write, and now the rollout
+    // has resumed. An unconditional `mintUrl: LEGACY_MINT_URL` here would
+    // overwrite the real mint with the stand-in — the adapter then falls back
+    // to the configured mint, the proof is rejected as unknown, and money the
+    // merchant is owed is booked as lost.
+    return elements.filter(isV0Entry).map(e => {
+      const carried = e as Record<string, unknown>;
+      return {
+        ...e,
+        mintUrl: isText(carried.mintUrl) ? carried.mintUrl : LEGACY_MINT_URL,
+        unit: isText(carried.unit) ? carried.unit : LEGACY_UNIT,
+      };
+    });
   }
   // v1, and every version after it this build has not been taught about.
   return elements.filter(isSettlementEntry);
@@ -1125,6 +1157,7 @@ const mintConfirmed = new Set<string>();
 export function __resetDrainState(): void {
   draining = false;
   mintConfirmed.clear();
+  quarantineWritten.clear();
   persistDelay = realDelay;
 }
 
