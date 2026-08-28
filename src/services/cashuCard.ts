@@ -15,6 +15,7 @@
  * Command reference: cashu-javacard `spec/APDU.md`. Kept byte-for-byte in step
  * with the reference host driver `tools/cardctl/cardctl.py`.
  */
+import {recoveryMessage, type SettlementEntry} from './cashuSettlement';
 
 /** 7-byte package AID. SELECT does prefix matching, so this also finds the applet. */
 export const PACKAGE_AID = [0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x02];
@@ -112,7 +113,13 @@ export function buildApdu(
     p2 = 0x00,
     data,
     le,
-  }: {cla?: number; p1?: number; p2?: number; data?: number[]; le?: number} = {},
+  }: {
+    cla?: number;
+    p1?: number;
+    p2?: number;
+    data?: number[];
+    le?: number;
+  } = {},
 ): number[] {
   const apdu = [cla, ins, p1, p2];
   if (data && data.length > 0) {
@@ -143,7 +150,8 @@ export function parseResponse(response: number[], context: string): number[] {
       `${context}: truncated response (${response.length} bytes)`,
     );
   }
-  const sw = (response[response.length - 2] << 8) | response[response.length - 1];
+  const sw =
+    (response[response.length - 2] << 8) | response[response.length - 1];
   if (sw !== SW_OK) {
     throw new CardError(sw, context);
   }
@@ -302,7 +310,14 @@ export interface CardProofSlot {
   /** NUT-02 keyset id — 16 hex chars, decoded from 8 RAW bytes, never ASCII. */
   keysetId: string;
   amount: number;
-  /** The 32-byte P2PK nonce. NOT the secret — the secret is ~150 bytes of JSON. */
+  /**
+   * The 32-byte P2PK nonce. NOT the secret — the secret is ~150 bytes of JSON.
+   *
+   * The card never returns the secret, so a settlement cannot be reconstructed
+   * from a slot read alone: whatever loaded the proof must keep the secret and
+   * hand it to `recordSpend`. See `SettlementEntry.secret` in
+   * `cashuSettlement.ts`.
+   */
   nonce: string;
   /** The mint's unblinded signature, 33 bytes compressed. */
   C: string;
@@ -376,7 +391,7 @@ const assertSignature = (sig: number[], command: string): number[] => {
  * the payment succeeded. See `cashuSettlement.ts`.
  *
  * A failure here is usually recoverable: the slot data survives, so
- * `signArbitrary` can re-derive an equally valid witness from the same card.
+ * `resignWitness` can re-derive an equally valid witness from the same card.
  */
 export async function spendProof(
   transceive: Transceiver,
@@ -398,16 +413,22 @@ export async function spendProof(
 /**
  * Sign 32 bytes without consuming a proof.
  *
- * This is the recovery path. The witness message is `sha256(utf8(secret))`,
- * derived entirely from data that survives on the card, so a settlement that
- * failed after the burn can be retried by re-signing here — no second proof is
- * spent and no PIN is required.
+ * ⚠️ **Module-private on purpose.** SIGN_ARBITRARY needs no PIN and burns
+ * nothing, so an exported form is "produce a BIP-340 signature under the card's
+ * P2PK identity over any 32 bytes the caller chooses, while the card is in the
+ * field". The only legitimate message is `recoveryMessage(entry)`, so the only
+ * exported form — `resignWitness` — derives the message itself and never takes
+ * one from a caller.
  */
-export async function signArbitrary(
+async function signArbitrary(
   transceive: Transceiver,
   message: number[],
 ): Promise<number[]> {
-  assertMessage(message, 'SIGN_ARBITRARY');
+  // No length guard here on purpose: the only caller is `resignWitness`, which
+  // always passes a 32-byte sha256. The guard lives in `spendProof`, where the
+  // message is a real parameter. A guard on an unreachable branch is dead code
+  // that then demands a test seam to cover it — which is how the module
+  // briefly grew an exported signing oracle.
   return assertSignature(
     await send(transceive, INS.SIGN_ARBITRARY, {
       data: message,
@@ -417,3 +438,21 @@ export async function signArbitrary(
     'SIGN_ARBITRARY',
   );
 }
+
+/**
+ * Re-derive the witness for a queued settlement, without spending anything.
+ *
+ * This is the recovery path. The message is `sha256(utf8(entry.secret))`,
+ * computed here rather than passed in, and derived entirely from data that
+ * survives on the card — so a settlement that failed after the burn can be
+ * retried by re-signing, no second proof spent and no PIN required.
+ *
+ * Returns the 64-byte signature; hand it to `attachRecoveredWitness`.
+ */
+export async function resignWitness(
+  transceive: Transceiver,
+  entry: Pick<SettlementEntry, 'secret'>,
+): Promise<number[]> {
+  return signArbitrary(transceive, recoveryMessage(entry));
+}
+
