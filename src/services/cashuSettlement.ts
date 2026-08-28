@@ -22,10 +22,15 @@
  *
  * Two invariants hold everything else up:
  *
- * 1. **Fail closed.** A store that cannot be read is not an empty store. Every
- *    entry point either propagates the failure or answers the conservative way
+ * 1. **Fail closed.** A store that cannot be read is not an empty store, and a
+ *    store that cannot be *parsed* is not an empty store either. Every entry
+ *    point either propagates the failure or answers the conservative way
  *    (`hasUnsettledForCard` says "yes, still unsettled"). Nothing writes over a
- *    queue it could not read.
+ *    queue it could not read, and nothing writes over a queue it could not
+ *    parse until that corruption has been durably recorded — see
+ *    `UNKNOWN_EXPOSURE_KEY`. Corruption is detectable exactly once; the first
+ *    write would otherwise destroy the only evidence that the merchant is
+ *    carrying money the queue no longer knows about.
  * 2. **One writer at a time.** Every mutation goes through `withQueue`, a single
  *    serialising promise chain, so a background drain and a fresh tap can never
  *    interleave read-modify-write and lose one of the two.
@@ -42,6 +47,18 @@ const QUEUE_KEY = '@cashu_settlement_queue';
  * quarantined rather than dropped.
  */
 export const CORRUPT_QUEUE_KEY = '@cashu_settlement_queue_corrupt';
+/**
+ * Durable "the queue was corrupt once" marker.
+ *
+ * `CORRUPT_QUEUE_KEY` preserves the bytes for forensics, but nothing running in
+ * the app can read a blob it already failed to parse — so the quarantine alone
+ * never reaches the merchant. This key does: it is written *before* the first
+ * overwrite of a corrupt queue and surfaces as `Exposure.unknownSince` until an
+ * operator calls `acknowledgeUnknownExposure()`. Without it, one `recordSpend`
+ * turns a corrupt queue into a truthful-looking queue that omits every
+ * outstanding settlement.
+ */
+export const UNKNOWN_EXPOSURE_KEY = '@cashu_settlement_queue_unknown';
 
 /** Cap the queue so a long outage cannot grow storage without bound. */
 export const MAX_QUEUE_ENTRIES = 200;
@@ -49,9 +66,40 @@ export const MAX_QUEUE_ENTRIES = 200;
 /** How many times a post-swap write is retried before it becomes an error. */
 const PERSIST_ATTEMPTS = 3;
 
+/**
+ * Delay before each retry, in ms — `100 * 4 ** attempt`.
+ *
+ * The failures this loop retries (device locked, Keychain busy, an entitlement
+ * hiccup) do not clear inside a single microtask, so three back-to-back
+ * attempts in the same tick would buy nothing at all.
+ */
+const persistBackoffMs = (attempt: number): number => 100 * 4 ** attempt;
+
+/** Replaceable so tests drive the backoff instead of waiting through it. */
+const realDelay = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms));
+let persistDelay: (ms: number) => Promise<void> = realDelay;
+
+/** Test seam: swap the inter-attempt sleep. `null` restores the real one. */
+export function __setPersistDelay(
+  fn: ((ms: number) => Promise<void>) | null,
+): void {
+  persistDelay = fn ?? realDelay;
+}
+
 export type SettlementStatus =
   /** Witness held; the mint has not confirmed. Retries on its own. */
   | 'pending'
+  /**
+   * Handed to the mint, outcome unknown.
+   *
+   * Written to disk immediately *before* the swap, so it survives the app being
+   * killed mid-call — routine on mobile. On the next launch a double-spend
+   * rejection of an entry already in this state is the mint saying it already
+   * has the proof: that is money received, and marking it `failed` would write
+   * off money the merchant actually got.
+   */
+  | 'submitting'
   /** The slot burned but the witness was lost. Needs the card once more. */
   | 'needs-card'
   /** The mint confirmed. Money is ours. */
@@ -182,26 +230,105 @@ export const recoveryMessageHex = (
 ): string => bytesToHex(sha256(utf8ToBytes(entry.secret)));
 
 interface QueueRead {
+  /** Every element that validated. Never a blind cast. */
   entries: SettlementEntry[];
-  /** The stored bytes were unparseable. They have been quarantined. */
+  /**
+   * The stored bytes were unparseable, or held at least one element that is
+   * not a settlement entry. They have been quarantined.
+   */
   corrupt: boolean;
+  /**
+   * The corruption was durably recorded at `UNKNOWN_EXPOSURE_KEY`. When this is
+   * false, nothing may overwrite the queue: doing so would erase the only
+   * evidence that outstanding settlements went missing.
+   */
+  corruptionRecorded: boolean;
 }
 
-async function quarantine(raw: string): Promise<void> {
-  // Best effort by design: failing to preserve the bad bytes must not also
-  // take the till down, but the attempt happens before any overwrite.
+const SETTLEMENT_STATUSES: ReadonlySet<string> = new Set<SettlementStatus>([
+  'pending',
+  'submitting',
+  'needs-card',
+  'settled',
+  'failed',
+]);
+
+const isText = (v: unknown): v is string =>
+  typeof v === 'string' && v.length > 0;
+const isNum = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isFinite(v);
+
+/**
+ * Structural check for one stored element.
+ *
+ * `JSON.parse` gives back `unknown`; casting the array to `SettlementEntry[]`
+ * validates the container and nothing inside it, so a single malformed element
+ * — `[null]` is enough — throws a raw `TypeError` deep inside a reader that
+ * every caller is documented to handle by catching `QueueUnavailableError`.
+ * That is the exact till-down the corrupt handling exists to prevent, and it
+ * blocks settlement for every well-formed entry sitting beside the bad one.
+ */
+function isSettlementEntry(value: unknown): value is SettlementEntry {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const e = value as Record<string, unknown>;
+  return (
+    isText(e.id) &&
+    isText(e.cardPubkey) &&
+    isText(e.keysetId) &&
+    isText(e.nonce) &&
+    isText(e.secret) &&
+    isText(e.C) &&
+    isNum(e.slot) &&
+    isNum(e.amount) &&
+    isNum(e.createdAt) &&
+    isNum(e.updatedAt) &&
+    isNum(e.attempts) &&
+    typeof e.status === 'string' &&
+    SETTLEMENT_STATUSES.has(e.status) &&
+    (e.witness === undefined || isText(e.witness)) &&
+    (e.lastError === undefined || typeof e.lastError === 'string')
+  );
+}
+
+/**
+ * Preserve the bad bytes, then record that they existed.
+ *
+ * Returns whether the *record* landed. The forensic copy is best effort —
+ * failing to keep it must not also take the till down — but the marker is not:
+ * `withQueue` refuses to overwrite a corrupt queue whose corruption it could
+ * not persist, because that write is what makes the loss invisible.
+ */
+async function quarantine(raw: string): Promise<boolean> {
   try {
     await setSecure(CORRUPT_QUEUE_KEY, raw);
   } catch {
     // nothing further to do — the read path continues degraded
+  }
+  try {
+    const existing = await getSecureStrict(UNKNOWN_EXPOSURE_KEY);
+    if (!existing) {
+      // First detection wins: a later corruption must not reset the clock on
+      // exposure the merchant has been carrying since the original one.
+      await setSecure(
+        UNKNOWN_EXPOSURE_KEY,
+        JSON.stringify({since: Date.now(), quarantineKey: CORRUPT_QUEUE_KEY}),
+      );
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
 /**
  * Read the queue, separating "nothing stored" from "could not read".
  *
- * Throws `QueueUnavailableError` on a storage failure. Corrupt bytes resolve to
- * an empty queue flagged `corrupt`, after quarantining the original.
+ * Throws `QueueUnavailableError` on a storage failure. Unparseable bytes, a
+ * non-array, or any element that is not a settlement entry resolve to the
+ * entries that *did* validate, flagged `corrupt`, after quarantining the
+ * original.
  */
 async function loadQueue(): Promise<QueueRead> {
   let raw: string | null;
@@ -215,20 +342,72 @@ async function loadQueue(): Promise<QueueRead> {
     );
   }
   if (!raw) {
-    return {entries: [], corrupt: false};
+    return {entries: [], corrupt: false, corruptionRecorded: false};
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    await quarantine(raw);
-    return {entries: [], corrupt: true};
+    return {
+      entries: [],
+      corrupt: true,
+      corruptionRecorded: await quarantine(raw),
+    };
   }
   if (!Array.isArray(parsed)) {
-    await quarantine(raw);
-    return {entries: [], corrupt: true};
+    return {
+      entries: [],
+      corrupt: true,
+      corruptionRecorded: await quarantine(raw),
+    };
   }
-  return {entries: parsed as SettlementEntry[], corrupt: false};
+  const entries = parsed.filter(isSettlementEntry);
+  if (entries.length !== parsed.length) {
+    // Keep what validated — those are real settlements the merchant is owed —
+    // but the blob as a whole is corrupt and must be treated as such.
+    return {entries, corrupt: true, corruptionRecorded: await quarantine(raw)};
+  }
+  return {entries, corrupt: false, corruptionRecorded: false};
+}
+
+/**
+ * ms epoch of the first unrecovered corruption, or `undefined` if the queue has
+ * never been seen corrupt.
+ *
+ * `0` means the corruption is recorded but its timestamp was lost — test with
+ * `!== undefined`, never for truthiness.
+ */
+async function readUnknownSince(): Promise<number | undefined> {
+  let raw: string | null;
+  try {
+    raw = await getSecureStrict(UNKNOWN_EXPOSURE_KEY);
+  } catch (error) {
+    throw new QueueUnavailableError(
+      `settlement corruption marker unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    const since = (JSON.parse(raw) as {since?: unknown}).since;
+    return isNum(since) ? since : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Operator acknowledgement: the books have been reconciled against the
+ * quarantined bytes, stop flagging unknown exposure.
+ *
+ * Deliberately not called from any automatic path. The flag exists precisely
+ * because the app cannot work out on its own what the corrupt queue was owed.
+ */
+export async function acknowledgeUnknownExposure(): Promise<void> {
+  await removeSecure(UNKNOWN_EXPOSURE_KEY);
 }
 
 async function writeQueue(entries: SettlementEntry[]): Promise<void> {
@@ -243,11 +422,24 @@ async function writeQueue(entries: SettlementEntry[]): Promise<void> {
  * drain's stale snapshot, burning a slot on the card that nothing on disk
  * remembers. The chain is never allowed to reject, so one failed mutation
  * cannot poison the ones queued behind it.
+ *
+ * It is also the single choke point where a corrupt queue is stopped from being
+ * silently overwritten: corruption is detectable exactly once, so if the marker
+ * could not be written the mutation is refused rather than allowed to erase the
+ * evidence.
  */
 let tail: Promise<unknown> = Promise.resolve();
 
 function withQueue<T>(fn: (read: QueueRead) => Promise<T>): Promise<T> {
-  const run = tail.then(async () => fn(await loadQueue()));
+  const run = tail.then(async () => {
+    const read = await loadQueue();
+    if (read.corrupt && !read.corruptionRecorded) {
+      throw new QueueUnavailableError(
+        'settlement queue is corrupt and the corruption could not be recorded; refusing to overwrite it',
+      );
+    }
+    return fn(read);
+  });
   tail = run.then(
     () => undefined,
     () => undefined,
@@ -255,14 +447,24 @@ function withQueue<T>(fn: (read: QueueRead) => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Throws `QueueUnavailableError` if the store cannot be read. */
+/**
+ * Raw enumeration of what is on disk. Throws `QueueUnavailableError` if the
+ * store cannot be read.
+ *
+ * Deliberately tolerant of a corrupt blob: it returns the entries that parsed
+ * so a recovery UI can still show them. It is therefore **not** a money-facing
+ * total — use `pendingExposure`, which refuses to answer at all when the queue
+ * is corrupt.
+ */
 export async function listSettlements(): Promise<SettlementEntry[]> {
   return (await loadQueue()).entries;
 }
 
 /** Entries still owed to the merchant — what `pendingExposure` totals. */
 export const isOutstanding = (e: SettlementEntry): boolean =>
-  e.status === 'pending' || e.status === 'needs-card';
+  e.status === 'pending' ||
+  e.status === 'submitting' ||
+  e.status === 'needs-card';
 
 /**
  * Make room by dropping settled entries — never outstanding ones, because a
@@ -354,10 +556,23 @@ export const markFailed = (id: string, reason: string, now: number) =>
     lastError: reason,
   }));
 
-/** A retryable miss — stays outstanding, attempt count goes up. */
-export const markAttemptFailed = (id: string, reason: string, now: number) =>
+/**
+ * A retryable miss — stays outstanding, attempt count goes up.
+ *
+ * `status` is how the drain distinguishes a *known* miss (`pending`: the mint
+ * never took the proof, so a later permanent rejection really is a failure)
+ * from one whose outcome is still unknown (`submitting`: the proof may already
+ * be at the mint, so a later permanent rejection is a confirmation).
+ */
+export const markAttemptFailed = (
+  id: string,
+  reason: string,
+  now: number,
+  status: 'pending' | 'submitting' = 'pending',
+) =>
   update(id, e => ({
     ...e,
+    status,
     updatedAt: now,
     attempts: e.attempts + 1,
     lastError: reason,
@@ -369,17 +584,34 @@ export const markAttemptFailed = (id: string, reason: string, now: number) =>
  * Only that transition. A recovery UI that re-taps a card can reach a `settled`
  * or `failed` entry, and resurrecting one of those into the drain loop would
  * re-submit a proof the mint has already consumed.
+ *
+ * Returns `null` when nothing was recovered — entry missing, or in a status
+ * this refuses to touch. Returning the untouched entry instead would be truthy
+ * and indistinguishable from success, and a recovery screen would tell the
+ * merchant an entry was repaired when nothing was written.
  */
-export const attachRecoveredWitness = (
+export async function attachRecoveredWitness(
   id: string,
   witness: string,
   now: number,
-) =>
-  update(id, e =>
-    e.status === 'needs-card'
-      ? {...e, witness, status: 'pending', updatedAt: now}
-      : e,
-  );
+): Promise<SettlementEntry | null> {
+  return withQueue(async ({entries}) => {
+    const idx = entries.findIndex(e => e.id === id);
+    // `update()` cannot express a refusal, so the branch has to live above it.
+    if (idx === -1 || entries[idx].status !== 'needs-card') {
+      return null;
+    }
+    const next: SettlementEntry = {
+      ...entries[idx],
+      witness,
+      status: 'pending',
+      updatedAt: now,
+    };
+    entries[idx] = next;
+    await writeQueue(entries);
+    return next;
+  });
+}
 
 export interface Exposure {
   /** Total the merchant is owed but has not settled, in the keyset's base unit. */
@@ -389,6 +621,15 @@ export interface Exposure {
   needsCard: number;
   /** Permanently failed — a human has to look at these. */
   failed: number;
+  /**
+   * Set when the queue was corrupt at some point and no operator has
+   * acknowledged it: ms epoch of the first corrupt read, or `0` if even that
+   * timestamp was lost. The totals beside it are real but **incomplete** —
+   * whatever the unparseable blob was owed is not in them.
+   *
+   * Test with `unknownSince !== undefined`, never for truthiness.
+   */
+  unknownSince?: number;
 }
 
 /**
@@ -397,16 +638,24 @@ export interface Exposure {
  *
  * Throws `QueueUnavailableError` rather than reporting a clean till it cannot
  * actually vouch for — a false zero here is the one answer the merchant must
- * never be given.
+ * never be given. That covers both arms of an unusable store: a read that
+ * failed *and* bytes that would not parse.
  */
 export async function pendingExposure(): Promise<Exposure> {
-  const {entries} = await loadQueue();
+  const {entries, corrupt} = await loadQueue();
+  if (corrupt) {
+    throw new QueueUnavailableError(
+      'settlement queue is corrupt; exposure unknown',
+    );
+  }
+  const unknownSince = await readUnknownSince();
   const outstanding = entries.filter(isOutstanding);
   return {
     total: outstanding.reduce((sum, e) => sum + e.amount, 0),
     count: outstanding.length,
     needsCard: entries.filter(e => e.status === 'needs-card').length,
     failed: entries.filter(e => e.status === 'failed').length,
+    ...(unknownSince === undefined ? {} : {unknownSince}),
   };
 }
 
@@ -416,8 +665,10 @@ export async function pendingExposure(): Promise<Exposure> {
  * `CLEAR_SPENT` erases spent slots, which is what turns a recoverable burn into
  * real loss — so it must never run while this returns true.
  *
- * Fails closed: an unreadable or corrupt queue answers `true`. The gate staying
- * shut costs the merchant a retry; opening it on a failed read costs the money.
+ * Fails closed: an unreadable or corrupt queue answers `true`, and so does a
+ * queue that was corrupt earlier and has not been reconciled — that blob may
+ * have held this card's spends. The gate staying shut costs the merchant a
+ * retry; opening it on a failed read costs the money.
  */
 export async function hasUnsettledForCard(
   cardPubkey: string,
@@ -427,17 +678,31 @@ export async function hasUnsettledForCard(
     if (corrupt) {
       return true;
     }
+    if ((await readUnknownSince()) !== undefined) {
+      return true;
+    }
     return entries.some(e => e.cardPubkey === cardPubkey && isOutstanding(e));
   } catch {
     return true;
   }
 }
 
-/** Entries this card could recover right now by re-signing. */
+/**
+ * Entries this card could recover right now by re-signing.
+ *
+ * Throws `QueueUnavailableError` on a corrupt queue rather than returning `[]`:
+ * an empty list tells the merchant there is nothing to re-tap, which is the one
+ * answer that turns a recoverable burn into a permanent loss.
+ */
 export async function recoverableForCard(
   cardPubkey: string,
 ): Promise<SettlementEntry[]> {
-  const {entries} = await loadQueue();
+  const {entries, corrupt} = await loadQueue();
+  if (corrupt) {
+    throw new QueueUnavailableError(
+      'settlement queue is corrupt; recoverable entries unknown',
+    );
+  }
   return entries.filter(
     e => e.cardPubkey === cardPubkey && e.status === 'needs-card',
   );
@@ -470,10 +735,14 @@ let draining = false;
  */
 const mintConfirmed = new Set<string>();
 
-/** Test seam: drop the in-memory record of unpersisted mint confirmations. */
+/**
+ * Test seam: drop the in-memory record of unpersisted mint confirmations, and
+ * restore the real retry delay. Also stands in for a process relaunch.
+ */
 export function __resetDrainState(): void {
   draining = false;
   mintConfirmed.clear();
+  persistDelay = realDelay;
 }
 
 async function persistSettled(
@@ -483,6 +752,12 @@ async function persistSettled(
 ): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < PERSIST_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      // Without this the three attempts all fail together in microseconds and
+      // the retry buys nothing — the failures being retried here need wall
+      // time to clear.
+      await persistDelay(persistBackoffMs(attempt - 1));
+    }
     try {
       const marked = await markSettled(id, now);
       if (marked) {
@@ -511,12 +786,14 @@ async function persistSettled(
  * forever — a double-spend or a malformed proof will never succeed.
  *
  * `needs-card` entries are skipped: they have nothing to submit until the card
- * returns. A drain already in flight makes this a no-op.
+ * returns. `submitting` entries left behind by a killed process are picked up
+ * and resolved. A drain already in flight makes this a no-op.
  *
  * Rejects with `SettlementPersistenceError` if the mint accepted a proof and
  * the local write would not land. That is not a settlement failure and is
  * never treated as one: the entry is remembered in-process so no later drain
- * re-submits it.
+ * re-submits it, and on disk it is left `submitting` so the guard survives the
+ * app being killed as well.
  */
 export async function drainQueue(
   swap: (entry: SettlementEntry) => Promise<void>,
@@ -536,7 +813,10 @@ export async function drainQueue(
     const {entries} = await loadQueue();
 
     for (const entry of entries) {
-      if (entry.status !== 'pending' || !entry.witness) {
+      if (
+        (entry.status !== 'pending' && entry.status !== 'submitting') ||
+        !entry.witness
+      ) {
         continue;
       }
       if (mintConfirmed.has(entry.id)) {
@@ -544,11 +824,41 @@ export async function drainQueue(
         await persistSettled(entry.id, now, result);
         continue;
       }
+      // Read off the snapshot, before this drain overwrites it: 'submitting' on
+      // disk means an earlier run handed this proof to the mint and never
+      // learned the outcome — a crash mid-call, or a post-swap write that would
+      // not land. The in-memory `mintConfirmed` set cannot survive either.
+      const outcomeUnknown = entry.status === 'submitting';
+
+      // Claim the entry durably *before* the network call, so the same
+      // inference is available to the next launch if this process dies here.
+      let raced = false;
+      const claimed = await update(entry.id, e => {
+        if (e.status !== 'pending' && e.status !== 'submitting') {
+          raced = true;
+          return e;
+        }
+        return {...e, status: 'submitting', updatedAt: now};
+      });
+      if (!claimed || raced) {
+        // Settled, failed, or pruned out from under us since the snapshot.
+        continue;
+      }
+
       try {
         await swap(entry);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         if (error instanceof PermanentSettlementError) {
+          if (outcomeUnknown) {
+            // A proof only reaches 'submitting' on disk after it was handed to
+            // the mint, so "permanently rejected" now means the mint already
+            // has it. That is money received; markFailed would write off money
+            // the merchant actually got.
+            mintConfirmed.add(entry.id);
+            await persistSettled(entry.id, now, result);
+            continue;
+          }
           const marked = await markFailed(entry.id, reason, now);
           if (marked) {
             result.failed += 1;
@@ -556,7 +866,16 @@ export async function drainQueue(
             result.lost += 1;
           }
         } else {
-          const marked = await markAttemptFailed(entry.id, reason, now);
+          // A rejection from `swap` on a first submission is a known outcome —
+          // back to 'pending'. If the outcome was already unknown, it stays
+          // unknown: reverting would let a later permanent rejection be read as
+          // a real failure.
+          const marked = await markAttemptFailed(
+            entry.id,
+            reason,
+            now,
+            outcomeUnknown ? 'submitting' : 'pending',
+          );
           if (marked) {
             result.stillPending += 1;
           } else {
