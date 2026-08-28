@@ -4,14 +4,18 @@ import {
   CardError,
   CardProtocolError,
   PACKAGE_AID,
+  PROOF_SIZE,
   buildApdu,
   describeStatusWord,
   getBalance,
   getInfo,
+  getProof,
   getPubkey,
   parseResponse,
   readCard,
   selectApplet,
+  signArbitrary,
+  spendProof,
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
@@ -24,6 +28,29 @@ const sw = (code: number) => [(code >> 8) & 0xff, code & 0xff];
 const INFO_BODY = [1, 0, 32, 3, 1, 28, 0x03, 0x01];
 const PUBKEY_BODY = [0x02, ...Array.from({length: 32}, (_, i) => i + 1)];
 
+// Distinct byte ranges per field, so a one-byte slice error cannot pass by
+// landing on a neighbour that happens to hold the same value.
+const KEYSET_BYTES = [0x00, 0x59, 0x53, 0x4c, 0xe0, 0xbf, 0xa1, 0x9a];
+const NONCE_BYTES = Array.from({length: 32}, (_, i) => 0x40 + i);
+const C_BYTES = [0x02, ...Array.from({length: 32}, (_, i) => 0x80 + i)];
+/** 500, big-endian uint32. */
+const AMOUNT_BYTES = [0x00, 0x00, 0x01, 0xf4];
+
+/** status[1] + keyset_id[8] + amount[4] + nonce[32] + C[33] = 78 bytes. */
+const proofBody = ({
+  status = 0x01,
+  amount = AMOUNT_BYTES,
+}: {status?: number; amount?: number[]} = {}) => [
+  status,
+  ...KEYSET_BYTES,
+  ...amount,
+  ...NONCE_BYTES,
+  ...C_BYTES,
+];
+
+const SIGNATURE = Array.from({length: 64}, (_, i) => (i * 3 + 1) & 0xff);
+const MESSAGE = Array.from({length: 32}, (_, i) => 0xa0 + i).map(b => b & 0xff);
+
 /**
  * A fake card that answers the read commands. Records every APDU it is sent so
  * tests can assert on the wire format, not just the parsed result.
@@ -35,6 +62,10 @@ function fakeCard(
     infoBody?: number[];
     pubkeyBody?: number[];
     balanceBody?: number[];
+    proofBody?: number[];
+    proofStatusWord?: number;
+    signature?: number[];
+    signStatusWord?: number;
   } = {},
 ) {
   const sent: number[][] = [];
@@ -65,6 +96,18 @@ function fakeCard(
     }
     if (cla === 0xb0 && ins === 0x11) {
       return ok(overrides.balanceBody ?? [0, 0, 0x01, 0xf4]);
+    }
+    if (cla === 0xb0 && ins === 0x13) {
+      if (overrides.proofStatusWord) {
+        return sw(overrides.proofStatusWord);
+      }
+      return ok(overrides.proofBody ?? proofBody());
+    }
+    if (cla === 0xb0 && (ins === 0x20 || ins === 0x21)) {
+      if (overrides.signStatusWord) {
+        return sw(overrides.signStatusWord);
+      }
+      return ok(overrides.signature ?? SIGNATURE);
     }
     return sw(0x6d00);
   };
@@ -153,6 +196,14 @@ describe('describeStatusWord', () => {
     [0x6983, 'card locked'],
     [0x6a82, 'applet not found'],
     [0x6e00, 'wrong CLA'],
+    // The status words the money-moving commands actually return.
+    [0x6985, 'proof already spent'],
+    [0x6a83, 'slot index out of range'],
+    [0x6a88, 'slot is empty'],
+    [0x6a86, 'invalid P1/P2'],
+    [0x6f00, 'the card failed to sign'],
+    [0x6700, 'wrong length'],
+    [0x6d00, 'unsupported command'],
   ])('names 0x%s', (code, expected) => {
     expect(describeStatusWord(code as number)).toContain(expected as string);
   });
@@ -168,7 +219,13 @@ describe('selectApplet', () => {
     await selectApplet(card.transceive);
     expect(card.sent).toHaveLength(1);
     expect(card.sent[0]).toEqual([
-      0x00, 0xa4, 0x04, 0x00, PACKAGE_AID.length, ...PACKAGE_AID, 0x00,
+      0x00,
+      0xa4,
+      0x04,
+      0x00,
+      PACKAGE_AID.length,
+      ...PACKAGE_AID,
+      0x00,
     ]);
   });
 
@@ -177,7 +234,13 @@ describe('selectApplet', () => {
     await selectApplet(card.transceive);
     expect(card.sent).toHaveLength(2);
     expect(card.sent[1]).toEqual([
-      0x00, 0xa4, 0x04, 0x00, APPLET_AID.length, ...APPLET_AID, 0x00,
+      0x00,
+      0xa4,
+      0x04,
+      0x00,
+      APPLET_AID.length,
+      ...APPLET_AID,
+      0x00,
     ]);
   });
 
@@ -255,7 +318,9 @@ describe('getInfo', () => {
     [2, 'locked'],
     [9, 'unknown'],
   ])('maps PIN state byte %i to %s', async (byte, expected) => {
-    const card = fakeCard({infoBody: [1, 0, 32, 0, 0, 32, 0x03, byte as number]});
+    const card = fakeCard({
+      infoBody: [1, 0, 32, 0, 0, 32, 0x03, byte as number],
+    });
     expect((await getInfo(card.transceive)).pinState).toBe(expected);
   });
 
@@ -355,7 +420,9 @@ describe('readCard', () => {
   it('spends nothing — no SPEND_PROOF or LOAD_PROOF is ever sent', async () => {
     const card = fakeCard();
     await readCard(card.transceive);
-    const mutating = card.sent.filter(a => [0x20, 0x30, 0x31, 0x50].includes(a[1]));
+    const mutating = card.sent.filter(a =>
+      [0x20, 0x30, 0x31, 0x50].includes(a[1]),
+    );
     expect(mutating).toEqual([]);
   });
 
@@ -366,6 +433,235 @@ describe('readCard', () => {
     await expect(readCard(card.transceive)).rejects.toThrow(/applet not found/);
     // Nothing beyond the two SELECT attempts should have been tried.
     expect(card.sent).toHaveLength(2);
+  });
+});
+
+describe('getProof', () => {
+  // Every field gets its own byte range, so an off-by-one in any slice moves
+  // values between fields and fails here rather than at the mint, after the
+  // money is already gone.
+  it('decodes all five fields of the 78-byte slot', async () => {
+    const card = fakeCard();
+    expect(await getProof(card.transceive, 3)).toEqual({
+      slot: 3,
+      status: 'unspent',
+      // Raw bytes to hex — 16 chars. Decoding as ASCII gives 8, matching no
+      // keyset at the mint.
+      keysetId: '0059534ce0bfa19a',
+      amount: 500,
+      nonce: toHex(NONCE_BYTES),
+      C: toHex(C_BYTES),
+    });
+  });
+
+  it('produces field lengths the mint will accept', async () => {
+    const card = fakeCard();
+    const proof = await getProof(card.transceive, 0);
+    expect(proof.keysetId).toHaveLength(16);
+    expect(proof.nonce).toHaveLength(64);
+    expect(proof.C).toHaveLength(66);
+    expect(proof.C.startsWith('02')).toBe(true);
+  });
+
+  it('reports a spent slot as spent — spent slots stay readable', async () => {
+    const card = fakeCard({proofBody: proofBody({status: 0x02})});
+    expect((await getProof(card.transceive, 0)).status).toBe('spent');
+  });
+
+  it('stays unsigned above 2^31 — a large amount must not read negative', async () => {
+    const card = fakeCard({
+      proofBody: proofBody({amount: [0xff, 0xff, 0xff, 0xff]}),
+    });
+    expect((await getProof(card.transceive, 0)).amount).toBe(4294967295);
+  });
+
+  it('decodes a zero amount', async () => {
+    const card = fakeCard({proofBody: proofBody({amount: [0, 0, 0, 0]})});
+    expect((await getProof(card.transceive, 0)).amount).toBe(0);
+  });
+
+  it('sends the documented APDU with the slot in P1 and Le = 78', async () => {
+    const card = fakeCard();
+    await getProof(card.transceive, 7);
+    expect(card.sent[0]).toEqual([0xb0, 0x13, 0x07, 0x00, PROOF_SIZE]);
+  });
+
+  it('rejects a short slot rather than reading undefined bytes', async () => {
+    const card = fakeCard({proofBody: proofBody().slice(0, 77)});
+    await expect(getProof(card.transceive, 2)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+    await expect(getProof(card.transceive, 2)).rejects.toThrow(
+      'GET_PROOF slot 2: expected 78 bytes, got 77',
+    );
+  });
+
+  it('rejects a long slot too', async () => {
+    const card = fakeCard({proofBody: [...proofBody(), 0x00]});
+    await expect(getProof(card.transceive, 0)).rejects.toThrow(
+      /expected 78 bytes, got 79/,
+    );
+  });
+
+  // 0x00 is an empty slot the card should have refused; anything else is a
+  // protocol the driver does not understand. Guessing 'unspent' would hand a
+  // garbage proof to the mint.
+  it('rejects an unknown status byte instead of guessing', async () => {
+    const card = fakeCard({proofBody: proofBody({status: 0x03})});
+    await expect(getProof(card.transceive, 1)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+    await expect(getProof(card.transceive, 1)).rejects.toThrow(
+      'GET_PROOF slot 1: unknown status byte 0x3',
+    );
+  });
+
+  it('rejects an empty status byte', async () => {
+    const card = fakeCard({proofBody: proofBody({status: 0x00})});
+    await expect(getProof(card.transceive, 0)).rejects.toThrow(
+      /unknown status byte 0x0/,
+    );
+  });
+
+  it('surfaces a card refusal as a CardError naming the slot', async () => {
+    const card = fakeCard({proofStatusWord: 0x6a88});
+    await expect(getProof(card.transceive, 9)).rejects.toBeInstanceOf(
+      CardError,
+    );
+    await expect(getProof(card.transceive, 9)).rejects.toThrow(
+      /GET_PROOF slot 9 failed: slot is empty/,
+    );
+  });
+});
+
+describe('spendProof', () => {
+  it('sends the exact APDU: CLA b0, INS 20, slot in P1, Lc 32, Le 40', async () => {
+    const card = fakeCard();
+    await spendProof(card.transceive, 5, MESSAGE);
+
+    expect(card.sent).toHaveLength(1);
+    expect(card.sent[0]).toEqual([
+      0xb0,
+      0x20,
+      0x05,
+      0x00,
+      0x20,
+      ...MESSAGE,
+      0x40,
+    ]);
+  });
+
+  it('returns the 64-byte BIP-340 witness verbatim', async () => {
+    const card = fakeCard();
+    expect(await spendProof(card.transceive, 0, MESSAGE)).toEqual(SIGNATURE);
+  });
+
+  // The card burns the slot before it signs, so a malformed command must be
+  // stopped on this side of the wire — never sent and then regretted.
+  it.each([[0], [31], [33], [64]])(
+    'refuses a %i-byte message without touching the card',
+    async length => {
+      const card = fakeCard();
+      const message = Array.from({length}, () => 0x01);
+
+      await expect(
+        spendProof(card.transceive, 0, message),
+      ).rejects.toBeInstanceOf(CardProtocolError);
+      await expect(spendProof(card.transceive, 0, message)).rejects.toThrow(
+        `SPEND_PROOF: message must be 32 bytes, got ${length}`,
+      );
+      expect(card.sent).toEqual([]);
+    },
+  );
+
+  it('rejects a short signature — the slot is burned but the witness is unusable', async () => {
+    const card = fakeCard({signature: Array.from({length: 63}, () => 0x01)});
+    await expect(
+      spendProof(card.transceive, 0, MESSAGE),
+    ).rejects.toBeInstanceOf(CardProtocolError);
+    await expect(spendProof(card.transceive, 0, MESSAGE)).rejects.toThrow(
+      'SPEND_PROOF: expected a 64-byte signature, got 63',
+    );
+  });
+
+  it('rejects a long signature too', async () => {
+    const card = fakeCard({signature: Array.from({length: 65}, () => 0x01)});
+    await expect(spendProof(card.transceive, 0, MESSAGE)).rejects.toThrow(
+      /expected a 64-byte signature, got 65/,
+    );
+  });
+
+  it('surfaces a double-spend refusal as a CardError naming the slot', async () => {
+    const card = fakeCard({signStatusWord: 0x6985});
+    await expect(
+      spendProof(card.transceive, 4, MESSAGE),
+    ).rejects.toBeInstanceOf(CardError);
+    await expect(spendProof(card.transceive, 4, MESSAGE)).rejects.toThrow(
+      /SPEND_PROOF slot 4 failed: proof already spent/,
+    );
+  });
+});
+
+describe('signArbitrary', () => {
+  // The recovery path: it consumes nothing, so P1 carries no slot.
+  it('sends INS 21 with no slot in P1, Lc 32, Le 40', async () => {
+    const card = fakeCard();
+    await signArbitrary(card.transceive, MESSAGE);
+
+    expect(card.sent).toHaveLength(1);
+    expect(card.sent[0]).toEqual([
+      0xb0,
+      0x21,
+      0x00,
+      0x00,
+      0x20,
+      ...MESSAGE,
+      0x40,
+    ]);
+  });
+
+  it('never sends SPEND_PROOF — recovery must not burn a second slot', async () => {
+    const card = fakeCard();
+    await signArbitrary(card.transceive, MESSAGE);
+    expect(card.sent.filter(a => a[1] === 0x20)).toEqual([]);
+  });
+
+  it('returns the 64-byte witness', async () => {
+    const card = fakeCard();
+    expect(await signArbitrary(card.transceive, MESSAGE)).toEqual(SIGNATURE);
+  });
+
+  it.each([[0], [31], [33]])(
+    'refuses a %i-byte message without touching the card',
+    async length => {
+      const card = fakeCard();
+      const message = Array.from({length}, () => 0x01);
+
+      await expect(
+        signArbitrary(card.transceive, message),
+      ).rejects.toBeInstanceOf(CardProtocolError);
+      await expect(signArbitrary(card.transceive, message)).rejects.toThrow(
+        `SIGN_ARBITRARY: message must be 32 bytes, got ${length}`,
+      );
+      expect(card.sent).toEqual([]);
+    },
+  );
+
+  it('rejects a wrong-length signature', async () => {
+    const card = fakeCard({signature: Array.from({length: 32}, () => 0x01)});
+    await expect(signArbitrary(card.transceive, MESSAGE)).rejects.toThrow(
+      'SIGN_ARBITRARY: expected a 64-byte signature, got 32',
+    );
+  });
+
+  it('surfaces a signing failure as a CardError', async () => {
+    const card = fakeCard({signStatusWord: 0x6f00});
+    await expect(
+      signArbitrary(card.transceive, MESSAGE),
+    ).rejects.toBeInstanceOf(CardError);
+    await expect(signArbitrary(card.transceive, MESSAGE)).rejects.toThrow(
+      /SIGN_ARBITRARY failed: the card failed to sign/,
+    );
   });
 });
 

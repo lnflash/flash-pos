@@ -112,7 +112,13 @@ export function buildApdu(
     p2 = 0x00,
     data,
     le,
-  }: {cla?: number; p1?: number; p2?: number; data?: number[]; le?: number} = {},
+  }: {
+    cla?: number;
+    p1?: number;
+    p2?: number;
+    data?: number[];
+    le?: number;
+  } = {},
 ): number[] {
   const apdu = [cla, ins, p1, p2];
   if (data && data.length > 0) {
@@ -143,7 +149,8 @@ export function parseResponse(response: number[], context: string): number[] {
       `${context}: truncated response (${response.length} bytes)`,
     );
   }
-  const sw = (response[response.length - 2] << 8) | response[response.length - 1];
+  const sw =
+    (response[response.length - 2] << 8) | response[response.length - 1];
   if (sw !== SW_OK) {
     throw new CardError(sw, context);
   }
@@ -302,7 +309,14 @@ export interface CardProofSlot {
   /** NUT-02 keyset id — 16 hex chars, decoded from 8 RAW bytes, never ASCII. */
   keysetId: string;
   amount: number;
-  /** The 32-byte P2PK nonce. NOT the secret — the secret is ~150 bytes of JSON. */
+  /**
+   * The 32-byte P2PK nonce. NOT the secret — the secret is ~150 bytes of JSON.
+   *
+   * The card never returns the secret, so a settlement cannot be reconstructed
+   * from a slot read alone: whatever loaded the proof must keep the secret and
+   * hand it to `recordSpend`. See `SettlementEntry.secret` in
+   * `cashuSettlement.ts`.
+   */
   nonce: string;
   /** The mint's unblinded signature, 33 bytes compressed. */
   C: string;
