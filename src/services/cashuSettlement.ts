@@ -47,17 +47,31 @@ const QUEUE_KEY = '@cashu_settlement_queue';
  * quarantined rather than dropped.
  *
  * Two things are written on every detection: this key, which always holds the
- * *most recent* corrupt blob, and `quarantineKeyFor(detectedAt)`, which is
- * per-detection and never overwritten. The marker at `UNKNOWN_EXPOSURE_KEY`
- * names the second one, because it is the blob an operator must reconcile
- * against before acknowledging — a second corruption would otherwise silently
- * replace the bytes the marker points at.
+ * *most recent* corrupt blob, and `quarantineKeyFor(raw)`, which is per-*blob*
+ * and never overwritten by a different one. The marker at
+ * `UNKNOWN_EXPOSURE_KEY` names the second one, because it is the blob an
+ * operator must reconcile against before acknowledging — a second, different
+ * corruption would otherwise silently replace the bytes the marker points at.
  */
 export const CORRUPT_QUEUE_KEY = '@cashu_settlement_queue_corrupt';
 
-/** The immutable per-detection quarantine slot. See `CORRUPT_QUEUE_KEY`. */
-export const quarantineKeyFor = (detectedAt: number): string =>
-  `${CORRUPT_QUEUE_KEY}:${detectedAt}`;
+/**
+ * The quarantine slot for one corrupt blob, keyed by its content hash.
+ *
+ * Keyed by content and not by clock, because `quarantine` runs from *every*
+ * read path — `listSettlements`, `pendingExposure`, `hasUnsettledForCard`,
+ * `recoverableForCard`, `withQueue`, `drainQueue` — and a corrupt blob is only
+ * cleared by the next write. A clock-keyed slot therefore mints a fresh copy of
+ * the whole corrupt queue on every poll of an exposure banner, unboundedly,
+ * with nothing to prune them. Re-reading the same bytes must land on the same
+ * key; two genuinely different corruptions must not collide. A content hash is
+ * the only key with both properties — and unlike `Date.now()` it cannot collide
+ * inside a single millisecond either.
+ *
+ * See `CORRUPT_QUEUE_KEY`.
+ */
+export const quarantineKeyFor = (raw: string): string =>
+  `${CORRUPT_QUEUE_KEY}:${bytesToHex(sha256(utf8ToBytes(raw))).slice(0, 16)}`;
 /**
  * Durable "the queue was corrupt once" marker.
  *
@@ -95,6 +109,14 @@ export const MAX_QUEUE_ENTRIES = 200;
  * A bare array is `v0`: the shape shipped before `mintUrl`/`unit` existed.
  * Bump this and add a migration arm in `migrate` whenever a required field is
  * added; never add one without an arm.
+ *
+ * Reads are forward-compatible as well as backward-compatible: an envelope
+ * written by a *newer* build is read with the fields this one understands and
+ * its unrecognised fields are preserved verbatim, because a rollback must not
+ * turn readable money into unreconcilable loss. See `migrate`. The corollary is
+ * a constraint on future bumps: a new version may add fields, but it must never
+ * remove one this build requires or change one's type, or a downgraded build
+ * will read its entries as corrupt.
  */
 export const QUEUE_SCHEMA_VERSION = 1;
 
@@ -142,11 +164,14 @@ export type SettlementStatus =
    * Claimed for submission, outcome unknown.
    *
    * Written to disk immediately *before* the swap, so it survives the app being
-   * killed mid-call — routine on mobile. It does **not** mean the mint saw the
-   * proof: the claim write lands first, so a process killed here leaves an entry
-   * `submitting` that never reached the network at all. Only a
-   * `ProofAlreadySpentError` — the mint itself saying it holds this proof —
-   * turns that into a settlement. See `drainQueue`.
+   * killed mid-call — routine on mobile — and it is what an entry stays after
+   * any ambiguous swap failure: a timeout or a reset after the mint processed
+   * the request is indistinguishable from one that never arrived. It does
+   * **not** mean the mint saw the proof: the claim write lands first, so a
+   * process killed here leaves an entry `submitting` that never reached the
+   * network at all. Only a `ProofAlreadySpentError` — the mint itself saying it
+   * holds this proof — or a `checkState` of `spent` turns that into a
+   * settlement. See `drainQueue`.
    */
   | 'submitting'
   /** The slot burned but the witness was lost. Needs the card once more. */
@@ -278,6 +303,30 @@ export class SettlementPersistenceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SettlementPersistenceError';
+  }
+}
+
+/**
+ * The swap request provably never left the device.
+ *
+ * The narrow exception to the rule in `drainQueue` that a claimed entry stays
+ * `submitting` once the claim write has landed. Every ordinary transport
+ * failure is ambiguous — a timeout, a connection reset, a 502 from a proxy all
+ * look identical whether the mint processed the request or never saw it — so
+ * the queue cannot assume the proof is still unspent, and treating the entry as
+ * a fresh submission next time is what books received money as lost.
+ *
+ * A swap adapter may raise this **only** when the request demonstrably never
+ * reached the network: an offline pre-flight check that short-circuits before
+ * any socket is opened, a DNS resolution failure, a connection refused. Never
+ * for a timeout, a reset, an aborted read, or any non-2xx response — by then
+ * the mint may already hold the proof. Raising it loosely reintroduces exactly
+ * the bug it exists to avoid.
+ */
+export class TransportSettlementError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransportSettlementError';
   }
 }
 
@@ -451,11 +500,15 @@ function isV0Entry(
  */
 async function quarantine(raw: string): Promise<boolean> {
   const detectedAt = Date.now();
+  const quarantineKey = quarantineKeyFor(raw);
   try {
-    // Per-detection first: this is the copy the marker will name, and it is
-    // never written twice. The bare key is a convenience pointer at the most
-    // recent bytes and is deliberately allowed to be overwritten.
-    await setSecure(quarantineKeyFor(detectedAt), raw);
+    // The content-keyed copy first: this is the blob the marker will name, and
+    // no *different* blob can ever land on top of it. Re-reading the same
+    // corrupt bytes rewrites the same key, so the read paths that call this on
+    // every poll cannot grow storage without bound. The bare key is a
+    // convenience pointer at the most recent bytes and is deliberately allowed
+    // to be overwritten.
+    await setSecure(quarantineKey, raw);
     await setSecure(CORRUPT_QUEUE_KEY, raw);
   } catch {
     // nothing further to do — the read path continues degraded
@@ -465,15 +518,12 @@ async function quarantine(raw: string): Promise<boolean> {
     if (!existing) {
       // First detection wins: a later corruption must not reset the clock on
       // exposure the merchant has been carrying since the original one. The
-      // key it names is per-detection for the same reason — an operator
+      // key it names is per-blob for the same reason — an operator
       // reconciling against it must see the bytes that were lost *then*, not
       // whatever a later corruption happened to leave behind.
       await setSecure(
         UNKNOWN_EXPOSURE_KEY,
-        JSON.stringify({
-          since: detectedAt,
-          quarantineKey: quarantineKeyFor(detectedAt),
-        }),
+        JSON.stringify({since: detectedAt, quarantineKey}),
       );
     }
     return true;
@@ -534,10 +584,11 @@ async function loadQueue(): Promise<QueueRead> {
 /**
  * Split the stored blob into a schema version and its elements.
  *
- * A bare array is `v0`, the shape written before the envelope existed. An
- * envelope carrying a version this build does not know is *not* readable, and
- * is reported as corrupt rather than guessed at: a downgrade must fail loudly
- * into the quarantine path rather than drop fields it does not understand.
+ * A bare array is `v0`, the shape written before the envelope existed. A
+ * version *newer* than this build's is still unwrapped: see `migrate` for why a
+ * downgrade must not classify readable money as corrupt. Only a blob with no
+ * usable envelope at all — a non-numeric or negative `v`, or `entries` that is
+ * not an array — is `elements: null`, i.e. corrupt.
  */
 function unwrap(parsed: unknown): {
   version: number;
@@ -550,7 +601,7 @@ function unwrap(parsed: unknown): {
     return {version: -1, elements: null};
   }
   const {v, entries} = parsed as {v?: unknown; entries?: unknown};
-  if (!isNum(v) || v > QUEUE_SCHEMA_VERSION || !Array.isArray(entries)) {
+  if (!isNum(v) || v < 0 || !Array.isArray(entries)) {
     return {version: -1, elements: null};
   }
   return {version: v, elements: entries};
@@ -563,6 +614,18 @@ function unwrap(parsed: unknown): {
  * are dropped here and the caller turns that into `corrupt`, exactly as before
  * — the point of the versioning is that a *whole release* of well-formed
  * entries never lands in that bucket just because a field was added.
+ *
+ * The forward arm is the same filter, and deliberately so. A staged-rollout
+ * rollback — a TestFlight/Play downgrade, a reinstall of an older build — hands
+ * this a `v2` blob whose entries are a *superset* of `v1`: perfectly readable
+ * money that an older build would otherwise quarantine, drop from
+ * `pendingExposure` and `recoverableForCard`, and replace on the next tap. That
+ * loses settlements no card can ever be re-tapped to recover, and the
+ * `unknownSince` flag it raises gives the merchant nothing to reconcile
+ * against. `filter` hands back the *original* objects, so fields this build
+ * does not understand ride straight through `writeQueue`'s `JSON.stringify`
+ * untouched — nothing is dropped and the money stays visible. Only entries an
+ * older build genuinely cannot read fall out, and those still become `corrupt`.
  */
 function migrate(version: number, elements: unknown[]): SettlementEntry[] {
   if (version === 0) {
@@ -572,6 +635,7 @@ function migrate(version: number, elements: unknown[]): SettlementEntry[] {
       unit: LEGACY_UNIT,
     }));
   }
+  // v1, and every version after it this build has not been taught about.
   return elements.filter(isSettlementEntry);
 }
 
@@ -816,6 +880,11 @@ export const markFailed = (id: string, reason: string, now: number) =>
  * else's spend and a real failure) from one whose outcome is still unknown
  * (`submitting`: the proof may already be at the mint, so a later
  * `ProofAlreadySpentError` — and only that — is a confirmation).
+ *
+ * The default is `pending` for the callers outside the drain loop that know
+ * nothing was submitted. Inside `drainQueue`, once the claim write has landed,
+ * `submitting` is the only honest answer unless a `TransportSettlementError`
+ * says the request never left the device.
  */
 export const markAttemptFailed = (
   id: string,
@@ -1017,10 +1086,13 @@ export interface DrainOptions {
   /**
    * NUT-07 `/v1/checkstate` on the proof's `Y`, if the caller can offer one.
    *
-   * Consulted only for an entry found `submitting` on disk, where the outcome
-   * of an earlier run is genuinely unknown, and it is the honest way to resolve
-   * that: ask the mint whether it holds the proof instead of inferring it from
-   * the shape of a later rejection. `spent` settles the entry without
+   * Consulted for every entry found `submitting` on disk, where the outcome of
+   * an earlier attempt is genuinely unknown — a killed process, a post-swap
+   * write that would not land, or any ambiguous rejection from `swap`. It is
+   * the honest way to resolve that: ask the mint whether it holds the proof
+   * instead of inferring it from the shape of a later rejection. Worth supplying
+   * for that reason: without it an entry that took a timeout stays `submitting`
+   * until the mint answers `11001` to a resubmission. `spent` settles the entry without
    * submitting anything; `unspent` means the earlier run never reached the mint,
    * so an ordinary submission follows and a permanent rejection of it is a real
    * failure. Anything else — including a throw — leaves the outcome unknown and
@@ -1120,7 +1192,11 @@ async function settleConfirmed(
  * changed since the burn. Reject with a `PermanentSettlementError` to mark an
  * entry failed instead of retrying it forever, and with a
  * `ProofAlreadySpentError` — and only for a NUT-07 `SPENT` / `11001` response —
- * when the mint says it already holds the proof.
+ * when the mint says it already holds the proof. Any *other* rejection leaves
+ * the entry `submitting`, because the claim write lands before the call and the
+ * outcome is therefore unknown by construction; reject with a
+ * `TransportSettlementError` to say the request provably never left the device
+ * and return the entry to `pending`.
  *
  * `needs-card` entries are skipped: they have nothing to submit until the card
  * returns. `submitting` entries left behind by a killed process are picked up
@@ -1168,10 +1244,11 @@ export async function drainQueue(
         continue;
       }
       // Read off the snapshot, before this drain overwrites it: 'submitting' on
-      // disk means an earlier run claimed this proof and never learned the
-      // outcome — a crash mid-call, or a post-swap write that would not land.
-      // It does *not* mean the mint saw it: the claim write lands before the
-      // swap. The in-memory `mintConfirmed` set cannot survive either.
+      // disk means an earlier attempt claimed this proof and never learned the
+      // outcome — a crash mid-call, a post-swap write that would not land, or
+      // an ambiguous rejection from `swap`. It does *not* mean the mint saw it:
+      // the claim write lands before the swap. The in-memory `mintConfirmed`
+      // set cannot survive either.
       let outcomeUnknown = entry.status === 'submitting';
 
       if (outcomeUnknown && options.checkState) {
@@ -1232,15 +1309,24 @@ export async function drainQueue(
             result.lost += 1;
           }
         } else {
-          // A rejection from `swap` on a first submission is a known outcome —
-          // back to 'pending'. If the outcome was already unknown, it stays
-          // unknown: reverting would let a later permanent rejection be read as
-          // a real failure.
+          // The claim write above has already landed, so by construction the
+          // outcome of *this* attempt is unknown too: a timeout or a reset on
+          // the swap POST looks the same whether the mint processed it or never
+          // saw it. Reverting to 'pending' asserts the mint never saw the proof,
+          // and the next drain would then read the `11001 Token already spent`
+          // it gets back as a real failure — writing off money the mint holds
+          // and the merchant was paid. So the entry stays 'submitting' and
+          // `options.checkState` or a later `ProofAlreadySpentError` resolves
+          // it. The one exception is an adapter that can *prove* the request
+          // never left the device, and only if the outcome was not already
+          // unknown from an earlier attempt.
+          const provablyUnsent =
+            error instanceof TransportSettlementError && !outcomeUnknown;
           const marked = await markAttemptFailed(
             entry.id,
             reason,
             now,
-            outcomeUnknown ? 'submitting' : 'pending',
+            provablyUnsent ? 'pending' : 'submitting',
           );
           if (marked) {
             result.stillPending += 1;

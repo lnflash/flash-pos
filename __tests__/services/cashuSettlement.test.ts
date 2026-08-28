@@ -8,6 +8,7 @@ import {
   QUEUE_SCHEMA_VERSION,
   QueueUnavailableError,
   SettlementPersistenceError,
+  TransportSettlementError,
   UNKNOWN_EXPOSURE_KEY,
   __resetDrainState,
   __setPersistDelay,
@@ -484,7 +485,10 @@ describe('drainQueue', () => {
 
     expect(result).toEqual(drained({stillPending: 1}));
     const [entry] = await listSettlements();
-    expect(entry.status).toBe('pending');
+    // 'submitting', not 'pending': the claim write landed before the call, and
+    // a plain rejection cannot tell a request the mint never saw from one it
+    // processed before the response timed out.
+    expect(entry.status).toBe('submitting');
     expect(entry.attempts).toBe(1);
     expect(entry.lastError).toMatch(/network unreachable/);
     // Still owed — a failed drain must not quietly write the money off.
@@ -888,16 +892,133 @@ describe('an unresolved submission survives a relaunch', () => {
     expect((await listSettlements())[0].status).toBe('failed');
   });
 
-  // Even the already-spent response is a failure on a *first* attempt: nothing
-  // was ever submitted, so the mint is talking about a proof someone else got.
-  it('a first-attempt already-spent response is a failure too', async () => {
+  // Even the already-spent response is a failure on a genuinely un-submitted
+  // entry: this drain is the first thing that ever claimed it and no earlier
+  // attempt left an unknown outcome behind, so the mint is talking about a
+  // proof someone else got.
+  it('an already-spent response on a genuinely un-submitted entry is a failure', async () => {
     await record();
+    expect((await listSettlements())[0].status).toBe('pending');
+
     const result = await drainQueue(async () => {
       throw new ProofAlreadySpentError('proof already spent');
     }, T0);
 
     expect(result).toEqual(drained({failed: 1}));
     expect((await listSettlements())[0].status).toBe('failed');
+  });
+
+  // The canonical ambiguous failure: the request reaches the mint, the mint
+  // accepts it and pays the merchant, and the *response* dies on the way back.
+  // Reverting to 'pending' would make the next drain read the mint's `11001`
+  // as a first-attempt failure and book money the merchant was paid as lost.
+  it('settles, not fails, when the swap that timed out had actually landed', async () => {
+    await record({amount: 40});
+
+    const timeout = await drainQueue(async () => {
+      throw new Error('socket hang up');
+    }, T0);
+    expect(timeout).toEqual(drained({stillPending: 1}));
+    expect((await listSettlements())[0].status).toBe('submitting');
+
+    const next = await drainQueue(async () => {
+      throw new ProofAlreadySpentError('11001: Token already spent');
+    }, T0 + 1);
+
+    expect(next).toEqual(drained({settled: 1}));
+    const exposure = await pendingExposure();
+    expect(exposure.failed).toBe(0);
+    expect(exposure.totals).toEqual({});
+  });
+
+  // Same thing, but the app was killed in between: the inference has to come
+  // off disk, not out of the in-memory drain state.
+  it('holds the unknown outcome of a timed-out swap across a relaunch', async () => {
+    await record();
+    await drainQueue(async () => {
+      throw new Error('network reset by peer');
+    }, T0);
+    relaunch();
+
+    expect((await listSettlements())[0].status).toBe('submitting');
+    await drainQueue(async () => {
+      throw new ProofAlreadySpentError('proof already spent');
+    }, T0 + 1);
+    expect((await listSettlements())[0].status).toBe('settled');
+  });
+
+  // checkState is gated on the outcome being unknown, so an entry parked by an
+  // ambiguous failure has to reach it — that is the cheap way out of the limbo.
+  it('asks checkState about an entry an ambiguous failure left behind', async () => {
+    await record();
+    await drainQueue(async () => {
+      throw new Error('timeout');
+    }, T0);
+
+    const checkState = jest.fn(async () => 'spent' as const);
+    const swap = jest.fn();
+    const result = await drainQueue(swap, T0 + 1, {checkState});
+
+    expect(checkState).toHaveBeenCalledTimes(1);
+    // Resolved without resubmitting anything.
+    expect(swap).not.toHaveBeenCalled();
+    expect(result).toEqual(drained({settled: 1}));
+  });
+
+  // ...and when the mint says it never took it, the entry is a first attempt
+  // again and a permanent rejection is a real failure.
+  it('fails an ambiguous entry the mint confirms it never took', async () => {
+    await record();
+    await drainQueue(async () => {
+      throw new Error('timeout');
+    }, T0);
+
+    const result = await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 1,
+      {checkState: async () => 'unspent'},
+    );
+
+    expect(result).toEqual(drained({failed: 1}));
+    expect((await listSettlements())[0].status).toBe('failed');
+  });
+
+  // The narrow exception: an adapter that can prove the request never left the
+  // device. Only then may the entry go back to being a first attempt.
+  it('returns an entry to pending only when the send provably never happened', async () => {
+    await record();
+    const result = await drainQueue(async () => {
+      throw new TransportSettlementError('offline: no network interface');
+    }, T0);
+
+    expect(result).toEqual(drained({stillPending: 1}));
+    expect((await listSettlements())[0].status).toBe('pending');
+
+    // And because nothing was submitted, an already-spent response next time is
+    // still somebody else's spend.
+    const next = await drainQueue(async () => {
+      throw new ProofAlreadySpentError('proof already spent');
+    }, T0 + 1);
+    expect(next).toEqual(drained({failed: 1}));
+  });
+
+  // A provably-unsent attempt cannot clear an *earlier* attempt's unknown
+  // outcome — the proof may already be at the mint from that one.
+  it('does not let a provably-unsent retry erase an earlier unknown outcome', async () => {
+    await killedMidSubmission();
+    expect((await listSettlements())[0].status).toBe('submitting');
+
+    await drainQueue(async () => {
+      throw new TransportSettlementError('offline: no network interface');
+    }, T0 + 1);
+    expect((await listSettlements())[0].status).toBe('submitting');
+
+    await drainQueue(async () => {
+      throw new ProofAlreadySpentError('proof already spent');
+    }, T0 + 2);
+    expect((await listSettlements())[0].status).toBe('settled');
   });
 
   it('a transient miss on an unresolved entry keeps it unresolved', async () => {
@@ -1290,11 +1411,64 @@ describe('stored schema versioning', () => {
     expect((await drainQueue(async () => {}, T0 + 1)).settled).toBe(1);
   });
 
-  // A downgrade must fail into the quarantine path loudly rather than silently
-  // drop fields it does not understand.
-  it('treats a version from the future as corrupt', async () => {
-    await record();
+  // A staged-rollout rollback — a TestFlight/Play downgrade, a reinstall of an
+  // older build — hands this build a newer envelope whose entries it can read
+  // perfectly well. Quarantining them dropped them from pendingExposure and
+  // recoverableForCard, and the next tap overwrote the blob: settlements no
+  // card could ever be re-tapped to recover, against an `unknownSince` flag
+  // with nothing behind it to reconcile.
+  it('reads a version from the future rather than dropping the money', async () => {
+    await record({amount: 40});
+    const future = stored().map(e => ({...e, somethingNew: 'v2 only'}));
+    storeRaw(future, QUEUE_SCHEMA_VERSION + 1);
+
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf()]);
+    // Readable, so not corrupt: the exposure report still answers and the
+    // CLEAR_SPENT gate is driven by the real entry, not by a lost blob.
+    expect(mockStore[CORRUPT_QUEUE_KEY]).toBeUndefined();
+    expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBeUndefined();
+    expect((await pendingExposure()).totals).toEqual({
+      sat: {amount: 40, count: 1},
+    });
+  });
+
+  it('keeps fields it does not understand when it writes the queue back', async () => {
+    await record({slot: 0, amount: 40});
+    storeRaw(
+      stored().map(e => ({...e, somethingNew: 'v2 only'})),
+      QUEUE_SCHEMA_VERSION + 1,
+    );
+
+    await record({slot: 1, amount: 25});
+
+    const blob = JSON.parse(mockStore[QUEUE_KEY]);
+    // Written back at this build's version...
+    expect(blob.v).toBe(QUEUE_SCHEMA_VERSION);
+    // ...with both entries, and the newer build's field still on disk for it to
+    // find when the rollout rolls forward again.
+    expect(blob.entries.map((e: SettlementEntry) => e.id)).toEqual([
+      idOf({slot: 0}),
+      idOf({slot: 1}),
+    ]);
+    expect(blob.entries[0].somethingNew).toBe('v2 only');
+  });
+
+  it('still settles an entry from a newer envelope', async () => {
+    await record({amount: 40});
     storeRaw(stored(), QUEUE_SCHEMA_VERSION + 1);
+
+    expect((await drainQueue(async () => {}, T0 + 1)).settled).toBe(1);
+  });
+
+  // Forward-compatible is not credulous: an envelope with no usable shape at
+  // all is still corrupt, and still fails closed.
+  it.each([
+    ['a non-numeric version', {v: 'two', entries: []}],
+    ['a negative version', {v: -1, entries: []}],
+    ['entries that are not an array', {v: 1, entries: {}}],
+  ])('treats %s as corrupt', async (_label, blob) => {
+    await record();
+    mockStore[QUEUE_KEY] = JSON.stringify(blob);
 
     expect(await listSettlements()).toEqual([]);
     await expect(pendingExposure()).rejects.toBeInstanceOf(
@@ -1334,8 +1508,29 @@ describe('corruption outlives the write that hides it', () => {
       quarantineKey: expect.any(String),
     });
     // The key it names holds the bytes it is talking about.
-    expect(marker.quarantineKey).toBe(quarantineKeyFor(marker.since));
+    expect(marker.quarantineKey).toBe(quarantineKeyFor('{ not json'));
     expect(mockStore[marker.quarantineKey]).toBe('{ not json');
+  });
+
+  // `quarantine` runs from every *read* path, and a corrupt blob is only
+  // cleared by the next write — so between launch and the next tap, an exposure
+  // banner polling pendingExposure() re-detects the same corruption over and
+  // over. A clock-keyed slot minted a full copy of the corrupt queue on every
+  // one of those reads, with nothing to prune them.
+  it('does not mint a new quarantine copy on every read of the same blob', async () => {
+    mockStore[QUEUE_KEY] = '{ not json';
+
+    for (let i = 0; i < 5; i++) {
+      await listSettlements();
+      await expect(pendingExposure()).rejects.toBeInstanceOf(
+        QueueUnavailableError,
+      );
+      await hasUnsettledForCard(CARD);
+    }
+
+    expect(
+      Object.keys(mockStore).filter(k => k.startsWith(`${CORRUPT_QUEUE_KEY}:`)),
+    ).toEqual([quarantineKeyFor('{ not json')]);
   });
 
   it('keeps the CLEAR_SPENT gate shut while exposure is unknown', async () => {
@@ -1354,13 +1549,8 @@ describe('corruption outlives the write that hides it', () => {
     await listSettlements();
     const first = mockStore[UNKNOWN_EXPOSURE_KEY];
 
-    // Date.now() drives the quarantine key, so the second detection needs a
-    // different millisecond to land in its own slot.
-    const realNow = Date.now;
-    jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 1000);
     mockStore[QUEUE_KEY] = '[null]';
     await listSettlements();
-    jest.restoreAllMocks();
 
     expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBe(first);
 
@@ -1371,11 +1561,16 @@ describe('corruption outlives the write that hides it', () => {
     // never accounted for.
     const marker = JSON.parse(first);
     expect(mockStore[marker.quarantineKey]).toBe('{ not json');
-    // The second blob is kept too, under its own key.
+    // The second blob is kept too, under its own content-derived key.
     expect(mockStore[CORRUPT_QUEUE_KEY]).toBe('[null]');
+    expect(mockStore[quarantineKeyFor('[null]')]).toBe('[null]');
     expect(
-      Object.keys(mockStore).filter(k => k.startsWith(`${CORRUPT_QUEUE_KEY}:`)),
-    ).toHaveLength(2);
+      Object.keys(mockStore)
+        .filter(k => k.startsWith(`${CORRUPT_QUEUE_KEY}:`))
+        .sort(),
+    ).toEqual(
+      [quarantineKeyFor('{ not json'), quarantineKeyFor('[null]')].sort(),
+    );
   });
 
   it('clears only on an explicit operator acknowledgement', async () => {
