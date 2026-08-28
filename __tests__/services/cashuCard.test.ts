@@ -14,11 +14,14 @@ import {
   parseResponse,
   readCard,
   selectApplet,
-  signArbitrary,
+  __signArbitraryForTests as signArbitrary,
+  resignWitness,
   spendProof,
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
+import * as cardModule from '../../src/services/cashuCard';
+import {recoveryMessage} from '../../src/services/cashuSettlement';
 
 const OK = [0x90, 0x00];
 const ok = (data: number[] = []) => [...data, ...OK];
@@ -662,6 +665,56 @@ describe('signArbitrary', () => {
     await expect(signArbitrary(card.transceive, MESSAGE)).rejects.toThrow(
       /SIGN_ARBITRARY failed: the card failed to sign/,
     );
+  });
+});
+
+// SIGN_ARBITRARY needs no PIN and consumes nothing, so an exported "sign these
+// 32 bytes" is an oracle for a BIP-340 signature under the card's P2PK identity
+// over anything a caller picks. The only shipped entry point derives the
+// message itself.
+describe('resignWitness', () => {
+  const ENTRY = {
+    secret: JSON.stringify([
+      'P2PK',
+      {nonce: 'ab'.repeat(32), data: '02' + 'ef'.repeat(32), tags: []},
+    ]),
+  };
+
+  it('signs sha256(utf8(secret)) — the message is never caller-supplied', async () => {
+    const card = fakeCard();
+    await resignWitness(card.transceive, ENTRY);
+
+    expect(card.sent).toHaveLength(1);
+    expect(card.sent[0]).toEqual([
+      0xb0,
+      0x21,
+      0x00,
+      0x00,
+      0x20,
+      ...recoveryMessage(ENTRY),
+      0x40,
+    ]);
+  });
+
+  it('returns the 64-byte witness without burning a slot', async () => {
+    const card = fakeCard();
+    expect(await resignWitness(card.transceive, ENTRY)).toEqual(SIGNATURE);
+    expect(card.sent.filter(a => a[1] === 0x20)).toEqual([]);
+  });
+
+  it('surfaces a signing failure as a CardError', async () => {
+    const card = fakeCard({signStatusWord: 0x6f00});
+    await expect(resignWitness(card.transceive, ENTRY)).rejects.toBeInstanceOf(
+      CardError,
+    );
+  });
+
+  // Regression: the unconstrained form was exported, so any caller holding a
+  // Transceiver could get the card to sign bytes of their choosing.
+  it('is the only signer the module exposes', () => {
+    expect(
+      (cardModule as Record<string, unknown>).signArbitrary,
+    ).toBeUndefined();
   });
 });
 

@@ -13,9 +13,9 @@
  * If the app is killed between the tap and the mint call, the entry is on disk
  * and settles on the next drain. If the mint call fails, it retries. If the
  * witness itself was lost — the card left the field mid-response — the entry is
- * recorded as `needs-card` and recovers by re-signing from the same card, which
- * works because a spent slot is still readable and `SIGN_ARBITRARY` consumes
- * nothing.
+ * recorded as `needs-card` and recovers by re-signing from the same card
+ * (`resignWitness`), which works because a spent slot is still readable and
+ * `SIGN_ARBITRARY` consumes nothing.
  *
  * The merchant carries the residual risk knowingly, so it is shown to them
  * rather than hidden: see `pendingExposure()`.
@@ -45,8 +45,19 @@ const QUEUE_KEY = '@cashu_settlement_queue';
  * Where unparseable queue bytes are copied before anything overwrites them. A
  * corrupt queue is still the only record that money left a card, so it is
  * quarantined rather than dropped.
+ *
+ * Two things are written on every detection: this key, which always holds the
+ * *most recent* corrupt blob, and `quarantineKeyFor(detectedAt)`, which is
+ * per-detection and never overwritten. The marker at `UNKNOWN_EXPOSURE_KEY`
+ * names the second one, because it is the blob an operator must reconcile
+ * against before acknowledging — a second corruption would otherwise silently
+ * replace the bytes the marker points at.
  */
 export const CORRUPT_QUEUE_KEY = '@cashu_settlement_queue_corrupt';
+
+/** The immutable per-detection quarantine slot. See `CORRUPT_QUEUE_KEY`. */
+export const quarantineKeyFor = (detectedAt: number): string =>
+  `${CORRUPT_QUEUE_KEY}:${detectedAt}`;
 /**
  * Durable "the queue was corrupt once" marker.
  *
@@ -60,8 +71,45 @@ export const CORRUPT_QUEUE_KEY = '@cashu_settlement_queue_corrupt';
  */
 export const UNKNOWN_EXPOSURE_KEY = '@cashu_settlement_queue_unknown';
 
-/** Cap the queue so a long outage cannot grow storage without bound. */
+/**
+ * Cap the queue so a long outage cannot grow storage without bound.
+ *
+ * A soft cap by design: it is enforced by evicting entries nothing is owed on —
+ * settled ones, then failures an operator has retired with `acknowledgeFailed`.
+ * When there are none of those left the queue is allowed past the cap rather
+ * than discard the record of money the merchant is still owed, or the evidence
+ * of money they lost.
+ */
 export const MAX_QUEUE_ENTRIES = 200;
+
+/**
+ * Version of the stored envelope, `{v, entries}`.
+ *
+ * The blob is the durable record of money that left a card, so it has to be
+ * readable by every release that comes after the one that wrote it. Without a
+ * version, the first release to add a required field would classify every entry
+ * the previous release wrote as corrupt — quarantined, dropped from the queue,
+ * and turned into `unknownSince` exposure the merchant cannot reconcile because
+ * the app can no longer read the blob it just failed to parse.
+ *
+ * A bare array is `v0`: the shape shipped before `mintUrl`/`unit` existed.
+ * Bump this and add a migration arm in `migrate` whenever a required field is
+ * added; never add one without an arm.
+ */
+export const QUEUE_SCHEMA_VERSION = 1;
+
+/**
+ * Stand-in `mintUrl` for a `v0` entry, which predates the field.
+ *
+ * Empty rather than a guessed default: the queue genuinely does not know which
+ * mint holds these, and inventing one would send a proof to a mint that never
+ * issued it. A settlement adapter is expected to fall back to the configured
+ * mint for these and to nothing else.
+ */
+export const LEGACY_MINT_URL = '';
+
+/** Stand-in `unit` for a `v0` entry. Buckets separately in `Exposure.totals`. */
+export const LEGACY_UNIT = 'unknown';
 
 /** How many times a post-swap write is retried before it becomes an error. */
 const PERSIST_ATTEMPTS = 3;
@@ -91,13 +139,14 @@ export type SettlementStatus =
   /** Witness held; the mint has not confirmed. Retries on its own. */
   | 'pending'
   /**
-   * Handed to the mint, outcome unknown.
+   * Claimed for submission, outcome unknown.
    *
    * Written to disk immediately *before* the swap, so it survives the app being
-   * killed mid-call — routine on mobile. On the next launch a double-spend
-   * rejection of an entry already in this state is the mint saying it already
-   * has the proof: that is money received, and marking it `failed` would write
-   * off money the merchant actually got.
+   * killed mid-call — routine on mobile. It does **not** mean the mint saw the
+   * proof: the claim write lands first, so a process killed here leaves an entry
+   * `submitting` that never reached the network at all. Only a
+   * `ProofAlreadySpentError` — the mint itself saying it holds this proof —
+   * turns that into a settlement. See `drainQueue`.
    */
   | 'submitting'
   /** The slot burned but the witness was lost. Needs the card once more. */
@@ -108,11 +157,33 @@ export type SettlementStatus =
   | 'failed';
 
 export interface SettlementEntry {
+  /**
+   * `<cardPubkey>:<slot>:<nonce>` — derived from the burn itself, never
+   * supplied by a caller. Unique per burn by construction, so recording the
+   * same burn twice is recognisable as the same entry rather than as a
+   * conflict. See `settlementId`.
+   */
   id: string;
   /** Card pubkey — identifies which card must return for a `needs-card` entry. */
   cardPubkey: string;
   slot: number;
   keysetId: string;
+  /**
+   * The mint that issued this proof, and the only one that can settle it.
+   *
+   * Persisted per entry rather than read from config at drain time: the
+   * configured mint URL can change while entries are queued — an app update, a
+   * mint that moved — and submitting a queued proof to a mint that never issued
+   * it gets it rejected as unknown. `LEGACY_MINT_URL` (empty) marks a `v0`
+   * entry whose mint was not recorded.
+   */
+  mintUrl: string;
+  /**
+   * The keyset's unit, e.g. `sat` or `usd`. Nothing constrains the queue to one
+   * keyset, so amounts are only comparable within a unit — `Exposure.totals` is
+   * keyed by this for that reason. `LEGACY_UNIT` marks a `v0` entry.
+   */
+  unit: string;
   amount: number;
   /**
    * The 32-byte P2PK nonce as the card reports it (`getProof`). Useful for
@@ -141,13 +212,40 @@ export interface SettlementEntry {
   updatedAt: number;
   attempts: number;
   lastError?: string;
+  /**
+   * ms epoch an operator reconciled a `failed` entry, via `acknowledgeFailed`.
+   *
+   * Only acknowledged failures are evictable. Until then a failure is evidence
+   * of money the merchant lost and the queue keeps it, cap or no cap.
+   */
+  acknowledgedAt?: number;
 }
 
 /** What `recordSpend` needs. Everything else is derived. */
 export type SpendRecord = Omit<
   SettlementEntry,
-  'id' | 'status' | 'createdAt' | 'updatedAt' | 'attempts' | 'lastError'
+  | 'id'
+  | 'status'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'attempts'
+  | 'lastError'
+  | 'acknowledgedAt'
 >;
+
+/**
+ * The queue id of a burn: `<cardPubkey>:<slot>:<nonce>`.
+ *
+ * Derived, not supplied. A caller-supplied id makes `recordSpend` able to
+ * *decline* a payment for a slot that is already burned — the one outcome it
+ * must never produce — and makes it non-idempotent under any generic retry
+ * wrapper. Every component here comes from the card, and the nonce is fresh per
+ * proof, so two different burns cannot collide and the same burn always lands
+ * on the same id.
+ */
+export const settlementId = (
+  record: Pick<SpendRecord, 'cardPubkey' | 'slot' | 'nonce'>,
+): string => `${record.cardPubkey}:${record.slot}:${record.nonce}`;
 
 /**
  * A proof in the shape the mint expects inside a swap request (NUT-00 plus the
@@ -183,11 +281,41 @@ export class SettlementPersistenceError extends Error {
   }
 }
 
-/** A settlement that will never succeed — double-spend, malformed proof. */
+/**
+ * A settlement that will never succeed — a malformed proof, an unknown keyset,
+ * a proof submitted to the wrong mint. Retrying is pointless; the entry is
+ * marked `failed` and a human has to look at it.
+ *
+ * This is **not** the class to raise when the mint says it already holds the
+ * proof. That is `ProofAlreadySpentError`, and the difference is the difference
+ * between money received and money lost.
+ */
 export class PermanentSettlementError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PermanentSettlementError';
+  }
+}
+
+/**
+ * The mint says this exact proof is already spent.
+ *
+ * A swap adapter must raise this **only** for a NUT-07 `SPENT` state or the
+ * NUT-XX `11001` "Token already spent" error code — i.e. only when the mint has
+ * identified this proof and confirmed it holds it. Nothing else qualifies: not
+ * a malformed proof, not a bad `C` from a flaky NFC read, not a rotated keyset,
+ * not a generic 400.
+ *
+ * The distinction is load-bearing. For an entry found `submitting` on disk this
+ * is the only signal that separates "the mint already took it" (money received,
+ * settle) from "this proof was never valid" (money gone, fail). Raising it
+ * loosely books money that left the card and reached no mint as received, and
+ * `pendingExposure()` drops to zero over a loss the merchant is never shown.
+ */
+export class ProofAlreadySpentError extends PermanentSettlementError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProofAlreadySpentError';
   }
 }
 
@@ -215,8 +343,8 @@ export function toCashuProof(entry: SettlementEntry): CashuProof {
 /**
  * The 32 bytes the card must sign to unlock this proof: `sha256(utf8(secret))`.
  *
- * Feed straight to `signArbitrary` on the recovery path, or to `spendProof` on
- * the first attempt. Returned as a plain byte array to match the card API.
+ * Used by `resignWitness` on the recovery path, and fed to `spendProof` on the
+ * first attempt. Returned as a plain byte array to match the card API.
  */
 export function recoveryMessage(
   entry: Pick<SettlementEntry, 'secret'>,
@@ -269,6 +397,26 @@ const isNum = (v: unknown): v is number =>
  * blocks settlement for every well-formed entry sitting beside the bad one.
  */
 function isSettlementEntry(value: unknown): value is SettlementEntry {
+  if (!isV0Entry(value)) {
+    return false;
+  }
+  const e = value as unknown as Record<string, unknown>;
+  return (
+    // Empty is legal — `LEGACY_MINT_URL` — so this checks the type, not the
+    // length. `unit` has a non-empty legacy stand-in and so is checked as text.
+    typeof e.mintUrl === 'string' && isText(e.unit)
+  );
+}
+
+/**
+ * The `v0` shape: everything a settlement entry has always had, minus the
+ * fields added in `v1`. Migration validates against this and then fills the
+ * additions in, so entries written by an older release stay readable instead of
+ * being classified as corrupt.
+ */
+function isV0Entry(
+  value: unknown,
+): value is Omit<SettlementEntry, 'mintUrl' | 'unit'> {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
@@ -288,7 +436,8 @@ function isSettlementEntry(value: unknown): value is SettlementEntry {
     typeof e.status === 'string' &&
     SETTLEMENT_STATUSES.has(e.status) &&
     (e.witness === undefined || isText(e.witness)) &&
-    (e.lastError === undefined || typeof e.lastError === 'string')
+    (e.lastError === undefined || typeof e.lastError === 'string') &&
+    (e.acknowledgedAt === undefined || isNum(e.acknowledgedAt))
   );
 }
 
@@ -301,7 +450,12 @@ function isSettlementEntry(value: unknown): value is SettlementEntry {
  * not persist, because that write is what makes the loss invisible.
  */
 async function quarantine(raw: string): Promise<boolean> {
+  const detectedAt = Date.now();
   try {
+    // Per-detection first: this is the copy the marker will name, and it is
+    // never written twice. The bare key is a convenience pointer at the most
+    // recent bytes and is deliberately allowed to be overwritten.
+    await setSecure(quarantineKeyFor(detectedAt), raw);
     await setSecure(CORRUPT_QUEUE_KEY, raw);
   } catch {
     // nothing further to do — the read path continues degraded
@@ -310,10 +464,16 @@ async function quarantine(raw: string): Promise<boolean> {
     const existing = await getSecureStrict(UNKNOWN_EXPOSURE_KEY);
     if (!existing) {
       // First detection wins: a later corruption must not reset the clock on
-      // exposure the merchant has been carrying since the original one.
+      // exposure the merchant has been carrying since the original one. The
+      // key it names is per-detection for the same reason — an operator
+      // reconciling against it must see the bytes that were lost *then*, not
+      // whatever a later corruption happened to leave behind.
       await setSecure(
         UNKNOWN_EXPOSURE_KEY,
-        JSON.stringify({since: Date.now(), quarantineKey: CORRUPT_QUEUE_KEY}),
+        JSON.stringify({
+          since: detectedAt,
+          quarantineKey: quarantineKeyFor(detectedAt),
+        }),
       );
     }
     return true;
@@ -354,20 +514,65 @@ async function loadQueue(): Promise<QueueRead> {
       corruptionRecorded: await quarantine(raw),
     };
   }
-  if (!Array.isArray(parsed)) {
+  const {version, elements} = unwrap(parsed);
+  if (elements === null) {
     return {
       entries: [],
       corrupt: true,
       corruptionRecorded: await quarantine(raw),
     };
   }
-  const entries = parsed.filter(isSettlementEntry);
-  if (entries.length !== parsed.length) {
+  const entries = migrate(version, elements);
+  if (entries.length !== elements.length) {
     // Keep what validated — those are real settlements the merchant is owed —
     // but the blob as a whole is corrupt and must be treated as such.
     return {entries, corrupt: true, corruptionRecorded: await quarantine(raw)};
   }
   return {entries, corrupt: false, corruptionRecorded: false};
+}
+
+/**
+ * Split the stored blob into a schema version and its elements.
+ *
+ * A bare array is `v0`, the shape written before the envelope existed. An
+ * envelope carrying a version this build does not know is *not* readable, and
+ * is reported as corrupt rather than guessed at: a downgrade must fail loudly
+ * into the quarantine path rather than drop fields it does not understand.
+ */
+function unwrap(parsed: unknown): {
+  version: number;
+  elements: unknown[] | null;
+} {
+  if (Array.isArray(parsed)) {
+    return {version: 0, elements: parsed};
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return {version: -1, elements: null};
+  }
+  const {v, entries} = parsed as {v?: unknown; entries?: unknown};
+  if (!isNum(v) || v > QUEUE_SCHEMA_VERSION || !Array.isArray(entries)) {
+    return {version: -1, elements: null};
+  }
+  return {version: v, elements: entries};
+}
+
+/**
+ * Bring every element this build can read up to the current shape.
+ *
+ * One arm per version. Elements that do not validate against their own version
+ * are dropped here and the caller turns that into `corrupt`, exactly as before
+ * — the point of the versioning is that a *whole release* of well-formed
+ * entries never lands in that bucket just because a field was added.
+ */
+function migrate(version: number, elements: unknown[]): SettlementEntry[] {
+  if (version === 0) {
+    return elements.filter(isV0Entry).map(e => ({
+      ...e,
+      mintUrl: LEGACY_MINT_URL,
+      unit: LEGACY_UNIT,
+    }));
+  }
+  return elements.filter(isSettlementEntry);
 }
 
 /**
@@ -411,7 +616,10 @@ export async function acknowledgeUnknownExposure(): Promise<void> {
 }
 
 async function writeQueue(entries: SettlementEntry[]): Promise<void> {
-  await setSecure(QUEUE_KEY, JSON.stringify(entries));
+  await setSecure(
+    QUEUE_KEY,
+    JSON.stringify({v: QUEUE_SCHEMA_VERSION, entries}),
+  );
 }
 
 /**
@@ -466,33 +674,63 @@ export const isOutstanding = (e: SettlementEntry): boolean =>
   e.status === 'submitting' ||
   e.status === 'needs-card';
 
+/** A failure an operator has reconciled — the only evictable failure. */
+const isRetiredFailure = (e: SettlementEntry): boolean =>
+  e.status === 'failed' && e.acknowledgedAt !== undefined;
+
 /**
- * Make room by dropping settled entries — never outstanding ones, because a
- * full queue must not silently discard money the merchant is still owed.
+ * Make room by dropping the oldest entries nothing is owed on — settled ones
+ * first, then failures an operator has already reconciled. Never an outstanding
+ * entry, because a full queue must not silently discard money the merchant is
+ * still owed, and never an *un*acknowledged failure, because that is the only
+ * evidence the merchant has of money they lost.
  *
- * `room` can legitimately be 0 when outstanding entries alone are at or over
- * the cap. `slice(-0)` is `slice(0)`, i.e. the *whole* array, so the zero case
- * is branched explicitly rather than expressed as a negative index.
+ * Chronology is preserved: the survivors are filtered out of the original
+ * array rather than rebuilt by concatenating partitions, so `listSettlements`
+ * and the drain loop stay in the order the burns happened.
  */
 function evict(queue: SettlementEntry[]): SettlementEntry[] {
-  const keep = queue.filter(e => e.status !== 'settled');
-  const settled = queue.filter(e => e.status === 'settled');
-  const room = Math.max(0, MAX_QUEUE_ENTRIES - keep.length);
-  return [...(room > 0 ? settled.slice(-room) : []), ...keep];
+  const overBy = queue.length - MAX_QUEUE_ENTRIES;
+  if (overBy <= 0) {
+    return queue;
+  }
+  const drop = new Set<SettlementEntry>();
+  for (const e of queue) {
+    if (drop.size >= overBy) {
+      break;
+    }
+    if (e.status === 'settled') {
+      drop.add(e);
+    }
+  }
+  for (const e of queue) {
+    if (drop.size >= overBy) {
+      break;
+    }
+    if (isRetiredFailure(e)) {
+      drop.add(e);
+    }
+  }
+  return queue.filter(e => !drop.has(e));
 }
 
 /**
  * Durably record a spend. **Await this before showing an approval.**
  *
- * Returns the stored entry. Throws if it could not be persisted — and a throw
- * here means do not approve the payment, because nothing would remember it.
- * That includes a storage read failure: an unreadable queue is not an empty
- * one, and writing over it would erase every outstanding settlement.
+ * Returns the stored entry — the existing one if this exact burn has already
+ * been recorded, because the id is derived from the burn (`settlementId`) and a
+ * second call for the same slot is a retry, not a conflict. Recording is
+ * idempotent for that reason: the one thing this must never do is decline a
+ * payment for a slot the card has already burned.
+ *
+ * Throws if it could not be persisted — and a throw here means do not approve
+ * the payment, because nothing would remember it. That includes a storage read
+ * failure: an unreadable queue is not an empty one, and writing over it would
+ * erase every outstanding settlement.
  */
 export async function recordSpend(
   record: SpendRecord,
   now: number,
-  id: string,
 ): Promise<SettlementEntry> {
   if (!record.secret) {
     // Without the secret there is nothing to submit and nothing to re-sign.
@@ -500,6 +738,17 @@ export async function recordSpend(
     // unsettleable.
     throw new Error('settlement record is missing the proof secret');
   }
+  if (!record.mintUrl) {
+    // Without the mint there is nowhere to submit it: the configured mint can
+    // change while an entry is queued, so "whatever is configured at drain
+    // time" is not an answer.
+    throw new Error('settlement record is missing the mint url');
+  }
+  if (!record.unit) {
+    // An amount with no unit cannot be totalled honestly beside another.
+    throw new Error('settlement record is missing the keyset unit');
+  }
+  const id = settlementId(record);
   const entry: SettlementEntry = {
     ...record,
     id,
@@ -511,14 +760,17 @@ export async function recordSpend(
   };
 
   return withQueue(async ({entries}) => {
-    if (entries.some(e => e.id === id)) {
-      // Two taps in the same millisecond under a Date.now() id would otherwise
-      // write duplicates; `update` patches only the first, so the second would
-      // stay pending forever and be submitted twice.
-      throw new Error(`settlement id already recorded: ${id}`);
+    const existing = entries.find(e => e.id === id);
+    if (existing) {
+      // Already durably recorded — that is the postcondition this function
+      // promises, so hand back what is on disk rather than writing a twin
+      // (`update` patches only the first, so the second would stay pending
+      // forever and be submitted twice) or throwing, which the caller is
+      // documented to read as "do not approve".
+      return existing;
     }
     const next = [...entries, entry];
-    await writeQueue(next.length > MAX_QUEUE_ENTRIES ? evict(next) : next);
+    await writeQueue(evict(next));
     return entry;
   });
 }
@@ -560,9 +812,10 @@ export const markFailed = (id: string, reason: string, now: number) =>
  * A retryable miss — stays outstanding, attempt count goes up.
  *
  * `status` is how the drain distinguishes a *known* miss (`pending`: the mint
- * never took the proof, so a later permanent rejection really is a failure)
- * from one whose outcome is still unknown (`submitting`: the proof may already
- * be at the mint, so a later permanent rejection is a confirmation).
+ * never took the proof, so even a later `ProofAlreadySpentError` is somebody
+ * else's spend and a real failure) from one whose outcome is still unknown
+ * (`submitting`: the proof may already be at the mint, so a later
+ * `ProofAlreadySpentError` — and only that — is a confirmation).
  */
 export const markAttemptFailed = (
   id: string,
@@ -613,9 +866,23 @@ export async function attachRecoveredWitness(
   });
 }
 
+/** One unit's slice of the outstanding total. */
+export interface UnitExposure {
+  amount: number;
+  count: number;
+}
+
 export interface Exposure {
-  /** Total the merchant is owed but has not settled, in the keyset's base unit. */
-  total: number;
+  /**
+   * What the merchant is owed, keyed by keyset unit (`sat`, `usd`, …).
+   *
+   * Per unit and not a single number, because nothing constrains the queue to
+   * one keyset: 40 `sat` beside 40 `usd` summed to `80`, a figure that is not
+   * money in any currency and would have been shown to the merchant as if it
+   * were. Absent units are absent keys — an empty object is a clean till.
+   */
+  totals: Record<string, UnitExposure>;
+  /** Outstanding entries across every unit. Counts are unit-agnostic. */
   count: number;
   /** Entries whose card must come back before they can settle. */
   needsCard: number;
@@ -650,8 +917,15 @@ export async function pendingExposure(): Promise<Exposure> {
   }
   const unknownSince = await readUnknownSince();
   const outstanding = entries.filter(isOutstanding);
+  const totals: Record<string, UnitExposure> = {};
+  for (const e of outstanding) {
+    const bucket = totals[e.unit] ?? {amount: 0, count: 0};
+    bucket.amount += e.amount;
+    bucket.count += 1;
+    totals[e.unit] = bucket;
+  }
   return {
-    total: outstanding.reduce((sum, e) => sum + e.amount, 0),
+    totals,
     count: outstanding.length,
     needsCard: entries.filter(e => e.status === 'needs-card').length,
     failed: entries.filter(e => e.status === 'failed').length,
@@ -718,6 +992,43 @@ export interface DrainResult {
    * never reports a settlement that was not persisted.
    */
   lost: number;
+  /**
+   * The mint took a proof and the local `settled` write would not land, for
+   * each entry it happened to.
+   *
+   * Collected rather than thrown: one entry whose write fails must not stop the
+   * entries behind it from settling, and must not throw away the count of what
+   * already did. The entries are left `submitting` on disk and remembered
+   * in-process, so no later drain re-submits them.
+   */
+  persistenceErrors: SettlementPersistenceError[];
+  /**
+   * A drain was already in flight and this call did nothing.
+   *
+   * Distinct from an all-zero result on an empty queue: a merchant-facing
+   * "Settle now" fired during the background drain would otherwise report a
+   * completed drain that settled nothing and changed no exposure.
+   */
+  skipped: boolean;
+}
+
+/** Optional collaborators for a drain. */
+export interface DrainOptions {
+  /**
+   * NUT-07 `/v1/checkstate` on the proof's `Y`, if the caller can offer one.
+   *
+   * Consulted only for an entry found `submitting` on disk, where the outcome
+   * of an earlier run is genuinely unknown, and it is the honest way to resolve
+   * that: ask the mint whether it holds the proof instead of inferring it from
+   * the shape of a later rejection. `spent` settles the entry without
+   * submitting anything; `unspent` means the earlier run never reached the mint,
+   * so an ordinary submission follows and a permanent rejection of it is a real
+   * failure. Anything else — including a throw — leaves the outcome unknown and
+   * the entry is submitted with its `submitting` inference intact.
+   */
+  checkState?: (
+    entry: SettlementEntry,
+  ) => Promise<'spent' | 'unspent' | 'unknown'>;
 }
 
 /**
@@ -779,33 +1090,65 @@ async function persistSettled(
 }
 
 /**
+ * `persistSettled`, with the failure collected instead of thrown.
+ *
+ * A write that will not land is this one entry's problem. Letting it reject the
+ * whole drain stops every entry behind it from ever being attempted and throws
+ * away the count of what already settled, so the caller cannot report either.
+ */
+async function settleConfirmed(
+  id: string,
+  now: number,
+  result: DrainResult,
+): Promise<void> {
+  try {
+    await persistSettled(id, now, result);
+  } catch (error) {
+    if (error instanceof SettlementPersistenceError) {
+      result.persistenceErrors.push(error);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
  * Try to settle every entry holding a witness.
  *
- * `swap` resolves on mint confirmation, and rejects otherwise. Reject with a
- * `PermanentSettlementError` to mark an entry failed instead of retrying it
- * forever — a double-spend or a malformed proof will never succeed.
+ * `swap` resolves on mint confirmation, and rejects otherwise. It receives the
+ * whole entry and must submit to `entry.mintUrl` — the configured mint can have
+ * changed since the burn. Reject with a `PermanentSettlementError` to mark an
+ * entry failed instead of retrying it forever, and with a
+ * `ProofAlreadySpentError` — and only for a NUT-07 `SPENT` / `11001` response —
+ * when the mint says it already holds the proof.
  *
  * `needs-card` entries are skipped: they have nothing to submit until the card
  * returns. `submitting` entries left behind by a killed process are picked up
- * and resolved. A drain already in flight makes this a no-op.
+ * and resolved, by `options.checkState` where the caller can offer one and by
+ * the mint's response to the resubmission otherwise. A drain already in flight
+ * makes this a no-op flagged `skipped`.
  *
- * Rejects with `SettlementPersistenceError` if the mint accepted a proof and
- * the local write would not land. That is not a settlement failure and is
- * never treated as one: the entry is remembered in-process so no later drain
- * re-submits it, and on disk it is left `submitting` so the guard survives the
- * app being killed as well.
+ * Never rejects for a `SettlementPersistenceError`: the mint accepting a proof
+ * whose local write will not land is not a settlement failure and must not stop
+ * the rest of the queue. Those are collected in `result.persistenceErrors`, the
+ * entry is remembered in-process so no later drain re-submits it, and on disk
+ * it is left `submitting` so the guard survives the app being killed as well.
  */
 export async function drainQueue(
   swap: (entry: SettlementEntry) => Promise<void>,
   now: number,
+  options: DrainOptions = {},
 ): Promise<DrainResult> {
   const result: DrainResult = {
     settled: 0,
     stillPending: 0,
     failed: 0,
     lost: 0,
+    persistenceErrors: [],
+    skipped: false,
   };
   if (draining) {
+    result.skipped = true;
     return result;
   }
   draining = true;
@@ -821,14 +1164,35 @@ export async function drainQueue(
       }
       if (mintConfirmed.has(entry.id)) {
         // The mint already has this proof; only the write is outstanding.
-        await persistSettled(entry.id, now, result);
+        await settleConfirmed(entry.id, now, result);
         continue;
       }
       // Read off the snapshot, before this drain overwrites it: 'submitting' on
-      // disk means an earlier run handed this proof to the mint and never
-      // learned the outcome — a crash mid-call, or a post-swap write that would
-      // not land. The in-memory `mintConfirmed` set cannot survive either.
-      const outcomeUnknown = entry.status === 'submitting';
+      // disk means an earlier run claimed this proof and never learned the
+      // outcome — a crash mid-call, or a post-swap write that would not land.
+      // It does *not* mean the mint saw it: the claim write lands before the
+      // swap. The in-memory `mintConfirmed` set cannot survive either.
+      let outcomeUnknown = entry.status === 'submitting';
+
+      if (outcomeUnknown && options.checkState) {
+        // Ask the mint what actually happened rather than inferring it later.
+        let state: 'spent' | 'unspent' | 'unknown';
+        try {
+          state = await options.checkState(entry);
+        } catch {
+          state = 'unknown';
+        }
+        if (state === 'spent') {
+          mintConfirmed.add(entry.id);
+          await settleConfirmed(entry.id, now, result);
+          continue;
+        }
+        if (state === 'unspent') {
+          // The mint never took it, so a permanent rejection of the submission
+          // below is a genuine failure and not a confirmation.
+          outcomeUnknown = false;
+        }
+      }
 
       // Claim the entry durably *before* the network call, so the same
       // inference is available to the next launch if this process dies here.
@@ -850,13 +1214,15 @@ export async function drainQueue(
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         if (error instanceof PermanentSettlementError) {
-          if (outcomeUnknown) {
-            // A proof only reaches 'submitting' on disk after it was handed to
-            // the mint, so "permanently rejected" now means the mint already
-            // has it. That is money received; markFailed would write off money
-            // the merchant actually got.
+          if (outcomeUnknown && error instanceof ProofAlreadySpentError) {
+            // The mint has identified this proof and says it holds it. That is
+            // money received; markFailed would write off money the merchant
+            // actually got. Every *other* permanent rejection takes the failure
+            // branch below even here — a claim written before a process died
+            // may never have reached any mint, and a proof that is simply
+            // invalid must not be booked as settled.
             mintConfirmed.add(entry.id);
-            await persistSettled(entry.id, now, result);
+            await settleConfirmed(entry.id, now, result);
             continue;
           }
           const marked = await markFailed(entry.id, reason, now);
@@ -888,12 +1254,49 @@ export async function drainQueue(
       // is a persistence problem, and must never fall through to the catch
       // above — marking it 'failed' would write off money we actually received.
       mintConfirmed.add(entry.id);
-      await persistSettled(entry.id, now, result);
+      await settleConfirmed(entry.id, now, result);
     }
     return result;
   } finally {
     draining = false;
   }
+}
+
+/**
+ * Operator acknowledgement of a permanently failed entry: it has been
+ * reconciled off-queue, so it may be pruned and — only from here on — evicted
+ * to make room.
+ *
+ * Returns `null` unless the entry exists and is `failed`. Nothing else can be
+ * acknowledged: an outstanding entry is still owed, and a settled one has
+ * nothing to reconcile.
+ */
+export async function acknowledgeFailed(
+  id: string,
+  now: number,
+): Promise<SettlementEntry | null> {
+  return withQueue(async ({entries}) => {
+    const idx = entries.findIndex(e => e.id === id);
+    if (idx === -1 || entries[idx].status !== 'failed') {
+      return null;
+    }
+    const next: SettlementEntry = {...entries[idx], acknowledgedAt: now};
+    entries[idx] = next;
+    await writeQueue(entries);
+    return next;
+  });
+}
+
+/**
+ * Forget failures an operator has acknowledged. Unacknowledged ones stay: they
+ * are the merchant's only record of money that did not arrive.
+ */
+export async function pruneFailed(): Promise<number> {
+  return withQueue(async ({entries}) => {
+    const keep = entries.filter(e => !isRetiredFailure(e));
+    await writeQueue(keep);
+    return entries.length - keep.length;
+  });
 }
 
 /** Forget settled entries. Never touches anything still outstanding. */

@@ -1,12 +1,17 @@
 import {
   CORRUPT_QUEUE_KEY,
+  LEGACY_MINT_URL,
+  LEGACY_UNIT,
   MAX_QUEUE_ENTRIES,
   PermanentSettlementError,
+  ProofAlreadySpentError,
+  QUEUE_SCHEMA_VERSION,
   QueueUnavailableError,
   SettlementPersistenceError,
   UNKNOWN_EXPOSURE_KEY,
   __resetDrainState,
   __setPersistDelay,
+  acknowledgeFailed,
   acknowledgeUnknownExposure,
   attachRecoveredWitness,
   clearQueue,
@@ -17,12 +22,16 @@ import {
   markFailed,
   markSettled,
   pendingExposure,
+  pruneFailed,
   pruneSettled,
+  quarantineKeyFor,
   recordSpend,
   recoverableForCard,
   recoveryMessage,
   recoveryMessageHex,
+  settlementId,
   toCashuProof,
+  type DrainResult,
   type SettlementEntry,
   type SpendRecord,
 } from '../../src/services/cashuSettlement';
@@ -35,6 +44,11 @@ let mockReadFails: Error | null = null;
 let mockWriteFails: Error | null = null;
 /** Narrows `mockWriteFails` to a single key; null means every key fails. */
 let mockWriteFailsOnlyFor: string | null = null;
+/**
+ * Number of writes still to be refused, for a store that recovers on its own.
+ * Lets one entry's settle write fail without taking the next entry's with it.
+ */
+let mockWriteFailBudget = 0;
 /**
  * Milliseconds each store operation takes. Zero by default; a test that needs
  * two callers to genuinely interleave across the bridge raises it.
@@ -60,6 +74,10 @@ jest.mock('../../src/services/secureStorage', () => ({
   }),
   setSecure: jest.fn(async (k: string, v: string) => {
     await mockSettle();
+    if (mockWriteFailBudget > 0) {
+      mockWriteFailBudget -= 1;
+      throw new Error('keychain write denied');
+    }
     if (
       mockWriteFails &&
       (!mockWriteFailsOnlyFor || mockWriteFailsOnlyFor === k)
@@ -76,6 +94,7 @@ jest.mock('../../src/services/secureStorage', () => ({
 
 const CARD = '02' + 'ab'.repeat(32);
 const OTHER_CARD = '03' + 'cd'.repeat(32);
+const MINT = 'https://mint.flashapp.me';
 const T0 = 1_700_000_000_000;
 
 const SECRET = JSON.stringify([
@@ -91,6 +110,8 @@ const spend = (over: Partial<SpendRecord> = {}): SpendRecord => ({
   cardPubkey: CARD,
   slot: 0,
   keysetId: '0059534ce0bfa19a',
+  mintUrl: MINT,
+  unit: 'sat',
   amount: 40,
   nonce: 'ab'.repeat(32),
   secret: SECRET,
@@ -99,7 +120,42 @@ const spend = (over: Partial<SpendRecord> = {}): SpendRecord => ({
   ...over,
 });
 
+/** Record a burn; the id is derived, so tests never invent one. */
+const record = (over: Partial<SpendRecord> = {}, now = T0) =>
+  recordSpend(spend(over), now);
+
+/** The id `record(over)` will produce, for tests that need it up front. */
+const idOf = (over: Partial<SpendRecord> = {}) => settlementId(spend(over));
+
 const QUEUE_KEY = '@cashu_settlement_queue';
+
+/** The entries inside the stored envelope. */
+const stored = (): SettlementEntry[] =>
+  JSON.parse(mockStore[QUEUE_KEY]).entries;
+
+/** An entry in the `v0` shape: exactly what the previous release wrote. */
+const asV0 = (entry: SettlementEntry): Record<string, unknown> => {
+  const v0: Record<string, unknown> = {...entry};
+  delete v0.mintUrl;
+  delete v0.unit;
+  return v0;
+};
+
+/** Put raw elements on disk inside a current-version envelope. */
+const storeRaw = (entries: unknown[], v: number = QUEUE_SCHEMA_VERSION) => {
+  mockStore[QUEUE_KEY] = JSON.stringify({v, entries});
+};
+
+/** A `DrainResult` with only the interesting fields spelled out. */
+const drained = (over: Partial<DrainResult> = {}): DrainResult => ({
+  settled: 0,
+  stillPending: 0,
+  failed: 0,
+  lost: 0,
+  persistenceErrors: [],
+  skipped: false,
+  ...over,
+});
 
 /** Every backoff the persist loop asked for, in order. */
 let persistDelays: number[] = [];
@@ -118,11 +174,28 @@ const relaunch = () => {
   });
 };
 
+/**
+ * The on-disk state of a process killed mid-drain: the claim write has landed,
+ * the swap has not returned. Captured from the store rather than hand-written,
+ * so it is exactly what the module wrote.
+ */
+const killedMidSubmission = async (over: Partial<SpendRecord> = {}) => {
+  await record(over);
+  let snapshot = '';
+  await drainQueue(async () => {
+    snapshot = mockStore[QUEUE_KEY];
+    throw new Error('killed');
+  }, T0);
+  mockStore[QUEUE_KEY] = snapshot;
+  relaunch();
+};
+
 beforeEach(() => {
   mockStore = {};
   mockReadFails = null;
   mockWriteFails = null;
   mockWriteFailsOnlyFor = null;
+  mockWriteFailBudget = 0;
   mockLatency = 0;
   persistDelays = [];
   relaunch();
@@ -130,11 +203,11 @@ beforeEach(() => {
 
 describe('recordSpend', () => {
   it('persists before anything else can happen — the approval precondition', async () => {
-    await recordSpend(spend(), T0, 'e1');
+    await record();
     // Read through a fresh call, i.e. what a relaunched app would see.
     const persisted = await listSettlements();
     expect(persisted).toHaveLength(1);
-    expect(persisted[0].id).toBe('e1');
+    expect(persisted[0].id).toBe(idOf());
     expect(persisted[0].status).toBe('pending');
     expect(persisted[0].attempts).toBe(0);
   });
@@ -142,51 +215,91 @@ describe('recordSpend', () => {
   it('records a witnessless burn as needs-card, not pending', async () => {
     // The card burned the slot and left the field before the signature came
     // back. The money is gone from the card; something must still owe it.
-    const entry = await recordSpend(spend({witness: undefined}), T0, 'e1');
+    const entry = await record({witness: undefined});
     expect(entry.status).toBe('needs-card');
   });
 
   it('keeps every entry distinct', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'e1');
-    await recordSpend(spend({slot: 1, amount: 25}), T0 + 1, 'e2');
+    await record({slot: 0});
+    await record({slot: 1, amount: 25}, T0 + 1);
     expect((await listSettlements()).map(e => e.amount)).toEqual([40, 25]);
   });
 
-  // Two taps in the same millisecond under a Date.now() id used to write two
-  // entries sharing an id: update() patches only the first, so the duplicate
-  // stayed pending forever and drainQueue submitted the same proof twice.
-  it('refuses a duplicate id instead of writing an unpatchable twin', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'dupe');
-    await expect(recordSpend(spend({slot: 1}), T0, 'dupe')).rejects.toThrow(
-      /already recorded/,
-    );
+  // The id is `<cardPubkey>:<slot>:<nonce>` — unique per burn by construction,
+  // so nothing upstream has to invent one and nothing can collide.
+  it('derives the id from the burn itself', async () => {
+    const entry = await record({slot: 3});
+    expect(entry.id).toBe(`${CARD}:3:${'ab'.repeat(32)}`);
+    expect(entry.id).not.toBe(idOf({slot: 4}));
+    expect(idOf({cardPubkey: OTHER_CARD})).not.toBe(idOf());
+  });
+
+  // A throw from recordSpend means "do not approve the payment". The slot is
+  // already burned by the time this is called, so a retry — a generic wrapper,
+  // a double-tap, a re-render — must never turn into a decline.
+  it('is idempotent for the same burn instead of declining it', async () => {
+    const first = await record({amount: 40});
+    const again = await recordSpend(spend({amount: 40}), T0 + 500);
+
+    expect(again).toEqual(first);
+    // The original createdAt survived: this is the stored entry, not a rewrite.
+    expect(again.createdAt).toBe(T0);
     expect(await listSettlements()).toHaveLength(1);
+  });
+
+  // update() patches only the first match, so a twin would stay pending forever
+  // and drainQueue would submit the same proof twice.
+  it('never writes an unpatchable twin', async () => {
+    await record();
+    await record();
+    await markSettled(idOf(), T0 + 1);
+    expect((await listSettlements()).map(e => e.status)).toEqual(['settled']);
   });
 
   // Without the secret there is no proof to submit and no message to re-sign.
   it('refuses a record with no proof secret — it would be unsettleable', async () => {
-    await expect(recordSpend(spend({secret: ''}), T0, 'e1')).rejects.toThrow(
+    await expect(record({secret: ''})).rejects.toThrow(
       /missing the proof secret/,
     );
     expect(await listSettlements()).toEqual([]);
   });
 
+  // The configured mint can move while entries are queued; "whatever is
+  // configured at drain time" would submit this proof to a mint that never
+  // issued it.
+  it('refuses a record with no mint url', async () => {
+    await expect(record({mintUrl: ''})).rejects.toThrow(/missing the mint url/);
+    expect(await listSettlements()).toEqual([]);
+  });
+
+  it('refuses a record with no unit — the amount would not be totalable', async () => {
+    await expect(record({unit: ''})).rejects.toThrow(/missing the keyset unit/);
+    expect(await listSettlements()).toEqual([]);
+  });
+
+  it('persists the mint and unit so a drain does not have to guess', async () => {
+    await record({mintUrl: 'https://other.mint.example', unit: 'usd'});
+    const [entry] = await listSettlements();
+    expect(entry.mintUrl).toBe('https://other.mint.example');
+    expect(entry.unit).toBe('usd');
+  });
+
   it('evicts settled entries, never outstanding ones, when full', async () => {
     for (let i = 0; i < MAX_QUEUE_ENTRIES; i++) {
-      await recordSpend(spend({slot: i}), T0 + i, `s${i}`);
-      await markSettled(`s${i}`, T0 + i);
+      await record({slot: i}, T0 + i);
+      await markSettled(idOf({slot: i}), T0 + i);
     }
-    await recordSpend(spend({slot: 999, amount: 77}), T0, 'keepme');
+    await record({slot: 999, amount: 77});
 
     const queue = await listSettlements();
     expect(queue.length).toBeLessThanOrEqual(MAX_QUEUE_ENTRIES);
     // The one entry the merchant is still owed survived the trim.
-    expect(queue.find(e => e.id === 'keepme')).toBeDefined();
+    expect(queue.find(e => e.id === idOf({slot: 999}))).toBeDefined();
   });
 
   it('never evicts an outstanding entry even when they alone overflow', async () => {
     for (let i = 0; i < MAX_QUEUE_ENTRIES + 5; i++) {
-      await recordSpend(spend({slot: i, amount: 1}), T0 + i, `p${i}`);
+      await record({slot: i, amount: 1}, T0 + i);
     }
     const queue = await listSettlements();
     expect(queue.filter(e => e.status === 'pending')).toHaveLength(
@@ -199,26 +312,43 @@ describe('recordSpend', () => {
   // nothing and the blob grew without bound in the Keychain.
   it('drops settled entries even when outstanding ones alone fill the queue', async () => {
     for (let i = 0; i < MAX_QUEUE_ENTRIES + 5; i++) {
-      await recordSpend(spend({slot: i, amount: 1}), T0 + i, `p${i}`);
+      await record({slot: i, amount: 1}, T0 + i);
     }
-    await markSettled('p0', T0);
-    await markSettled('p1', T0);
-    await markSettled('p2', T0);
+    await markSettled(idOf({slot: 0, amount: 1}), T0);
+    await markSettled(idOf({slot: 1, amount: 1}), T0);
+    await markSettled(idOf({slot: 2, amount: 1}), T0);
     expect(await listSettlements()).toHaveLength(MAX_QUEUE_ENTRIES + 5);
 
-    await recordSpend(spend({slot: 999, amount: 77}), T0, 'newest');
+    await record({slot: 999, amount: 77});
 
     const queue = await listSettlements();
     expect(queue.filter(e => e.status === 'settled')).toEqual([]);
-    expect(queue.find(e => e.id === 'newest')).toBeDefined();
+    expect(
+      queue.find(e => e.id === idOf({slot: 999, amount: 77})),
+    ).toBeDefined();
     // The three settled entries went; every outstanding one stayed.
     expect(queue.filter(isOutstanding)).toHaveLength(MAX_QUEUE_ENTRIES + 3);
+  });
+
+  // Eviction used to rebuild the queue as [settled..., outstanding...], so the
+  // first eviction silently reordered it and neither listSettlements nor the
+  // drain loop was chronological afterwards.
+  it('keeps the queue chronological after an eviction', async () => {
+    for (let i = 0; i < MAX_QUEUE_ENTRIES; i++) {
+      await record({slot: i, amount: 1}, T0 + i);
+    }
+    // One old settled entry in the middle is the only thing evictable.
+    await markSettled(idOf({slot: 100, amount: 1}), T0);
+    await record({slot: 999, amount: 77}, T0 + 1000);
+
+    const times = (await listSettlements()).map(e => e.createdAt);
+    expect(times).toEqual([...times].sort((a, b) => a - b));
   });
 });
 
 describe('reconstructing the proof from disk', () => {
   it('rebuilds a full mint-ready proof from a persisted entry alone', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
+    await record({amount: 40});
 
     // Nothing in memory; only what was written to the store, as after a kill.
     const [entry] = await listSettlements();
@@ -235,10 +365,12 @@ describe('reconstructing the proof from disk', () => {
     expect(Object.values(proof).every(v => v !== '' && v !== undefined)).toBe(
       true,
     );
+    // And the entry still knows where to send it.
+    expect(entry.mintUrl).toBe(MINT);
   });
 
   it('refuses to build a proof with no witness rather than sending a broken one', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
     const [entry] = await listSettlements();
     expect(() => toCashuProof(entry)).toThrow(/no witness/);
   });
@@ -246,7 +378,7 @@ describe('reconstructing the proof from disk', () => {
   // The card cannot return the secret, only the nonce — so the recovery
   // message has to come from the persisted secret or it cannot be produced.
   it('derives the re-sign message as sha256(utf8(secret)) from the entry', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
     const [entry] = await listSettlements();
 
     const message = recoveryMessage(entry);
@@ -267,13 +399,13 @@ describe('reconstructing the proof from disk', () => {
 
 describe('pendingExposure', () => {
   it('totals what the merchant is actually owed', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
-    await recordSpend(spend({amount: 25, witness: undefined}), T0, 'b');
-    await recordSpend(spend({amount: 10}), T0, 'c');
-    await markSettled('c', T0);
+    await record({slot: 0, amount: 40});
+    await record({slot: 1, amount: 25, witness: undefined});
+    await record({slot: 2, amount: 10});
+    await markSettled(idOf({slot: 2}), T0);
 
     expect(await pendingExposure()).toEqual({
-      total: 65, // settled 10 excluded
+      totals: {sat: {amount: 65, count: 2}}, // settled 10 excluded
       count: 2,
       needsCard: 1,
       failed: 0,
@@ -282,59 +414,85 @@ describe('pendingExposure', () => {
 
   it('is zero on a clean till', async () => {
     expect(await pendingExposure()).toEqual({
-      total: 0,
+      totals: {},
       count: 0,
       needsCard: 0,
       failed: 0,
     });
   });
 
+  // Nothing constrains the queue to one keyset. Summing across units produced a
+  // number that is not money in any currency, and that is the number the whole
+  // exposure report exists to show the merchant honestly.
+  it('never sums across units', async () => {
+    await record({slot: 0, amount: 40, unit: 'sat'});
+    await record({slot: 1, amount: 40, unit: 'usd'});
+
+    const exposure = await pendingExposure();
+    expect(exposure.totals).toEqual({
+      sat: {amount: 40, count: 1},
+      usd: {amount: 40, count: 1},
+    });
+    expect(exposure.count).toBe(2);
+  });
+
   it('counts a permanently failed entry separately from what is owed', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
+    await record({amount: 40});
     await drainQueue(async () => {
-      throw new PermanentSettlementError('already spent at the mint');
+      throw new PermanentSettlementError('malformed proof');
     }, T0);
 
     const exposure = await pendingExposure();
     expect(exposure.failed).toBe(1);
-    // A double-spend is not money the merchant is going to get.
-    expect(exposure.total).toBe(0);
+    // A proof the mint will never take is not money the merchant is going to get.
+    expect(exposure.totals).toEqual({});
     expect(exposure.count).toBe(0);
   });
 });
 
 describe('drainQueue', () => {
   it('settles entries that the mint accepts', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
-    await recordSpend(spend({amount: 25, slot: 1}), T0, 'b');
+    await record({slot: 0, amount: 40});
+    await record({slot: 1, amount: 25});
 
     const swapped: string[] = [];
     const result = await drainQueue(async e => {
       swapped.push(e.id);
     }, T0);
 
-    expect(swapped).toEqual(['a', 'b']);
-    expect(result).toEqual({settled: 2, stillPending: 0, failed: 0, lost: 0});
-    expect((await pendingExposure()).total).toBe(0);
+    expect(swapped).toEqual([idOf({slot: 0}), idOf({slot: 1})]);
+    expect(result).toEqual(drained({settled: 2}));
+    expect((await pendingExposure()).totals).toEqual({});
+  });
+
+  // The mint that issued a proof is the only one that can settle it, and the
+  // configured one can have changed since the burn.
+  it('hands the swap the mint the proof was issued by', async () => {
+    await record({slot: 0, mintUrl: 'https://old.mint.example'});
+    const seen: string[] = [];
+    await drainQueue(async e => {
+      seen.push(e.mintUrl);
+    }, T0);
+    expect(seen).toEqual(['https://old.mint.example']);
   });
 
   it('keeps a transient failure outstanding and counts the attempt', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     const result = await drainQueue(async () => {
       throw new Error('network unreachable');
     }, T0 + 5);
 
-    expect(result).toEqual({settled: 0, stillPending: 1, failed: 0, lost: 0});
+    expect(result).toEqual(drained({stillPending: 1}));
     const [entry] = await listSettlements();
     expect(entry.status).toBe('pending');
     expect(entry.attempts).toBe(1);
     expect(entry.lastError).toMatch(/network unreachable/);
     // Still owed — a failed drain must not quietly write the money off.
-    expect((await pendingExposure()).total).toBe(40);
+    expect((await pendingExposure()).totals.sat.amount).toBe(40);
   });
 
   it('retries across drains until it lands', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     let calls = 0;
     const flaky = async () => {
       calls += 1;
@@ -351,26 +509,26 @@ describe('drainQueue', () => {
   });
 
   it('gives up on a permanent rejection instead of retrying forever', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     const result = await drainQueue(async () => {
-      throw new PermanentSettlementError('proof already spent');
+      throw new PermanentSettlementError('malformed proof');
     }, T0);
 
-    expect(result).toEqual({settled: 0, stillPending: 0, failed: 1, lost: 0});
+    expect(result).toEqual(drained({failed: 1}));
     expect((await listSettlements())[0].status).toBe('failed');
   });
 
   it('skips needs-card entries — there is nothing to submit', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
     const swap = jest.fn();
     const result = await drainQueue(swap, T0);
 
     expect(swap).not.toHaveBeenCalled();
-    expect(result).toEqual({settled: 0, stillPending: 0, failed: 0, lost: 0});
+    expect(result).toEqual(drained());
   });
 
   it('does not re-submit an already settled entry', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     await drainQueue(async () => {}, T0);
     const swap = jest.fn();
     await drainQueue(swap, T0 + 1);
@@ -378,34 +536,38 @@ describe('drainQueue', () => {
   });
 
   it('one failure does not stop the others settling', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'a');
-    await recordSpend(spend({slot: 1}), T0, 'b');
-    await recordSpend(spend({slot: 2}), T0, 'c');
+    await record({slot: 0});
+    await record({slot: 1});
+    await record({slot: 2});
 
     const result = await drainQueue(async e => {
-      if (e.id === 'b') {
+      if (e.id === idOf({slot: 1})) {
         throw new Error('transient');
       }
     }, T0);
 
-    expect(result).toEqual({settled: 2, stillPending: 1, failed: 0, lost: 0});
+    expect(result).toEqual(drained({settled: 2, stillPending: 1}));
   });
 
   // Two triggers — app foreground and a connectivity change — used to both read
   // the same 'pending' entry and both submit it. The loser took a double-spend
   // rejection and markFailed overwrote the winner's 'settled'.
   it('refuses to run twice at once, so a proof is never submitted twice', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
 
     const second = jest.fn(async () => {});
-    let nested: Awaited<ReturnType<typeof drainQueue>> | undefined;
+    let nested: DrainResult | undefined;
 
     const outer = await drainQueue(async () => {
       nested = await drainQueue(second, T0);
     }, T0);
 
     expect(second).not.toHaveBeenCalled();
-    expect(nested).toEqual({settled: 0, stillPending: 0, failed: 0, lost: 0});
+    // Flagged, not a silent no-op: a "Settle now" button fired during the
+    // background drain would otherwise report a completed drain that settled
+    // nothing and left the exposure exactly where it was.
+    expect(nested).toEqual(drained({skipped: true}));
+    expect(outer.skipped).toBe(false);
     expect(outer.settled).toBe(1);
     expect((await listSettlements())[0].status).toBe('settled');
   });
@@ -413,25 +575,25 @@ describe('drainQueue', () => {
   // markSettled returns null when the entry has vanished. Counting that as a
   // settlement reports a persistence that did not happen.
   it('counts an unattributable mint success as lost, not settled', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
 
     const result = await drainQueue(async () => {
       // The entry is pruned out from under the drain, mid-swap.
-      mockStore[QUEUE_KEY] = JSON.stringify([]);
+      storeRaw([]);
     }, T0);
 
-    expect(result).toEqual({settled: 0, stillPending: 0, failed: 0, lost: 1});
+    expect(result).toEqual(drained({lost: 1}));
   });
 
   it('counts an unattributable failure as lost too', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
 
     const result = await drainQueue(async () => {
-      mockStore[QUEUE_KEY] = JSON.stringify([]);
+      storeRaw([]);
       throw new Error('network unreachable');
     }, T0);
 
-    expect(result).toEqual({settled: 0, stillPending: 0, failed: 0, lost: 1});
+    expect(result).toEqual(drained({lost: 1}));
   });
 
   // The money is at the mint the instant swap resolves. A write failure after
@@ -439,13 +601,15 @@ describe('drainQueue', () => {
   // 'failed' would write off money the merchant actually received, and leaving
   // it 'pending' would re-submit a proof the mint has already consumed.
   it('does not leave a mint-accepted proof re-submittable when the write fails', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
 
     const swap = jest.fn(async () => {
       mockWriteFails = new Error('keychain write denied');
     });
 
-    await expect(drainQueue(swap, T0)).rejects.toBeInstanceOf(
+    const first = await drainQueue(swap, T0);
+    expect(first.persistenceErrors).toHaveLength(1);
+    expect(first.persistenceErrors[0]).toBeInstanceOf(
       SettlementPersistenceError,
     );
     expect(swap).toHaveBeenCalledTimes(1);
@@ -458,62 +622,98 @@ describe('drainQueue', () => {
     // the claim written before the swap. It is still outstanding, and the next
     // drain must not hand the same proof to the mint again.
     mockWriteFails = null;
-    const stored = await listSettlements();
-    expect(stored[0].status).toBe('submitting');
-    expect(isOutstanding(stored[0])).toBe(true);
-    expect(stored[0].lastError).toBeUndefined();
+    const queued = await listSettlements();
+    expect(queued[0].status).toBe('submitting');
+    expect(isOutstanding(queued[0])).toBe(true);
+    expect(queued[0].lastError).toBeUndefined();
 
     const second = await drainQueue(swap, T0 + 1);
     expect(swap).toHaveBeenCalledTimes(1); // not re-submitted
-    expect(second).toEqual({settled: 1, stillPending: 0, failed: 0, lost: 0});
+    expect(second).toEqual(drained({settled: 1}));
     expect((await listSettlements())[0].status).toBe('settled');
+  });
+
+  // Regression: persistSettled was called outside the loop's try, so one
+  // unwritable settlement rejected the whole drain — every entry behind it was
+  // never attempted, and the count of what did settle went with the throw.
+  it('an unwritable settlement does not stop the entries behind it', async () => {
+    await record({slot: 0});
+    await record({slot: 1});
+    await record({slot: 2});
+
+    const swapped: string[] = [];
+    const result = await drainQueue(async e => {
+      if (e.id === idOf({slot: 0})) {
+        // Exactly this entry's three 'settled' attempts are refused; the store
+        // is healthy again by the time the next entry needs it.
+        mockWriteFailBudget = 3;
+      }
+      swapped.push(e.id);
+    }, T0);
+
+    expect(swapped).toEqual([
+      idOf({slot: 0}),
+      idOf({slot: 1}),
+      idOf({slot: 2}),
+    ]);
+    expect(result.settled).toBe(2);
+    expect(result.persistenceErrors).toHaveLength(1);
+    expect(result.persistenceErrors[0]).toBeInstanceOf(
+      SettlementPersistenceError,
+    );
+    expect(result.persistenceErrors[0].message).toContain(idOf({slot: 0}));
   });
 });
 
 describe('concurrent mutation', () => {
   it('does not let a background drain clobber a tap recorded mid-flight', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'a');
+    await record({slot: 0});
     // Force the two callers to genuinely interleave across the bridge.
     mockLatency = 2;
 
     await Promise.all([
-      recordSpend(spend({slot: 1, amount: 25}), T0 + 1, 'b'),
-      markSettled('a', T0 + 1),
+      record({slot: 1, amount: 25}, T0 + 1),
+      markSettled(idOf({slot: 0}), T0 + 1),
     ]);
 
     mockLatency = 0;
     const queue = await listSettlements();
     // Neither write was lost: the tap survived and the settle stuck.
-    expect(queue.map(e => e.id).sort()).toEqual(['a', 'b']);
-    expect(queue.find(e => e.id === 'a')?.status).toBe('settled');
-    expect(queue.find(e => e.id === 'b')?.status).toBe('pending');
+    expect(queue.map(e => e.id).sort()).toEqual(
+      [idOf({slot: 0}), idOf({slot: 1})].sort(),
+    );
+    expect(queue.find(e => e.id === idOf({slot: 0}))?.status).toBe('settled');
+    expect(queue.find(e => e.id === idOf({slot: 1}))?.status).toBe('pending');
   });
 
   it('a rejected mutation does not poison the ones queued behind it', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'a');
+    await record({slot: 0});
     mockLatency = 2;
 
     const results = await Promise.allSettled([
-      recordSpend(spend({slot: 1}), T0, 'a'), // duplicate id — rejects
-      recordSpend(spend({slot: 2}), T0, 'c'),
+      record({slot: 1, secret: ''}), // no secret — rejects
+      record({slot: 2}),
     ]);
 
     mockLatency = 0;
     expect(results[0].status).toBe('rejected');
     expect(results[1].status).toBe('fulfilled');
-    expect((await listSettlements()).map(e => e.id)).toEqual(['a', 'c']);
+    expect((await listSettlements()).map(e => e.id)).toEqual([
+      idOf({slot: 0}),
+      idOf({slot: 2}),
+    ]);
   });
 });
 
 describe('recovery from a lost witness', () => {
   it('re-signing moves needs-card back to pending and it then settles', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
 
     const recoverable = await recoverableForCard(CARD);
-    expect(recoverable.map(e => e.id)).toEqual(['a']);
+    expect(recoverable.map(e => e.id)).toEqual([idOf()]);
 
     // The card came back; SIGN_ARBITRARY produced an equally valid witness.
-    await attachRecoveredWitness('a', 'aa'.repeat(64), T0 + 10);
+    await attachRecoveredWitness(idOf(), 'aa'.repeat(64), T0 + 10);
     const entry = (await listSettlements())[0];
     expect(entry.status).toBe('pending');
     expect(entry.witness).toBe('aa'.repeat(64));
@@ -522,25 +722,21 @@ describe('recovery from a lost witness', () => {
   });
 
   it('only offers entries belonging to the card in hand', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'mine');
-    await recordSpend(
-      spend({witness: undefined, cardPubkey: OTHER_CARD}),
-      T0,
-      'theirs',
-    );
-    expect((await recoverableForCard(CARD)).map(e => e.id)).toEqual(['mine']);
+    await record({witness: undefined});
+    await record({witness: undefined, cardPubkey: OTHER_CARD});
+    expect((await recoverableForCard(CARD)).map(e => e.id)).toEqual([idOf()]);
   });
 
   // A recovery UI can re-tap a card whose entry has already settled. Flipping
   // it back to 'pending' would re-submit a proof the mint has consumed.
   it('will not resurrect a settled entry into the drain loop', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     await drainQueue(async () => {}, T0);
 
     // Null, not the untouched entry: a truthy return here is indistinguishable
     // from success, and a recovery screen would report a repair that never
     // happened.
-    expect(await attachRecoveredWitness('a', 'aa'.repeat(64), T0 + 10)).toBe(
+    expect(await attachRecoveredWitness(idOf(), 'aa'.repeat(64), T0 + 10)).toBe(
       null,
     );
 
@@ -554,19 +750,23 @@ describe('recovery from a lost witness', () => {
   });
 
   it('will not resurrect a permanently failed entry either', async () => {
-    await recordSpend(spend(), T0, 'a');
-    await markFailed('a', 'already spent at the mint', T0);
+    await record();
+    await markFailed(idOf(), 'malformed proof', T0);
 
-    expect(await attachRecoveredWitness('a', 'aa'.repeat(64), T0 + 10)).toBe(
+    expect(await attachRecoveredWitness(idOf(), 'aa'.repeat(64), T0 + 10)).toBe(
       null,
     );
     expect((await listSettlements())[0].status).toBe('failed');
   });
 
   it('returns the repaired entry on the one transition it allows', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
 
-    const repaired = await attachRecoveredWitness('a', 'aa'.repeat(64), T0 + 1);
+    const repaired = await attachRecoveredWitness(
+      idOf(),
+      'aa'.repeat(64),
+      T0 + 1,
+    );
     expect(repaired).not.toBeNull();
     expect(repaired?.status).toBe('pending');
     expect(repaired?.witness).toBe('aa'.repeat(64));
@@ -579,11 +779,11 @@ describe('recovery from a lost witness', () => {
   });
 
   it('refusing writes nothing at all', async () => {
-    await recordSpend(spend(), T0, 'a');
-    await markFailed('a', 'already spent at the mint', T0 + 1);
+    await record();
+    await markFailed(idOf(), 'malformed proof', T0 + 1);
     const before = mockStore[QUEUE_KEY];
 
-    expect(await attachRecoveredWitness('a', 'aa'.repeat(64), T0 + 10)).toBe(
+    expect(await attachRecoveredWitness(idOf(), 'aa'.repeat(64), T0 + 10)).toBe(
       null,
     );
     expect(mockStore[QUEUE_KEY]).toBe(before);
@@ -595,11 +795,11 @@ describe('recovery from a lost witness', () => {
 // and the 'settled' write landing. The intent has to be on disk.
 describe('an unresolved submission survives a relaunch', () => {
   it('claims the entry as submitting before the swap, so a kill is visible', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
 
     let statusDuringSwap: string | undefined;
     await drainQueue(async () => {
-      statusDuringSwap = JSON.parse(mockStore[QUEUE_KEY])[0].status;
+      statusDuringSwap = stored()[0].status;
     }, T0);
 
     expect(statusDuringSwap).toBe('submitting');
@@ -607,15 +807,14 @@ describe('an unresolved submission survives a relaunch', () => {
   });
 
   it('settles, not fails, when the mint rejects a proof it already took', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
+    await record({amount: 40});
 
     // The mint accepted it; the 'settled' write would not land.
     const goodSwap = jest.fn(async () => {
       mockWriteFails = new Error('keychain write denied');
     });
-    await expect(drainQueue(goodSwap, T0)).rejects.toBeInstanceOf(
-      SettlementPersistenceError,
-    );
+    const first = await drainQueue(goodSwap, T0);
+    expect(first.persistenceErrors).toHaveLength(1);
     mockWriteFails = null;
     expect((await listSettlements())[0].status).toBe('submitting');
 
@@ -623,24 +822,56 @@ describe('an unresolved submission survives a relaunch', () => {
     relaunch();
 
     const rejectSwap = jest.fn(async () => {
-      throw new PermanentSettlementError('proof already spent');
+      throw new ProofAlreadySpentError('proof already spent');
     });
     const result = await drainQueue(rejectSwap, T0 + 1);
 
     expect(rejectSwap).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({settled: 1, stillPending: 0, failed: 0, lost: 0});
+    expect(result).toEqual(drained({settled: 1}));
     // Money the merchant actually received is not written off.
     expect((await listSettlements())[0].status).toBe('settled');
-    expect((await pendingExposure()).total).toBe(0);
+    expect((await pendingExposure()).totals).toEqual({});
+  });
+
+  // 'submitting' on disk means the *claim* landed, not that the mint saw
+  // anything: the claim write happens before the swap. A proof that is simply
+  // invalid — a bad C from a flaky NFC read, a rotated keyset — must not be
+  // booked as money received just because the process died before submitting.
+  it('fails, not settles, when an unresolved entry is rejected as invalid', async () => {
+    await killedMidSubmission({amount: 40});
+    expect((await listSettlements())[0].status).toBe('submitting');
+
+    const result = await drainQueue(async () => {
+      throw new PermanentSettlementError('invalid proof: bad signature');
+    }, T0 + 1);
+
+    expect(result).toEqual(drained({failed: 1}));
+    const [entry] = await listSettlements();
+    expect(entry.status).toBe('failed');
+    expect(entry.lastError).toMatch(/bad signature/);
+    // Money that left the card and reached no mint is not booked as received.
+    const exposure = await pendingExposure();
+    expect(exposure.failed).toBe(1);
+    expect(exposure.totals).toEqual({});
+  });
+
+  it('settles an unresolved entry only on an already-spent response', async () => {
+    await killedMidSubmission();
+
+    const result = await drainQueue(async () => {
+      throw new ProofAlreadySpentError('11001: Token already spent');
+    }, T0 + 1);
+
+    expect(result).toEqual(drained({settled: 1}));
+    expect((await listSettlements())[0].status).toBe('settled');
   });
 
   it('still settles across a relaunch when the mint had never seen it', async () => {
-    await recordSpend(spend(), T0, 'a');
-    await expect(
-      drainQueue(async () => {
-        mockWriteFails = new Error('keychain write denied');
-      }, T0),
-    ).rejects.toBeInstanceOf(SettlementPersistenceError);
+    await record();
+    const first = await drainQueue(async () => {
+      mockWriteFails = new Error('keychain write denied');
+    }, T0);
+    expect(first.persistenceErrors).toHaveLength(1);
     mockWriteFails = null;
     relaunch();
 
@@ -648,27 +879,38 @@ describe('an unresolved submission survives a relaunch', () => {
   });
 
   it('a first-attempt permanent rejection is still a failure, not a settlement', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     const result = await drainQueue(async () => {
       throw new PermanentSettlementError('malformed proof');
     }, T0);
 
-    expect(result).toEqual({settled: 0, stillPending: 0, failed: 1, lost: 0});
+    expect(result).toEqual(drained({failed: 1}));
+    expect((await listSettlements())[0].status).toBe('failed');
+  });
+
+  // Even the already-spent response is a failure on a *first* attempt: nothing
+  // was ever submitted, so the mint is talking about a proof someone else got.
+  it('a first-attempt already-spent response is a failure too', async () => {
+    await record();
+    const result = await drainQueue(async () => {
+      throw new ProofAlreadySpentError('proof already spent');
+    }, T0);
+
+    expect(result).toEqual(drained({failed: 1}));
     expect((await listSettlements())[0].status).toBe('failed');
   });
 
   it('a transient miss on an unresolved entry keeps it unresolved', async () => {
-    await recordSpend(spend(), T0, 'a');
-    await expect(
-      drainQueue(async () => {
-        mockWriteFails = new Error('keychain write denied');
-      }, T0),
-    ).rejects.toBeInstanceOf(SettlementPersistenceError);
+    await record();
+    const first = await drainQueue(async () => {
+      mockWriteFails = new Error('keychain write denied');
+    }, T0);
+    expect(first.persistenceErrors).toHaveLength(1);
     mockWriteFails = null;
     relaunch();
 
-    // Offline now: reverting to 'pending' here would let the *next* permanent
-    // rejection be misread as a real failure.
+    // Offline now: reverting to 'pending' here would let the *next*
+    // already-spent response be misread as a real failure.
     await drainQueue(async () => {
       throw new Error('network unreachable');
     }, T0 + 1);
@@ -676,80 +918,191 @@ describe('an unresolved submission survives a relaunch', () => {
 
     relaunch();
     await drainQueue(async () => {
-      throw new PermanentSettlementError('proof already spent');
+      throw new ProofAlreadySpentError('proof already spent');
     }, T0 + 2);
     expect((await listSettlements())[0].status).toBe('settled');
   });
 
   it('a submitting entry is money the merchant is still owed', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
-    await expect(
-      drainQueue(async () => {
-        mockWriteFails = new Error('keychain write denied');
-      }, T0),
-    ).rejects.toBeInstanceOf(SettlementPersistenceError);
+    await record({amount: 40});
+    const first = await drainQueue(async () => {
+      mockWriteFails = new Error('keychain write denied');
+    }, T0);
+    expect(first.persistenceErrors).toHaveLength(1);
     mockWriteFails = null;
 
     const exposure = await pendingExposure();
-    expect(exposure.total).toBe(40);
+    expect(exposure.totals).toEqual({sat: {amount: 40, count: 1}});
     expect(exposure.count).toBe(1);
     expect(await hasUnsettledForCard(CARD)).toBe(true);
     await expect(clearQueue()).rejects.toThrow(/outstanding/);
   });
 });
 
+// Asking the mint beats inferring from the shape of a later rejection.
+describe('resolving an unknown outcome with a state check', () => {
+  it('settles a spent proof without submitting it again', async () => {
+    await killedMidSubmission();
+
+    const swap = jest.fn();
+    const result = await drainQueue(swap, T0 + 1, {
+      checkState: async () => 'spent',
+    });
+
+    expect(swap).not.toHaveBeenCalled();
+    expect(result).toEqual(drained({settled: 1}));
+    expect((await listSettlements())[0].status).toBe('settled');
+  });
+
+  it('treats a rejection as a real failure once the mint says unspent', async () => {
+    await killedMidSubmission();
+
+    const result = await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 1,
+      {checkState: async () => 'unspent'},
+    );
+
+    // The mint said it did not hold this proof, so a later "already spent" is
+    // not this settlement's confirmation.
+    expect(result).toEqual(drained({failed: 1}));
+    expect((await listSettlements())[0].status).toBe('failed');
+  });
+
+  it('leaves the outcome unknown when the check itself fails', async () => {
+    await killedMidSubmission();
+
+    const result = await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 1,
+      {
+        checkState: async () => {
+          throw new Error('offline');
+        },
+      },
+    );
+
+    expect(result).toEqual(drained({settled: 1}));
+  });
+
+  it('is not consulted for an entry that was never submitted', async () => {
+    await record();
+    const checkState = jest.fn(async () => 'unspent' as const);
+    await drainQueue(async () => {}, T0, {checkState});
+    expect(checkState).not.toHaveBeenCalled();
+  });
+});
+
 describe('hasUnsettledForCard — the CLEAR_SPENT guard', () => {
   it('is true while the card has outstanding spends', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     // CLEAR_SPENT here would erase the slot data and turn a recoverable burn
     // into a real loss.
     expect(await hasUnsettledForCard(CARD)).toBe(true);
   });
 
   it('is true for a needs-card entry, which is exactly when erasing is fatal', async () => {
-    await recordSpend(spend({witness: undefined}), T0, 'a');
+    await record({witness: undefined});
     expect(await hasUnsettledForCard(CARD)).toBe(true);
   });
 
   it('goes false once everything settles', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     await drainQueue(async () => {}, T0);
     expect(await hasUnsettledForCard(CARD)).toBe(false);
   });
 
   it('does not confuse one card with another', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     expect(await hasUnsettledForCard(OTHER_CARD)).toBe(false);
   });
 });
 
 describe('housekeeping', () => {
   it('pruneSettled removes settled entries only', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'a');
-    await recordSpend(spend({slot: 1}), T0, 'b');
-    await markSettled('a', T0);
+    await record({slot: 0});
+    await record({slot: 1});
+    await markSettled(idOf({slot: 0}), T0);
 
     expect(await pruneSettled()).toBe(1);
-    expect((await listSettlements()).map(e => e.id)).toEqual(['b']);
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf({slot: 1})]);
   });
 
   it('clearQueue refuses while money is outstanding', async () => {
-    await recordSpend(spend(), T0, 'a');
+    await record();
     await expect(clearQueue()).rejects.toThrow(/outstanding/);
     expect(await listSettlements()).toHaveLength(1);
   });
 
   it('clearQueue works once nothing is outstanding', async () => {
-    await recordSpend(spend(), T0, 'a');
-    await markSettled('a', T0);
+    await record({slot: 0});
+    await markSettled(idOf({slot: 0}), T0);
     await clearQueue();
     expect(await listSettlements()).toEqual([]);
 
     // A permanently failed entry is not outstanding either.
-    await recordSpend(spend(), T0, 'b');
-    await markFailed('b', 'already spent at the mint', T0);
+    await record({slot: 1});
+    await markFailed(idOf({slot: 1}), 'malformed proof', T0);
     await clearQueue();
     expect(await listSettlements()).toEqual([]);
+  });
+});
+
+// Nothing used to retire a failed entry: pruneSettled skipped them, clearQueue
+// refused while anything was outstanding, and evict dropped only settled ones.
+// 200 permanent rejections made the cap inert and left a total wipe — which
+// also destroys the evidence — as the operator's only remedy.
+describe('retiring a permanently failed entry', () => {
+  it('acknowledges only a failed entry', async () => {
+    await record({slot: 0});
+    await record({slot: 1});
+    await markFailed(idOf({slot: 0}), 'malformed proof', T0);
+
+    expect(await acknowledgeFailed(idOf({slot: 0}), T0 + 1)).toMatchObject({
+      status: 'failed',
+      acknowledgedAt: T0 + 1,
+    });
+    // Still owed, so there is nothing to reconcile and nothing to retire.
+    expect(await acknowledgeFailed(idOf({slot: 1}), T0 + 1)).toBe(null);
+    expect(await acknowledgeFailed('ghost', T0 + 1)).toBe(null);
+  });
+
+  it('prunes acknowledged failures and keeps the rest as evidence', async () => {
+    await record({slot: 0});
+    await record({slot: 1});
+    await markFailed(idOf({slot: 0}), 'malformed proof', T0);
+    await markFailed(idOf({slot: 1}), 'malformed proof', T0);
+    await acknowledgeFailed(idOf({slot: 0}), T0 + 1);
+
+    expect(await pruneFailed()).toBe(1);
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf({slot: 1})]);
+    // The unreconciled one is still counted against the merchant.
+    expect((await pendingExposure()).failed).toBe(1);
+  });
+
+  it('lets the cap work again once failures are reconciled', async () => {
+    for (let i = 0; i < MAX_QUEUE_ENTRIES; i++) {
+      await record({slot: i, amount: 1}, T0 + i);
+      await markFailed(idOf({slot: i, amount: 1}), 'malformed proof', T0 + i);
+    }
+    // Unacknowledged failures are evidence: the cap must not touch them.
+    await record({slot: 900, amount: 1}, T0 + 900);
+    expect(await listSettlements()).toHaveLength(MAX_QUEUE_ENTRIES + 1);
+
+    await acknowledgeFailed(idOf({slot: 0, amount: 1}), T0);
+    await record({slot: 901, amount: 1}, T0 + 901);
+
+    const queue = await listSettlements();
+    expect(queue).toHaveLength(MAX_QUEUE_ENTRIES + 1);
+    // The reconciled failure is the one that went; nothing outstanding did.
+    expect(
+      queue.find(e => e.id === idOf({slot: 0, amount: 1})),
+    ).toBeUndefined();
+    expect(queue.filter(isOutstanding)).toHaveLength(2);
   });
 });
 
@@ -758,7 +1111,7 @@ describe('durability', () => {
     mockStore[QUEUE_KEY] = '{ not json';
     expect(await listSettlements()).toEqual([]);
     // And the queue is usable again immediately.
-    await recordSpend(spend(), T0, 'a');
+    await record();
     expect(await listSettlements()).toHaveLength(1);
   });
 
@@ -775,7 +1128,7 @@ describe('durability', () => {
     await listSettlements();
     expect(mockStore[CORRUPT_QUEUE_KEY]).toBe('{ not json');
 
-    await recordSpend(spend(), T0, 'a');
+    await record();
     // The queue moved on; the forensic copy is untouched.
     expect(mockStore[CORRUPT_QUEUE_KEY]).toBe('{ not json');
     expect(mockStore[QUEUE_KEY]).not.toBe('{ not json');
@@ -816,9 +1169,9 @@ describe('durability', () => {
 
   describe('malformed elements inside a well-formed array', () => {
     it.each([
-      ['a null element', '[null]'],
-      ['an object that is not an entry', '[{"junk":true}]'],
-      ['a primitive', '["nope"]'],
+      ['a null element', '{"v":1,"entries":[null]}'],
+      ['an object that is not an entry', '{"v":1,"entries":[{"junk":true}]}'],
+      ['a primitive', '{"v":1,"entries":["nope"]}'],
     ])(
       'treats %s as corrupt rather than throwing a TypeError',
       async (_label, blob) => {
@@ -839,10 +1192,10 @@ describe('durability', () => {
     );
 
     it('rejects an entry carrying a status outside the union', async () => {
-      await recordSpend(spend(), T0, 'a');
-      const stored = JSON.parse(mockStore[QUEUE_KEY]);
-      stored[0].status = 'in-flight-ish';
-      mockStore[QUEUE_KEY] = JSON.stringify(stored);
+      await record();
+      const entries = stored();
+      (entries[0] as unknown as {status: string}).status = 'in-flight-ish';
+      storeRaw(entries);
 
       expect(await listSettlements()).toEqual([]);
       await expect(pendingExposure()).rejects.toBeInstanceOf(
@@ -851,12 +1204,13 @@ describe('durability', () => {
     });
 
     it('keeps the valid entries beside a bad one instead of losing them', async () => {
-      await recordSpend(spend({slot: 0, amount: 40}), T0, 'good');
-      const stored = JSON.parse(mockStore[QUEUE_KEY]);
-      mockStore[QUEUE_KEY] = JSON.stringify([...stored, null]);
+      await record({slot: 0, amount: 40});
+      storeRaw([...stored(), null]);
 
       // The well-formed settlement is still there to be recovered...
-      expect((await listSettlements()).map(e => e.id)).toEqual(['good']);
+      expect((await listSettlements()).map(e => e.id)).toEqual([
+        idOf({slot: 0}),
+      ]);
       // ...but the blob as a whole is not vouched for.
       await expect(pendingExposure()).rejects.toBeInstanceOf(
         QueueUnavailableError,
@@ -864,29 +1218,89 @@ describe('durability', () => {
     });
 
     it('does not blow up a drain — nothing is submitted from a corrupt blob', async () => {
-      mockStore[QUEUE_KEY] = '[null]';
+      storeRaw([null]);
       const swap = jest.fn();
-      await expect(drainQueue(swap, T0)).resolves.toEqual({
-        settled: 0,
-        stillPending: 0,
-        failed: 0,
-        lost: 0,
-      });
+      await expect(drainQueue(swap, T0)).resolves.toEqual(drained());
       expect(swap).not.toHaveBeenCalled();
     });
   });
 
   it('a queued entry is readable after a simulated relaunch', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
+    await record({amount: 40});
     const raw = mockStore[QUEUE_KEY];
 
     // Nothing in memory; only what was written to disk.
     mockStore = {[QUEUE_KEY]: raw};
-    const [entry] = (await listSettlements()) as SettlementEntry[];
+    const [entry] = await listSettlements();
     expect(entry.amount).toBe(40);
     expect(entry.witness).toBe('ef'.repeat(64));
     expect(entry.secret).toBe(SECRET);
-    expect((await pendingExposure()).total).toBe(40);
+    expect((await pendingExposure()).totals.sat.amount).toBe(40);
+  });
+});
+
+// The blob is the durable record of money that left a card. Without a version,
+// the first release to add a required field classifies every entry the previous
+// release wrote as corrupt: quarantined, dropped, and turned into unknown
+// exposure the merchant cannot reconcile because the app can no longer read the
+// blob it just failed to parse.
+describe('stored schema versioning', () => {
+  it('writes a versioned envelope, not a bare array', async () => {
+    await record();
+    const blob = JSON.parse(mockStore[QUEUE_KEY]);
+    expect(blob.v).toBe(QUEUE_SCHEMA_VERSION);
+    expect(Array.isArray(blob.entries)).toBe(true);
+  });
+
+  it('reads a v0 bare array as entries, not as corruption', async () => {
+    // Exactly what the previous release wrote: no envelope, no mintUrl, no unit.
+    await record({amount: 40});
+    mockStore[QUEUE_KEY] = JSON.stringify([asV0(stored()[0])]);
+
+    const queue = await listSettlements();
+    expect(queue.map(e => e.id)).toEqual([idOf()]);
+    // Not quarantined, and the exposure report still answers.
+    expect(mockStore[CORRUPT_QUEUE_KEY]).toBeUndefined();
+    expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBeUndefined();
+
+    const exposure = await pendingExposure();
+    expect(exposure.count).toBe(1);
+    // The mint and unit were never recorded, so they are shown as unknown
+    // rather than guessed at.
+    expect(queue[0].mintUrl).toBe(LEGACY_MINT_URL);
+    expect(queue[0].unit).toBe(LEGACY_UNIT);
+    expect(exposure.totals).toEqual({[LEGACY_UNIT]: {amount: 40, count: 1}});
+  });
+
+  it('migrates a v0 entry on the next write', async () => {
+    await record({slot: 0, amount: 40});
+    mockStore[QUEUE_KEY] = JSON.stringify([asV0(stored()[0])]);
+
+    await record({slot: 1, amount: 25});
+    const blob = JSON.parse(mockStore[QUEUE_KEY]);
+    expect(blob.v).toBe(QUEUE_SCHEMA_VERSION);
+    expect(blob.entries).toHaveLength(2);
+    expect(blob.entries[0].unit).toBe(LEGACY_UNIT);
+  });
+
+  it('still settles a v0 entry rather than stranding it', async () => {
+    await record({amount: 40});
+    mockStore[QUEUE_KEY] = JSON.stringify([asV0(stored()[0])]);
+
+    expect((await drainQueue(async () => {}, T0 + 1)).settled).toBe(1);
+  });
+
+  // A downgrade must fail into the quarantine path loudly rather than silently
+  // drop fields it does not understand.
+  it('treats a version from the future as corrupt', async () => {
+    await record();
+    storeRaw(stored(), QUEUE_SCHEMA_VERSION + 1);
+
+    expect(await listSettlements()).toEqual([]);
+    await expect(pendingExposure()).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    expect(await hasUnsettledForCard(CARD)).toBe(true);
   });
 });
 
@@ -898,13 +1312,13 @@ describe('corruption outlives the write that hides it', () => {
   it('flags unknown exposure after a corrupt queue has been written over', async () => {
     mockStore[QUEUE_KEY] = '{ not json';
 
-    await recordSpend(spend({amount: 40}), T0, 'new');
+    await record({amount: 40});
 
     // The queue parses fine now and holds exactly the new entry...
-    expect((await listSettlements()).map(e => e.id)).toEqual(['new']);
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf()]);
     // ...but the exposure report still says part of the till is unaccounted for.
     const exposure = await pendingExposure();
-    expect(exposure.total).toBe(40);
+    expect(exposure.totals).toEqual({sat: {amount: 40, count: 1}});
     expect(exposure.unknownSince).toBeDefined();
     expect(typeof exposure.unknownSince).toBe('number');
   });
@@ -914,15 +1328,19 @@ describe('corruption outlives the write that hides it', () => {
     // A plain read is enough — the marker must exist before any writer runs.
     await listSettlements();
     expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBeDefined();
-    expect(JSON.parse(mockStore[UNKNOWN_EXPOSURE_KEY])).toEqual({
+    const marker = JSON.parse(mockStore[UNKNOWN_EXPOSURE_KEY]);
+    expect(marker).toEqual({
       since: expect.any(Number),
-      quarantineKey: CORRUPT_QUEUE_KEY,
+      quarantineKey: expect.any(String),
     });
+    // The key it names holds the bytes it is talking about.
+    expect(marker.quarantineKey).toBe(quarantineKeyFor(marker.since));
+    expect(mockStore[marker.quarantineKey]).toBe('{ not json');
   });
 
   it('keeps the CLEAR_SPENT gate shut while exposure is unknown', async () => {
     mockStore[QUEUE_KEY] = '{ not json';
-    await recordSpend(spend(), T0, 'new');
+    await record();
     await drainQueue(async () => {}, T0);
 
     // Nothing outstanding in the queue, yet erasing spent slots is still
@@ -936,14 +1354,33 @@ describe('corruption outlives the write that hides it', () => {
     await listSettlements();
     const first = mockStore[UNKNOWN_EXPOSURE_KEY];
 
+    // Date.now() drives the quarantine key, so the second detection needs a
+    // different millisecond to land in its own slot.
+    const realNow = Date.now;
+    jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 1000);
     mockStore[QUEUE_KEY] = '[null]';
     await listSettlements();
+    jest.restoreAllMocks();
+
     expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBe(first);
+
+    // And the bytes the marker names are still the ones it was written about.
+    // A single shared quarantine key would have left the marker saying
+    // "unreconciled since T1" while pointing at the T2 bytes, so an operator
+    // would reconcile against the wrong blob and then acknowledge money they
+    // never accounted for.
+    const marker = JSON.parse(first);
+    expect(mockStore[marker.quarantineKey]).toBe('{ not json');
+    // The second blob is kept too, under its own key.
+    expect(mockStore[CORRUPT_QUEUE_KEY]).toBe('[null]');
+    expect(
+      Object.keys(mockStore).filter(k => k.startsWith(`${CORRUPT_QUEUE_KEY}:`)),
+    ).toHaveLength(2);
   });
 
   it('clears only on an explicit operator acknowledgement', async () => {
     mockStore[QUEUE_KEY] = '{ not json';
-    await recordSpend(spend(), T0, 'new');
+    await record();
     expect((await pendingExposure()).unknownSince).toBeDefined();
 
     // Draining, settling and pruning all leave the flag alone.
@@ -969,33 +1406,31 @@ describe('corruption outlives the write that hides it', () => {
     mockWriteFails = new Error('keychain write denied');
     mockWriteFailsOnlyFor = UNKNOWN_EXPOSURE_KEY;
 
-    await expect(recordSpend(spend(), T0, 'new')).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    await expect(record()).rejects.toBeInstanceOf(QueueUnavailableError);
     expect(mockStore[QUEUE_KEY]).toBe('{ not json');
 
     // Once the marker lands, the queue is usable again.
     mockWriteFails = null;
-    await recordSpend(spend(), T0, 'new');
-    expect((await listSettlements()).map(e => e.id)).toEqual(['new']);
+    await record();
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf()]);
     expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBeDefined();
   });
 });
 
 describe('an unreadable store is not an empty one', () => {
   it('recordSpend refuses to write over a queue it could not read', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'existing');
+    await record({slot: 0});
     const before = mockStore[QUEUE_KEY];
 
     mockReadFails = new Error('keychain locked');
-    await expect(
-      recordSpend(spend({slot: 1}), T0, 'new'),
-    ).rejects.toBeInstanceOf(QueueUnavailableError);
+    await expect(record({slot: 1})).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
 
     // The outstanding entry is untouched — no write happened at all.
     mockReadFails = null;
     expect(mockStore[QUEUE_KEY]).toBe(before);
-    expect((await listSettlements()).map(e => e.id)).toEqual(['existing']);
+    expect((await listSettlements()).map(e => e.id)).toEqual([idOf({slot: 0})]);
   });
 
   it('hasUnsettledForCard fails closed so CLEAR_SPENT stays blocked', async () => {
@@ -1004,7 +1439,7 @@ describe('an unreadable store is not an empty one', () => {
   });
 
   it('pendingExposure refuses to report a clean till it cannot vouch for', async () => {
-    await recordSpend(spend({amount: 40}), T0, 'a');
+    await record({amount: 40});
     mockReadFails = new Error('keychain locked');
 
     await expect(pendingExposure()).rejects.toBeInstanceOf(
@@ -1028,14 +1463,17 @@ describe('an unreadable store is not an empty one', () => {
   });
 
   it('a failed read does not wedge the queue for later callers', async () => {
-    await recordSpend(spend({slot: 0}), T0, 'a');
+    await record({slot: 0});
     mockReadFails = new Error('keychain locked');
     await expect(listSettlements()).rejects.toBeInstanceOf(
       QueueUnavailableError,
     );
 
     mockReadFails = null;
-    await recordSpend(spend({slot: 1}), T0, 'b');
-    expect((await listSettlements()).map(e => e.id)).toEqual(['a', 'b']);
+    await record({slot: 1});
+    expect((await listSettlements()).map(e => e.id)).toEqual([
+      idOf({slot: 0}),
+      idOf({slot: 1}),
+    ]);
   });
 });
