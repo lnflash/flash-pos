@@ -1,6 +1,11 @@
 import * as Keychain from 'react-native-keychain';
 
-import {getSecure, removeSecure, setSecure} from '../../src/services/secureStorage';
+import {
+  getSecure,
+  getSecureStrict,
+  removeSecure,
+  setSecure,
+} from '../../src/services/secureStorage';
 
 jest.mock('react-native-keychain', () => ({
   setGenericPassword: jest.fn(),
@@ -48,6 +53,31 @@ describe('secureStorage', () => {
     mockedKeychain.getGenericPassword.mockRejectedValue(new Error('locked'));
 
     await expect(getSecure('test-key')).resolves.toBeNull();
+  });
+
+  // Callers holding money need to tell "nothing stored" from "could not read".
+  // Flattening a Keychain failure to null is how an outstanding-payment queue
+  // gets silently overwritten with an empty one.
+  it('getSecureStrict rethrows a keychain failure instead of reporting absence', async () => {
+    mockedKeychain.getGenericPassword.mockRejectedValue(new Error('locked'));
+
+    await expect(getSecureStrict('test-key')).rejects.toThrow('locked');
+  });
+
+  it('getSecureStrict still returns null for a genuinely absent key', async () => {
+    mockedKeychain.getGenericPassword.mockResolvedValue(false);
+
+    await expect(getSecureStrict('missing-key')).resolves.toBeNull();
+  });
+
+  it('getSecureStrict returns the stored value', async () => {
+    mockedKeychain.getGenericPassword.mockResolvedValue({
+      service: 'test-key',
+      username: 'test-key',
+      password: 'secret-value',
+    } as Keychain.UserCredentials);
+
+    await expect(getSecureStrict('test-key')).resolves.toBe('secret-value');
   });
 
   it('removes values from the key-scoped keychain service', async () => {
