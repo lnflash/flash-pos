@@ -4,7 +4,7 @@ Flash POS is a merchant point-of-sale app for accepting Lightning payments and, 
 
 ## Tech Stack
 
-- React Native 0.76.6
+- React Native 0.77.1
 - TypeScript
 - Redux Toolkit and redux-persist
 - Apollo Client
@@ -39,9 +39,11 @@ Use a development `.env` for local testing and a production `.env` only for rele
 
 ## Scripts
 
+Name the simulator when running iOS. Without `--simulator`, React Native builds for every connected destination, including any iPhone plugged in over USB, and then fails on that device unless `ios-deploy` is installed. `xcrun simctl list devices available` lists the simulators on your machine.
+
 ```bash
 yarn start          # Start Metro
-yarn ios            # Build and run iOS
+yarn ios --simulator "iPhone 17 Pro"   # Build and run on a named iOS simulator
 yarn android        # Build and run Android
 yarn test           # Run Jest
 yarn typecheck      # Run TypeScript checks
