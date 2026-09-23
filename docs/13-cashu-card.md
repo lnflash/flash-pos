@@ -2,9 +2,13 @@
 
 ## Status
 
-**Spike — no card has run this yet.** The protocol layer is fully unit-tested
-against a fake card; nothing here has touched physical silicon. Treat a green
-test suite as evidence about the *code*, not about the *card*.
+**Hardware-validated on iOS (2026-09-23).** A dev build on an iPhone 13 Pro Max
+(iOS 26.5) ran SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE against a loaded
+JCOP4 J3R180 card over IsoDep, first session: applet version, balance and the
+card's public key all returned and matched the PC-SC reference driver
+(`cardctl` in cashu-javacard) read minutes earlier. The ISO-7816 entitlement
+and AID list work as declared. Spending and PIN are still unimplemented (see
+Known gaps), and Android is unexercised.
 
 ## What this is
 
@@ -157,9 +161,10 @@ Both forms are declared because `selectApplet()` tries the 7-byte package AID
 first (prefix match, matching `cardctl`) and falls back to the full 8-byte
 applet AID for cards that do not support partial selection.
 
-> ⚠️ **Unverified on iOS.** The entitlement is declared but has not been
-> exercised against a real card or an App Store submission. Validate on a device
-> before assuming iOS parity.
+> ✅ **Verified on iOS (2026-09-23).** The entitlement and AID list worked
+> against a real card on the first hardware session — both SELECT identifiers
+> resolved and the four read APDUs completed over CoreNFC. App Store
+> submission is still unexercised.
 
 ## Known gaps
 
@@ -170,4 +175,6 @@ applet AID for cards that do not support partial selection.
 - **No PIN handling.** `VERIFY_PIN` is unimplemented here. Spending needs no PIN
   by design (bearer semantics) — see `docs/DECISIONS.md#d12` in cashu-javacard —
   but `LOAD_PROOF` does.
-- **No hardware validation of any kind.** See the status note at the top.
+- **Hardware validation covers the read path only** (2026-09-23, iOS): the
+  write path (`LOAD_PROOF`, `CLEAR_SPENT` — both PIN-gated) and spend
+  (`SPEND_PROOF`) have not run from this app.

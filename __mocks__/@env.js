@@ -7,6 +7,8 @@ module.exports = {
   BTC_PAY_SERVER: 'http://localhost:4000',
   PULL_PAYMENT_ID: 'test-pull-payment-id',
 
+  FLASH_CASHU_MINT_URL: 'https://forge.flashapp.me',
+
   // Reward system configuration - Test defaults
   DEFAULT_REWARD_RATE: '0.02', // 2%
   MIN_REWARD_SATS: '1', // 1 sat minimum

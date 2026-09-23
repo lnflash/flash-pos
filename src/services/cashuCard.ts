@@ -273,6 +273,42 @@ export async function getBalance(transceive: Transceiver): Promise<number> {
   return ((body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3]) >>> 0;
 }
 
+export type SlotStatus = 'empty' | 'unspent' | 'spent';
+
+/**
+ * Bulk status read: one byte per slot (0=empty, 1=unspent, 2=spent), so the
+ * reader can find a spendable slot without pulling full proof data for all 32.
+ *
+ * `count` is also the Le — the card returns exactly one byte per slot, and
+ * iOS's Case-2 handling needs the length stated up front (see the comment on
+ * `selectApplet` for what a missing Le does to CoreNFC).
+ */
+export async function getSlotStatuses(
+  transceive: Transceiver,
+  count: number,
+): Promise<SlotStatus[]> {
+  if (count <= 0 || count > 0xff) {
+    throw new CardProtocolError(`GET_SLOT_STATUS: invalid count ${count}`);
+  }
+  const body = await send(transceive, INS.GET_SLOT_STATUS, {
+    le: count,
+    context: `GET_SLOT_STATUS (${count} slots)`,
+  });
+  if (body.length !== count) {
+    throw new CardProtocolError(
+      `GET_SLOT_STATUS: expected ${count} bytes, got ${body.length}`,
+    );
+  }
+  return body.map(b => {
+    if (b === 0x00) {return 'empty';}
+    if (b === 0x01) {return 'unspent';}
+    if (b === 0x02) {return 'spent';}
+    throw new CardProtocolError(
+      `GET_SLOT_STATUS: unknown status byte 0x${b.toString(16)}`,
+    );
+  });
+}
+
 export const toHex = (bytes: number[]): string =>
   bytes.map(b => b.toString(16).padStart(2, '0')).join('');
 

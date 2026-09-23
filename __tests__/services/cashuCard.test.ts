@@ -11,6 +11,7 @@ import {
   getInfo,
   getProof,
   getPubkey,
+  getSlotStatuses,
   parseResponse,
   readCard,
   selectApplet,
@@ -66,6 +67,7 @@ function fakeCard(
     balanceBody?: number[];
     proofBody?: number[];
     proofStatusWord?: number;
+    slotStatuses?: number[];
     signature?: number[];
     signStatusWord?: number;
   } = {},
@@ -98,6 +100,12 @@ function fakeCard(
     }
     if (cla === 0xb0 && ins === 0x11) {
       return ok(overrides.balanceBody ?? [0, 0, 0x01, 0xf4]);
+    }
+    if (cla === 0xb0 && ins === 0x14) {
+      if (overrides.slotStatuses) {
+        return ok(overrides.slotStatuses);
+      }
+      return ok([0x00, 0x01, 0x02]);
     }
     if (cla === 0xb0 && ins === 0x13) {
       if (overrides.proofStatusWord) {
@@ -670,5 +678,46 @@ describe('resignWitness', () => {
 describe('toHex', () => {
   it('zero-pads single-digit bytes', () => {
     expect(toHex([0x00, 0x0f, 0xff])).toBe('000fff');
+  });
+});
+
+describe('getSlotStatuses', () => {
+  it('decodes one status byte per slot', async () => {
+    const card = fakeCard({slotStatuses: [0x00, 0x01, 0x02, 0x01]});
+    await expect(getSlotStatuses(card.transceive, 4)).resolves.toEqual([
+      'empty',
+      'unspent',
+      'spent',
+      'unspent',
+    ]);
+  });
+
+  it('asks for exactly count bytes (Le is the slot count)', async () => {
+    const card = fakeCard({slotStatuses: [0x01]});
+    await getSlotStatuses(card.transceive, 1);
+    const apdu = card.sent.find(([, ins]) => ins === 0x14);
+    expect(apdu?.[apdu.length - 1]).toBe(0x01);
+  });
+
+  it('rejects a short body rather than mapping missing slots to empty', async () => {
+    const card = fakeCard({slotStatuses: [0x01, 0x02]});
+    await expect(getSlotStatuses(card.transceive, 3)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+  });
+
+  it('rejects an unknown status byte', async () => {
+    const card = fakeCard({slotStatuses: [0x07]});
+    await expect(getSlotStatuses(card.transceive, 1)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+  });
+
+  it('refuses a nonsensical count before any APDU is sent', async () => {
+    const card = fakeCard();
+    await expect(getSlotStatuses(card.transceive, 0)).rejects.toBeInstanceOf(
+      CardProtocolError,
+    );
+    expect(card.sent).toHaveLength(0);
   });
 });

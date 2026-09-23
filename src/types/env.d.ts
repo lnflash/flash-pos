@@ -35,6 +35,10 @@ declare module '@env' {
   export const EVENT_STOP_ON_BUDGET_EXCEED = string; // Hard stop on budget (e.g., "true")
   export const EVENT_BUDGET_WARNING_PERCENT = string; // Warning threshold (e.g., "80")
 
+  // Cashu card settlement (see docs/13-cashu-card.md). The mint a card's
+  // proofs belong to; entries are settled against the mint that issued them.
+  export const FLASH_CASHU_MINT_URL = string;
+
   // Display Settings
   export const EVENT_DISPLAY_NAME = string; // Customer-facing name
   export const EVENT_DISPLAY_MESSAGE = string; // Event message

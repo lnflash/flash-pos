@@ -10,6 +10,8 @@ type Props = {
 
   /** Dev builds only — see the `__DEV__` row below. */
   onViewCashuCardDebug?: () => void;
+  /** Dev builds only — see the `__DEV__` row below. */
+  onViewCashuCardSpend?: () => void;
 };
 
 const Settings: React.FC<Props> = ({
@@ -17,6 +19,7 @@ const Settings: React.FC<Props> = ({
   eventModeEnabled,
   onViewEventSettings,
   onViewCashuCardDebug,
+  onViewCashuCardSpend,
 }) => {
   return (
     <Wrapper>
@@ -50,6 +53,16 @@ const Settings: React.FC<Props> = ({
           <Column>
             <Key>Cashu card (dev)</Key>
             <Value>Read-only NFC bring-up harness</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+      )}
+      {__DEV__ && onViewCashuCardSpend && (
+        <Container activeOpacity={0.5} onPress={onViewCashuCardSpend}>
+          <Icon name={'card-outline'} type="ionicon" />
+          <Column>
+            <Key>Cashu card spend (dev)</Key>
+            <Value>Spend a slot into the settlement queue</Value>
           </Column>
           <Icon name={'chevron-forward-outline'} type="ionicon" />
         </Container>
