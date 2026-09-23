@@ -17,6 +17,7 @@ import {
   RegisteredRewardCards,
   EventSettings,
   CashuCardDebug,
+  CashuCardSpend,
 } from '../screens';
 
 // hooks
@@ -144,6 +145,18 @@ const Root = () => {
           component={CashuCardDebug}
           options={{
             headerTitle: 'Cashu card',
+            animation: 'slide_from_right',
+          }}
+        />
+      )}
+      {/* Cashu card spend harness. Moves money and belongs in dev builds
+          only — same __DEV__ pairing as the row that reaches it. */}
+      {__DEV__ && (
+        <Stack.Screen
+          name="CashuCardSpend"
+          component={CashuCardSpend}
+          options={{
+            headerTitle: 'Cashu card spend',
             animation: 'slide_from_right',
           }}
         />

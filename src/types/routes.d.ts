@@ -20,6 +20,7 @@ type RootStackType = {
   // fails at runtime with an unhandled NAVIGATE action. Guard every call site
   // with `__DEV__`; the Profile screen's dev row is the intended entry point.
   CashuCardDebug: undefined;
+  CashuCardSpend: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility

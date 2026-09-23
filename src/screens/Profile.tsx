@@ -169,6 +169,15 @@ const Profile = () => {
     navigation.navigate('CashuCardDebug');
   };
 
+  // Registered only under __DEV__ (src/routes/index.tsx) — same gate as the
+  // debug row above.
+  const onViewCashuCardSpend = () => {
+    if (!__DEV__) {
+      return;
+    }
+    navigation.navigate('CashuCardSpend');
+  };
+
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
       <Account />
@@ -177,6 +186,7 @@ const Profile = () => {
         eventModeEnabled={eventModeEnabled}
         onViewEventSettings={onViewEventSettings}
         onViewCashuCardDebug={onViewCashuCardDebug}
+        onViewCashuCardSpend={onViewCashuCardSpend}
       />
 
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />
