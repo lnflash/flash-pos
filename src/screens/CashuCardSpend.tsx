@@ -16,7 +16,9 @@ import {
   isCardReadingSupported,
   withCardSession,
 } from '../services/cashuCardNfc';
+import {useAppSelector} from '../store/hooks';
 import {readCard, type CardSummary} from '../services/cashuCard';
+import {runAutoSettlement} from '../services/cashuAutoSettle';
 import {burnAndRecord, firstUnspentSlot, settlePending} from '../services/cashuSpend';
 import {
   meltSettledProofs,
@@ -62,6 +64,7 @@ interface SpendOutcome {
  * CashuCardDebug is the read-only bring-up harness; this one moves money.
  */
 const CashuCardSpend = () => {
+  const {username} = useAppSelector(state => state.user);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [spending, setSpending] = useState(false);
   const [settling, setSettling] = useState(false);
@@ -133,6 +136,13 @@ const CashuCardSpend = () => {
       });
       setOutcome(result);
       await refreshQueue();
+      // The tap is recorded; settle + sweep to the account address now, so
+      // the merchant does nothing. Runs after the NFC session is closed; a
+      // failed auto-run is the offline case — queue holds, banner shows.
+      if (username) {
+        await runAutoSettlement(username).catch(() => {});
+        await refreshQueue();
+      }
     } catch (err) {
       // Same double cancel-catch as CashuCardDebug: the ref catches our own
       // button; `isUserCancel` catches the iOS system sheet.
@@ -143,7 +153,7 @@ const CashuCardSpend = () => {
       spendingRef.current = false;
       setSpending(false);
     }
-  }, [refreshQueue]);
+  }, [refreshQueue, username]);
 
   const onSettle = useCallback(async () => {
     setSettling(true);

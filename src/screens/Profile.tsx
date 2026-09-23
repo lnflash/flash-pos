@@ -5,6 +5,7 @@ import {useNavigation} from '@react-navigation/native';
 
 // components
 import {TextButton, PinModal} from '../components';
+import PendingSettlementBanner from '../components/cashu/PendingSettlementBanner';
 
 // store
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -180,6 +181,7 @@ const Profile = () => {
 
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
+      <PendingSettlementBanner />
       <Account />
       <Settings
         onViewRewardSettings={onViewRewardSettings}

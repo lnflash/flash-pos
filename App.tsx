@@ -26,6 +26,9 @@ import client from './src/graphql/ApolloClient';
 import {ActivityIndicatorProvider} from './src/contexts/ActivityIndicator';
 import {FlashcardProvider} from './src/contexts/Flashcard';
 
+// cashu auto-settle
+import CashuAutoSettle from './src/components/cashu/CashuAutoSettle';
+
 // utils
 import {toastConfig} from './src/utils/toast';
 
@@ -41,6 +44,7 @@ function App(): React.JSX.Element {
           <ApolloProvider client={client}>
             <ActivityIndicatorProvider>
               <FlashcardProvider>
+                <CashuAutoSettle />
                 <Layout />
               </FlashcardProvider>
               <Toast config={toastConfig} />

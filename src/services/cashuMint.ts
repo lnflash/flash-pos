@@ -299,6 +299,10 @@ const PENDING_PAYOUT_KEY = '@cashu_settled_payout';
 export async function resolveLightningAddress(
   address: string,
   amountSat: number,
+  /** Override the meta URL: for the logged-in flash account the payRequest
+   *  endpoint lives on the flash ln-address service, not under the display
+   *  domain of the address. */
+  lnurlpUrl?: string,
 ): Promise<string> {
   const at = address.indexOf('@');
   if (at <= 0 || at === address.length - 1) {
@@ -306,7 +310,9 @@ export async function resolveLightningAddress(
   }
   const name = address.slice(0, at);
   const domain = address.slice(at + 1);
-  const metaUrl = `https://${domain}/.well-known/lnurlp/${name}`;
+  const metaUrl = lnurlpUrl
+    ? `${lnurlpUrl.replace(/\/$/, '')}/.well-known/lnurlp/${name}`
+    : `https://${domain}/.well-known/lnurlp/${name}`;
   const metaRes = await fetch(metaUrl);
   if (!metaRes.ok) {
     throw new Error(
@@ -351,6 +357,9 @@ export interface PayoutArgs {
   bolt11?: string;
   /** A `user@domain` lightning address; resolved via LNURL-pay at `amountSat`. */
   lightningAddress?: string;
+  /** Serve the LNURL metadata from this base instead of the address's domain —
+   *  the flash account's payRequest lives on the flash ln-address service. */
+  lnurlpUrl?: string;
   now?: number;
 }
 
@@ -377,6 +386,7 @@ export async function meltSettledProofs({
   mintUrl,
   bolt11,
   lightningAddress,
+  lnurlpUrl,
   now = Date.now(),
 }: PayoutArgs): Promise<PayoutResult> {
   if (Boolean(bolt11) === Boolean(lightningAddress)) {
@@ -403,7 +413,8 @@ export async function meltSettledProofs({
     null;
   for (let tries = 0; tries < 3; tries++) {
     const request =
-      bolt11 ?? (await resolveLightningAddress(lightningAddress!, attemptSat));
+      bolt11 ??
+      (await resolveLightningAddress(lightningAddress!, attemptSat, lnurlpUrl));
     quote = await wallet.createMeltQuoteBolt11(request);
     const needed =
       Number(quote.amount) + Number(quote.fee_reserve);
