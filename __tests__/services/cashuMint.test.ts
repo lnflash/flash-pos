@@ -184,7 +184,10 @@ describe('swap', () => {
     let pendingDuringCall: string | null = null;
     walletMocks.completeSwap.mockImplementation(async () => {
       pendingDuringCall = mockStore[`@cashu_settlement_swap:${entryWith().id}`] ?? null;
-      return {keep: SETTLED, send: []};
+      // Exact-cover shape: send carries the full amount, keep is empty —
+      // the shape a real mint returns for this swap (regression: the
+      // adapter used to persist only `keep` and book the payment as nothing).
+      return {keep: [], send: SETTLED};
     });
 
     await adapter.swap(entryWith());

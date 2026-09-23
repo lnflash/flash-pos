@@ -167,8 +167,15 @@ export function createSettlementAdapter(): SettlementAdapter {
 
     let settled: SettledProof[];
     try {
-      const {keep} = await wallet.completeSwap(preview);
-      settled = keep.map(p => ({
+      const {keep, send} = await wallet.completeSwap(preview);
+      // The keep/send split is PAYMENT-flow semantics — send is what a payer
+      // hands to a recipient. In a settlement the terminal is the recipient
+      // of the entire swap: every output the mint signs is merchant money.
+      // Persisting only `keep` (empty when the inputs exactly cover the
+      // amount, because send shapes the full amount) books a settled payment
+      // as nothing — found in the field when the payout step then read an
+      // empty store.
+      settled = [...keep, ...send].map(p => ({
         id: p.id,
         amount: Number(p.amount),
         secret: p.secret,
