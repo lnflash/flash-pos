@@ -81,6 +81,9 @@ export interface SettledProof {
   amount: number;
   secret: string;
   C: string;
+  /** The mint that signed this proof. Set by the adapter; entries written
+   *  before this field existed fall back to the terminal's configured mint. */
+  mintUrl?: string;
   dleq?: unknown;
 }
 
@@ -89,35 +92,42 @@ export interface SettlementAdapter {
   checkState: (entry: SettlementEntry) => Promise<'spent' | 'unspent' | 'unknown'>;
 }
 
+// One wallet per mint, shared by the settlement adapter and the payout melt.
+// Cached ONLY while healthy: a failed loadMint (a mint rate-limiting a burst
+// of setup calls is the routine case) evicts the promise, or the rejection is
+// cached forever and every later call fails identically without ever reaching
+// the network — which reads to the merchant as an entry that retries but
+// never settles.
+const wallets = new Map<string, Promise<Wallet>>();
+function getWallet(mintUrl: string): Promise<Wallet> {
+  let wallet = wallets.get(mintUrl);
+  if (!wallet) {
+    wallet = (async () => {
+      const w = new Wallet(mintUrl);
+      await w.loadMint();
+      return w;
+    })();
+    wallets.set(mintUrl, wallet);
+    wallet.catch(() => {
+      // Only evict if this attempt is still the cached one.
+      if (wallets.get(mintUrl) === wallet) {
+        wallets.delete(mintUrl);
+      }
+    });
+  }
+  return wallet;
+}
+
+/** Test seam: drop cached mint wallets. Mirrors cashuSettlement.__resetDrainState. */
+export function __resetWalletCache(): void {
+  wallets.clear();
+}
+
 export function createSettlementAdapter(): SettlementAdapter {
   // drainQueue does not filter entries by mint — it hands every pending entry
   // to swap — so the adapter must settle each proof against the mint that
   // issued it (SettlementEntry.mintUrl), not against whatever the terminal is
-  // currently configured with. Wallets are cached per mint, but ONLY while
-  // healthy: a failed loadMint (a mint rate-limiting a burst of setup calls is
-  // the routine case) evicts the promise, or the rejection is cached forever
-  // and every drain fails identically without ever reaching the network —
-  // which reads to the merchant as an entry that retries but never settles.
-  const wallets = new Map<string, Promise<Wallet>>();
-  const getWallet = (mintUrl: string): Promise<Wallet> => {
-    let wallet = wallets.get(mintUrl);
-    if (!wallet) {
-      wallet = (async () => {
-        const w = new Wallet(mintUrl);
-        await w.loadMint();
-        return w;
-      })();
-      wallets.set(mintUrl, wallet);
-      wallet.catch(() => {
-        // Only evict if this attempt is still the cached one.
-        if (wallets.get(mintUrl) === wallet) {
-          wallets.delete(mintUrl);
-        }
-      });
-    }
-    return wallet;
-  };
-
+  // currently configured with.
   const swap = async (entry: SettlementEntry): Promise<void> => {
     const wallet = await getWallet(entry.mintUrl);
 
@@ -163,6 +173,7 @@ export function createSettlementAdapter(): SettlementAdapter {
         amount: Number(p.amount),
         secret: p.secret,
         C: p.C,
+        mintUrl: entry.mintUrl,
         ...(p.dleq ? {dleq: p.dleq} : {}),
       }));
     } catch (error) {
@@ -264,4 +275,208 @@ async function appendSettledProofs(proofs: SettledProof[]): Promise<void> {
     SETTLED_PROOFS_KEY,
     JSON.stringify([...existing, ...proofs]),
   );
+}
+
+// ── payout: melt settled proofs to a bolt11 invoice or lightning address ──
+
+const PENDING_PAYOUT_KEY = '@cashu_settled_payout';
+
+/**
+ * The bolt11 invoice behind a lightning address, for `amountSat`.
+ *
+ * A lightning address is an LNURL-pay endpoint: metadata at
+ * `https://<domain>/.well-known/lnurlp/<name>` (with `minSendable`/`maxSendable`
+ * in msat), then the `callback` URL with `amount=<msat>` returns `{pr: <bolt11>}`.
+ * That is the whole protocol — no wallet-specific API anywhere.
+ */
+export async function resolveLightningAddress(
+  address: string,
+  amountSat: number,
+): Promise<string> {
+  const at = address.indexOf('@');
+  if (at <= 0 || at === address.length - 1) {
+    throw new Error(`not a lightning address: ${address}`);
+  }
+  const name = address.slice(0, at);
+  const domain = address.slice(at + 1);
+  const metaUrl = `https://${domain}/.well-known/lnurlp/${name}`;
+  const metaRes = await fetch(metaUrl);
+  if (!metaRes.ok) {
+    throw new Error(
+      `lightning address ${address}: lookup failed (HTTP ${metaRes.status})`,
+    );
+  }
+  const meta = (await metaRes.json()) as {
+    tag?: string;
+    minSendable?: string | number;
+    maxSendable?: string | number;
+    callback?: string;
+  };
+  if (meta.tag !== 'payRequest' || !meta.callback) {
+    throw new Error(`lightning address ${address}: not a payRequest endpoint`);
+  }
+  const minSat = Math.ceil(Number(meta.minSendable ?? 0) / 1000);
+  const maxSat = Math.floor(Number(meta.maxSendable ?? Infinity) / 1000);
+  if (amountSat < minSat || amountSat > maxSat) {
+    throw new Error(
+      `lightning address ${address} accepts ${minSat}–${maxSat} sat; ` +
+        `the settled balance is ${amountSat} sat`,
+    );
+  }
+  const callback = new URL(meta.callback);
+  callback.searchParams.set('amount', String(amountSat * 1000));
+  const invRes = await fetch(callback.toString());
+  if (!invRes.ok) {
+    throw new Error(
+      `lightning address ${address}: invoice request failed (HTTP ${invRes.status})`,
+    );
+  }
+  const invoice = (await invRes.json()) as {pr?: string};
+  if (!invoice.pr) {
+    throw new Error(`lightning address ${address}: no invoice returned`);
+  }
+  return invoice.pr;
+}
+
+export interface PayoutArgs {
+  mintUrl: string;
+  /** A raw bolt11 invoice. Mutually exclusive with `lightningAddress`. */
+  bolt11?: string;
+  /** A `user@domain` lightning address; resolved via LNURL-pay at `amountSat`. */
+  lightningAddress?: string;
+  now?: number;
+}
+
+export interface PayoutResult {
+  /** Sats that left for the invoice, and what the mint reserved for routing. */
+  paidSat: number;
+  feeReserveSat: number;
+  preimage: string | null;
+  /** Change proofs returned for overpaid reserves, back in the settled store. */
+  change: SettledProof[];
+}
+
+/**
+ * Melt the merchant's settled proofs to a bolt11 invoice — the payout leg of
+ * the terminal, mint → Lightning → any wallet.
+ *
+ * The same non-idempotence argument as the settlement swap applies, with the
+ * roles reversed: the melt intent (quote + exact proofs) is persisted BEFORE
+ * the call, because after the mint pays the invoice, those proofs are spent
+ * whatever happens to the response. On success the melted proofs leave the
+ * settled store and any change re-enters it.
+ */
+export async function meltSettledProofs({
+  mintUrl,
+  bolt11,
+  lightningAddress,
+  now = Date.now(),
+}: PayoutArgs): Promise<PayoutResult> {
+  if (Boolean(bolt11) === Boolean(lightningAddress)) {
+    throw new Error('payout needs exactly one of bolt11 or lightningAddress');
+  }
+  const proofs = await listSettledProofs();
+  if (proofs.length === 0) {
+    throw new Error('no settled proofs to pay out');
+  }
+  const mints = new Set(proofs.map(p => p.mintUrl ?? mintUrl));
+  if (mints.size > 1) {
+    throw new Error(
+      'settled proofs span multiple mints; pay out per mint (not yet supported)',
+    );
+  }
+  const wallet = await getWallet(mintUrl);
+  const totalSat = proofs.reduce((t, p) => t + p.amount, 0);
+
+  // For a lightning address WE choose the amount, so a fee reserve that
+  // would overrun the balance is answered by asking for a smaller invoice —
+  // the reserve is only knowable after a quote, hence the loop.
+  let attemptSat = totalSat;
+  let quote: Awaited<ReturnType<typeof wallet.createMeltQuoteBolt11>> | null =
+    null;
+  for (let tries = 0; tries < 3; tries++) {
+    const request =
+      bolt11 ?? (await resolveLightningAddress(lightningAddress!, attemptSat));
+    quote = await wallet.createMeltQuoteBolt11(request);
+    const needed =
+      Number(quote.amount) + Number(quote.fee_reserve);
+    if (needed <= totalSat || bolt11) {
+      if (needed > totalSat) {
+        throw new Error(
+          `the invoice needs ${needed} sat (amount + ${Number(
+            quote.fee_reserve,
+          )} fee reserve) but the settled balance is ${totalSat} sat — ` +
+            'use a smaller invoice',
+        );
+      }
+      break;
+    }
+    if (lightningAddress && needed <= totalSat + Number(quote.fee_reserve)) {
+      // The reserve alone overruns: ask the address for
+      // `total − reserve` next round, so amount + reserve fits exactly.
+      attemptSat = totalSat - Number(quote.fee_reserve);
+      continue;
+    }
+    attemptSat = Math.floor(attemptSat / 2);
+  }
+  if (!quote) {
+    throw new Error('payout: no melt quote');
+  }
+
+  const needed =
+    Number(quote.amount) + Number(quote.fee_reserve);
+  if (needed > totalSat) {
+    throw new Error(
+      `payout needs ${needed} sat but the settled balance is ${totalSat} sat`,
+    );
+  }
+
+  // Persist the melt intent before the network call: if the app dies after
+  // the mint pays, these secrets + quote are the reconciliation record.
+  await setSecure(
+    PENDING_PAYOUT_KEY,
+    JSON.stringify({quoteId: quote.quote, bolt11, lightningAddress, secrets: proofs.map(p => p.secret), at: now}),
+  );
+
+  let response: Awaited<ReturnType<typeof wallet.meltProofsBolt11>>;
+  try {
+    const result = await wallet.meltProofsBolt11(
+      quote,
+      proofs as ProofLike[],
+    );
+    if (result.quote.state !== 'PAID') {
+      throw new Error(
+        `payout quote ${quote.quote} did not settle: ${result.quote.state}`,
+      );
+    }
+    response = result;
+  } catch (error) {
+    // Leave the pending record in place — if the mint paid despite an
+    // ambiguous failure, the quote is the recovery path (re-check the quote
+    // state before re-spending these proofs).
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+
+  const change: SettledProof[] = response.change.map(p => ({
+    id: p.id,
+    amount: Number(p.amount),
+    secret: p.secret,
+    C: p.C,
+    mintUrl,
+  }));
+  // Only now does the money have a new home: drop the melted proofs, keep
+  // any change.
+  const meltedSecrets = new Set(proofs.map(p => p.secret));
+  const remaining = (await listSettledProofs()).filter(
+    p => !meltedSecrets.has(p.secret),
+  );
+  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...remaining, ...change]));
+  await removeSecure(PENDING_PAYOUT_KEY);
+
+  return {
+    paidSat: Number(quote.amount),
+    feeReserveSat: Number(quote.fee_reserve),
+    preimage: response.quote.payment_preimage ?? null,
+    change,
+  };
 }

@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, ScrollView} from 'react-native';
+import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
 import styled from 'styled-components/native';
 
 // components
@@ -19,6 +19,10 @@ import {
 import {readCard, type CardSummary} from '../services/cashuCard';
 import {burnAndRecord, firstUnspentSlot, settlePending} from '../services/cashuSpend';
 import {
+  meltSettledProofs,
+  type PayoutResult,
+} from '../services/cashuMint';
+import {
   listSettlements,
   type DrainResult,
   type SettlementEntry,
@@ -30,6 +34,16 @@ const readButtonStyle = {marginTop: 24, marginBottom: 8};
 const cancelButtonStyle = {marginTop: 4, marginBottom: 8};
 const settleButtonStyle = {marginTop: 16};
 const detailLabelStyle = {marginTop: 12};
+
+const PayoutInput = styled(TextInput)`
+  margin-top: 8px;
+  border-width: 1px;
+  border-color: #ececf1;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+  color: #1f2328;
+`;
 
 interface SpendOutcome {
   summary: CardSummary;
@@ -54,6 +68,9 @@ const CashuCardSpend = () => {
   const [outcome, setOutcome] = useState<SpendOutcome | null>(null);
   const [drain, setDrain] = useState<DrainResult | null>(null);
   const [queue, setQueue] = useState<SettlementEntry[] | null>(null);
+  const [payoutInput, setPayoutInput] = useState('');
+  const [payingOut, setPayingOut] = useState(false);
+  const [payout, setPayout] = useState<PayoutResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshQueue = useCallback(async () => {
@@ -126,7 +143,7 @@ const CashuCardSpend = () => {
       spendingRef.current = false;
       setSpending(false);
     }
-  }, []);
+  }, [refreshQueue]);
 
   const onSettle = useCallback(async () => {
     setSettling(true);
@@ -139,7 +156,33 @@ const CashuCardSpend = () => {
     } finally {
       setSettling(false);
     }
-  }, []);
+  }, [refreshQueue]);
+
+  // A lightning address (user@host) resolves via LNURL-pay; anything that
+  // looks like a bolt11 is quoted as-is. The melt pays whoever the invoice
+  // names — the mint is indifferent.
+  const onPayout = useCallback(async () => {
+    const value = payoutInput.trim();
+    if (!value || payingOut) {
+      return;
+    }
+    setPayingOut(true);
+    setError(null);
+    setPayout(null);
+    try {
+      const isInvoice = /^lnb[ct]/i.test(value);
+      const result = await meltSettledProofs({
+        mintUrl: FLASH_CASHU_MINT_URL,
+        ...(isInvoice ? {bolt11: value} : {lightningAddress: value}),
+      });
+      setPayout(result);
+      await refreshQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPayingOut(false);
+    }
+  }, [payoutInput, payingOut, refreshQueue]);
 
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
@@ -240,6 +283,42 @@ const CashuCardSpend = () => {
           ))}
         </Results>
       )}
+
+      {payout && (
+        <Results>
+          <Row>
+            <Label>Paid out</Label>
+            <Value>
+              {payout.paidSat} sat · reserve {payout.feeReserveSat} sat
+            </Value>
+          </Row>
+          {payout.preimage && (
+            <Row>
+              <Label>Preimage</Label>
+              <Mono>{payout.preimage}</Mono>
+            </Row>
+          )}
+        </Results>
+      )}
+
+      <Results>
+        <Label style={detailLabelStyle}>Pay out settled proofs</Label>
+        <PayoutInput
+          value={payoutInput}
+          onChangeText={setPayoutInput}
+          placeholder="lightning address or bolt11 invoice"
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+        />
+        <TextButton
+          title={payingOut ? 'Paying out…' : 'Pay out via Lightning'}
+          btnStyle={settleButtonStyle}
+          disabled={payingOut || payoutInput.trim().length === 0}
+          onPress={onPayout}
+        />
+        {payingOut && <ActivityIndicator style={detailLabelStyle} />}
+      </Results>
     </Wrapper>
   );
 };

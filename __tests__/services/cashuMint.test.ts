@@ -17,9 +17,11 @@ import {
 } from '@noble/hashes/utils';
 
 import {
+  __resetWalletCache,
   buildCardP2PKSecret,
   createSettlementAdapter,
   listSettledProofs,
+  meltSettledProofs,
 } from '../../src/services/cashuMint';
 import {
   PermanentSettlementError,
@@ -47,6 +49,8 @@ type WalletMocks = {
   completeSwap: jest.Mock
   checkProofsStates: jest.Mock
   serializeSwapPreview: jest.Mock
+  createMeltQuoteBolt11: jest.Mock
+  meltProofsBolt11: jest.Mock
 };
 
 jest.mock('@cashu/cashu-ts', () => {
@@ -57,12 +61,16 @@ jest.mock('@cashu/cashu-ts', () => {
     completeSwap: jest.fn(),
     checkProofsStates: jest.fn(),
     serializeSwapPreview: jest.fn(() => 'serialized-preview'),
+    createMeltQuoteBolt11: jest.fn(),
+    meltProofsBolt11: jest.fn(),
   };
   class MockWallet {
     loadMint = mocks.loadMint;
     prepareSwapToSend = mocks.prepareSwapToSend;
     completeSwap = mocks.completeSwap;
     checkProofsStates = mocks.checkProofsStates;
+    createMeltQuoteBolt11 = mocks.createMeltQuoteBolt11;
+    meltProofsBolt11 = mocks.meltProofsBolt11;
   }
   return {
     ...actual,
@@ -133,11 +141,18 @@ function entryWith(overrides: Partial<SettlementEntry> = {}): SettlementEntry {
 
 const PREVIEW = {fees: 0, keepOutputs: [], sendOutputs: [], inputs: []};
 const SETTLED = [
-  {id: KEYSET_ID, amount: 16, secret: 'new-secret', C: TEST_CARD_PUBKEY},
+  {
+    id: KEYSET_ID,
+    amount: 16,
+    secret: 'new-secret',
+    C: TEST_CARD_PUBKEY,
+    mintUrl: MINT_URL,
+  },
 ];
 
 beforeEach(() => {
   jest.clearAllMocks();
+  __resetWalletCache();
   for (const k of Object.keys(mockStore)) {
     delete mockStore[k];
   }
@@ -311,5 +326,154 @@ describe('checkState', () => {
 describe('listSettledProofs', () => {
   it('an empty store is empty, not an error', async () => {
     await expect(listSettledProofs()).resolves.toEqual([]);
+  });
+});
+
+describe('meltSettledProofs', () => {
+  const settled = [
+    {
+      id: KEYSET_ID,
+      amount: 16,
+      secret: 'settled-secret',
+      C: TEST_CARD_PUBKEY,
+      mintUrl: MINT_URL,
+    },
+  ];
+  const meltQuote = {
+    quote: 'payout-q1',
+    amount: 16,
+    fee_reserve: 0,
+    unit: 'sat',
+    state: 'UNPAID',
+    request: 'lnbc-invoice',
+    payment_preimage: null,
+  };
+
+  beforeEach(() => {
+    mockStore['@cashu_settled_proofs'] = JSON.stringify(settled);
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue(meltQuote);
+    walletMocks.meltProofsBolt11.mockImplementation(async () => ({
+      quote: {...meltQuote, state: 'PAID', payment_preimage: 'preimage-1'},
+      change: [
+        {id: KEYSET_ID, amount: 1, secret: 'change-secret', C: TEST_CARD_PUBKEY},
+      ],
+    }));
+  });
+
+  it('resolves a lightning address and pays it out', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tag: 'payRequest',
+          minSendable: '1000',
+          maxSendable: '100000000',
+          callback: 'https://wallet.example/lnurlp/scan',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({pr: 'lnbc160n1invoice'}),
+      });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await meltSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+    });
+
+    // address → lnurl meta → callback invoice → quote
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://wallet.example/.well-known/lnurlp/merchant',
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://wallet.example/lnurlp/scan?amount=16000',
+    );
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenCalledWith(
+      expect.stringContaining('invoice'),
+    );
+    expect(result).toMatchObject({
+      paidSat: 16,
+      feeReserveSat: 0,
+      preimage: 'preimage-1',
+    });
+
+    // the melted proofs left the store, the change entered it
+    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    expect(store).toHaveLength(1);
+    expect(store[0].secret).toBe('change-secret');
+    expect(mockStore['@cashu_settled_payout:@q1'.replace('@q1', 'payout-q1')]).toBeUndefined();
+  });
+
+  it('rejects a pasted invoice whose reserve overruns the balance', async () => {
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      ...meltQuote,
+      fee_reserve: 2,
+    });
+
+    await expect(
+      meltSettledProofs({mintUrl: MINT_URL, bolt11: 'lnbc-invoice'}),
+    ).rejects.toThrow(/fee reserve.*16 sat/);
+    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    expect(store).toHaveLength(1);
+  });
+
+  it('re-requests a smaller invoice when an address would overrun', async () => {
+    // First quote: 16 sat invoice + 2 sat reserve = 18 > 16. The address
+    // path re-asks for 14 sat; 14 + 2 = 16 fits exactly.
+    walletMocks.createMeltQuoteBolt11
+      .mockResolvedValueOnce({...meltQuote, fee_reserve: 2})
+      .mockResolvedValueOnce({...meltQuote, amount: 14, fee_reserve: 2});
+    global.fetch = jest.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('.well-known/lnurlp')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            tag: 'payRequest',
+            minSendable: '1000',
+            maxSendable: '100000000',
+            callback: 'https://wallet.example/lnurlp/scan',
+          }),
+        };
+      }
+      const amount = new URL(u).searchParams.get('amount');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({pr: `lnbc-${amount}-invoice`}),
+      };
+    }) as unknown as typeof fetch;
+
+    const result = await meltSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+    });
+    expect(result.paidSat).toBe(14);
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenLastCalledWith(
+      expect.stringContaining('14000'),
+    );
+  });
+
+  it('keeps the proofs and the melt intent when the quote does not settle', async () => {
+    walletMocks.meltProofsBolt11.mockImplementation(async () => ({
+      quote: {...meltQuote, state: 'PENDING'},
+      change: [],
+    }));
+
+    await expect(
+      meltSettledProofs({mintUrl: MINT_URL, bolt11: 'lnbc-invoice'}),
+    ).rejects.toThrow('did not settle');
+    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    expect(store[0].secret).toBe('settled-secret');
+    expect(
+      Object.keys(mockStore).some(k => k.startsWith('@cashu_settled_payout')),
+    ).toBe(true);
   });
 });
