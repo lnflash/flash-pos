@@ -582,6 +582,37 @@ export async function rebalanceTill(
 }
 
 /**
+ * Drop till listings the mint no longer honours. The store can drift from
+ * mint reality when a melt/swap consumes a proof but the response (and its
+ * store update) is lost — every later sweep/payout then fails 11001. The
+ * mint's own checkstate is the arbiter: a spent listing is worthless
+ * bookkeeping and leaves.
+ */
+export async function reconcileTill(mintUrl: string): Promise<number> {
+  const proofs = await listSettledProofs();
+  if (proofs.length === 0) {return 0;}
+  try {
+    const wallet = await getWallet(mintUrl);
+    const keysetId = proofs[0].id;
+    const keyset = await wallet.getKeyset(keysetId);
+    const states = await wallet.checkProofsStates(
+      proofs as unknown as Proof[],
+    );
+    const spent = new Set(
+      proofs.filter((_, i) => states[i]?.state === 'SPENT').map(p => p.secret),
+    );
+    if (spent.size === 0) {return 0;}
+    const remaining = proofs.filter(p => !spent.has(p.secret));
+    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
+    return spent.size;
+  } catch {
+    // A failed reconcile keeps the last known state — never flip to
+    // all-clear on a network error.
+    return 0;
+  }
+}
+
+/**
  * Sweep everything except the change float to the account address.
  *
  * `keepReserveSat` is the till float: small-denomination proofs the terminal
@@ -596,7 +627,11 @@ export async function sweepSettledProofs(opts: {
   keepReserveSat?: number;
   now?: number;
 }): Promise<PayoutResult> {
-  const {keepReserveSat = 0} = opts;
+  const {keepReserveSat = 0, mintUrl} = opts;
+  // Reconcile first: a till listing the mint already spent (consumed by an
+  // earlier melt/swap whose store update was lost) would fail every payout
+  // with 11001 forever. Drop spent listings, then sweep the survivors.
+  await reconcileTill(mintUrl);
   const proofs = await listSettledProofs();
   const total = proofs.reduce((t, p) => t + p.amount, 0);
   if (total <= keepReserveSat) {
