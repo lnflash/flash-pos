@@ -44,55 +44,89 @@ import type {SettlementEntry} from './cashuSettlement';
 export const DEFAULT_UNIT = 'sat';
 
 /**
- * Pick the slots to burn: an exact subset when one exists (DP over ≤32 slots),
- * otherwise the smallest over-cover whose change the till can make.
- * Returns null with a reason when nothing fits.
+ * Rank the ways to cover `amountSat` from the card's unspent slots, cheapest
+ * change first. A proof is atomic, so "enter amount" means coin selection:
+ * exact subsets when the denominations allow, otherwise the smallest
+ * over-cover. Greedy largest-first is NOT among the strategies — burning a
+ * 256-sat proof for a 14-sat bill would demand 242 sat of change from a till
+ * that may hold pocket change (found in the field).
+ *
+ * Candidates are deduplicated by slot-set and sorted by change; the caller
+ * walks them until the till can back one.
  */
+export interface PurchasePlan {
+  slots: number[];
+  burnedSat: number;
+  changeSat: number;
+}
+
 export function planPurchase(
   unspent: CardProofSlot[],
   amountSat: number,
-  tillCoverableSat: number,
-): {slots: number[]; burnedSat: number; changeSat: number} | {error: string; changeSatHint?: number} {
-  if (amountSat <= 0) {
-    return {error: 'amount must be positive'};
-  }
-  // Exact subsets first: DP over reachable sums, tracking one witness path.
-  const reachable: (number[] | null)[] = new Array(amountSat + 1).fill(null);
-  reachable[0] = [];
+): PurchasePlan[] {
+  if (amountSat <= 0) {return [];}
+  const total = unspent.reduce((t, p) => t + p.amount, 0);
+  if (total < amountSat) {return [];}
+
+  const candidates: PurchasePlan[] = [];
+
+  // 1. Exact subsets: DP over reachable sums, fewest-slot witness each.
+  const reach: (number[] | null)[] = new Array(total + 1).fill(null);
+  reach[0] = [];
   for (const p of unspent) {
-    for (let s = amountSat; s >= p.amount; s--) {
-      const prev = reachable[s - p.amount];
-      if (prev !== null && reachable[s] === null) {
-        reachable[s] = [...prev, p.slot];
+    for (let s = total; s >= p.amount; s--) {
+      const prev = reach[s - p.amount];
+      if (prev !== null && reach[s] === null) {
+        reach[s] = [...prev, p.slot];
       }
     }
   }
-  if (reachable[amountSat] !== null) {
-    return {slots: reachable[amountSat]!, burnedSat: amountSat, changeSat: 0};
+  for (let sum = amountSat; sum <= total; sum++) {
+    if (reach[sum]) {
+      candidates.push({
+        slots: reach[sum]!,
+        burnedSat: sum,
+        changeSat: sum - amountSat,
+      });
+    }
   }
-  // Smallest over-cover: greedy largest-first is near-minimal and simple; the
-  // change it implies must be within the till's capacity.
-  const sorted = [...unspent].sort((a, b) => b.amount - a.amount);
+
+  // 2. The smallest single proof that covers the bill.
+  const ascending = [...unspent].sort((a, b) => a.amount - b.amount);
+  const single = ascending.find(p => p.amount >= amountSat);
+  if (single) {
+    candidates.push({
+      slots: [single.slot],
+      burnedSat: single.amount,
+      changeSat: single.amount - amountSat,
+    });
+  }
+
+  // 3. Ascending accumulation: the smallest overage from mixed small proofs.
   let sum = 0;
-  const slots: number[] = [];
-  for (const p of sorted) {
+  const acc: number[] = [];
+  for (const p of ascending) {
     if (sum >= amountSat) {break;}
-    slots.push(p.slot);
+    acc.push(p.slot);
     sum += p.amount;
   }
-  if (sum < amountSat) {
-    return {error: `card holds ${sum} sat; the bill is ${amountSat} sat`};
+  if (sum >= amountSat) {
+    candidates.push({slots: acc, burnedSat: sum, changeSat: sum - amountSat});
   }
-  const changeSat = sum - amountSat;
-  if (changeSat > tillCoverableSat) {
-    return {
-      error:
-        `change would be ${changeSat} sat but the till holds ${tillCoverableSat} sat — ` +
-        'ask for a different card (exact change settles offline too)',
-      changeSatHint: changeSat,
-    };
-  }
-  return {slots, burnedSat: sum, changeSat};
+
+  // Dedupe by slot-set, cheapest change first, fewest slots as tiebreak.
+  const seen = new Set<string>();
+  return candidates
+    .sort(
+      (a, b) => a.changeSat - b.changeSat || a.slots.length - b.slots.length,
+    )
+    .filter(c => {
+      const key = [...c.slots].sort((x, y) => x - y).join(',');
+      if (seen.has(key)) {return false;}
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
 }
 
 export interface ChargeArgs {
@@ -159,25 +193,30 @@ export async function chargeCard({
   // offline, the rebalance fails harmlessly and the refusal stands.
   const planWith = (
     tillProofs: Awaited<ReturnType<typeof listSettledProofs>>,
-  ): {slots: number[]; burnedSat: number; changeSat: number} | {error: string; changeSatHint?: number} => {
-    const candidate = planPurchase(
-      unspent,
-      amountSat,
-      tillProofs.reduce((t, p) => t + p.amount, 0),
-    );
-    if ('error' in candidate) {
-      return {error: candidate.error, changeSatHint: candidate.changeSatHint};
-    }
-    if (
-      candidate.changeSat > 0 &&
-      selectChangeFromTill(tillProofs, candidate.changeSat) === null
-    ) {
+  ): PurchasePlan | {error: string; changeSatHint?: number} => {
+    const candidates = planPurchase(unspent, amountSat);
+    if (candidates.length === 0) {
       return {
-        error: `the till cannot make ${candidate.changeSat} sat exact change — ask for a different card`,
-        changeSatHint: candidate.changeSat,
+        error: `card holds ${unspent.reduce(
+          (t, p) => t + p.amount,
+          0,
+        )} sat; the bill is ${amountSat} sat`,
       };
     }
-    return candidate;
+    let minChange: number | undefined;
+    for (const candidate of candidates) {
+      if (candidate.changeSat === 0) {
+        return candidate;
+      }
+      minChange ??= candidate.changeSat;
+      if (selectChangeFromTill(tillProofs, candidate.changeSat) !== null) {
+        return candidate;
+      }
+    }
+    return {
+      error: `the till cannot make ${minChange} sat exact change — ask for a different card`,
+      changeSatHint: minChange,
+    };
   };
 
   let till = await listSettledProofs();

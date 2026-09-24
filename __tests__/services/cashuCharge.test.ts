@@ -166,9 +166,10 @@ describe('planPurchase', () => {
     {slot: 1, amount: 4, keysetId: KEYSET_ID, nonce: 'bb', C: CARD_PUBKEY_HEX, status: 'unspent' as const},
     {slot: 2, amount: 1, keysetId: KEYSET_ID, nonce: 'cc', C: CARD_PUBKEY_HEX, status: 'unspent' as const},
   ];
+  const first = (r: ReturnType<typeof planPurchase>) => r[0];
 
   it('prefers an exact subset', () => {
-    expect(planPurchase(slots, 4, 0)).toEqual({
+    expect(first(planPurchase(slots, 4))).toEqual({
       slots: [1],
       burnedSat: 4,
       changeSat: 0,
@@ -176,28 +177,36 @@ describe('planPurchase', () => {
   });
 
   it('exact subsets can be multi-slot', () => {
-    expect(planPurchase(slots, 5, 0)).toEqual({
+    expect(first(planPurchase(slots, 5))).toEqual({
       slots: [1, 2],
       burnedSat: 5,
       changeSat: 0,
     });
   });
 
-  it('over-covers when no exact subset exists, bounded by the till', () => {
-    expect(planPurchase(slots, 10, 16)).toEqual({
+  it('over-cover candidates are ranked cheapest-change first', () => {
+    const plans = planPurchase(slots, 10);
+    // Exact-subset sums (11, 17, 20, 21) then the single 16 — all before the
+    // ascending 21 accumulation. Cheapest change: 16 → 6.
+    expect(first(plans)).toEqual({slots: [0], burnedSat: 16, changeSat: 6});
+    expect(plans.map(p => p.changeSat)).toEqual([6, 7, 10, 11]);
+  });
+
+  it('a bigger card yields the tightest single-proof over-cover', () => {
+    const rich = [
+      ...slots,
+      {slot: 3, amount: 256, keysetId: KEYSET_ID, nonce: 'dd', C: CARD_PUBKEY_HEX, status: 'unspent' as const},
+    ];
+    // For a 14-sat bill the 16 beats the 256: change 2, not 242.
+    expect(first(planPurchase(rich, 14))).toEqual({
       slots: [0],
       burnedSat: 16,
-      changeSat: 6,
+      changeSat: 2,
     });
   });
 
-  it('refuses an over-cover the till cannot back', () => {
-    const r = planPurchase(slots, 10, 5);
-    expect('error' in r && r.error).toMatch(/change would be 6 sat/);
-  });
-
   it('refuses when the card cannot cover the bill at all', () => {
-    expect('error' in planPurchase(slots, 99, 99)).toBe(true);
+    expect(planPurchase(slots, 99)).toEqual([]);
   });
 });
 
