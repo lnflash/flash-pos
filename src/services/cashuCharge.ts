@@ -38,7 +38,7 @@ import {
   rebalanceTill,
   selectChangeFromTill,
 } from './cashuMint';
-import {burnPlannedSlot} from './cashuSpend';
+import {burnPlannedSlot, settlePending} from './cashuSpend';
 import type {SettlementEntry} from './cashuSettlement';
 
 export const DEFAULT_UNIT = 'sat';
@@ -281,6 +281,15 @@ export async function chargeCard({
   let changeLoaded = 0;
   const changeSat = plan.changeSat; // narrowed: all error plans threw above
   if (changeSat > 0) {
+    // ONLINE: settle BEFORE minting change — the burned value flows back
+    // from the mint and backs the change itself, so any bill size works.
+    // OFFLINE: the settle fails into the queue (entries hold) and the till
+    // float backs exact change only — the plan already guaranteed that.
+    await step('settling payment', () =>
+      settlePending(now).catch(() => {
+        // The queue holds the entries; the auto-pipeline retries.
+      }),
+    );
     const minted = await step('making change', () =>
       makeChangeOnTill({
         mintUrl,

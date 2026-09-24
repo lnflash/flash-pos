@@ -691,7 +691,8 @@ export async function makeChangeOnTill({
     };
   }
 
-  const keysetId = chosen[0].id;
+  let chosenFinal = chosen;
+  const keysetId = chosenFinal[0].id;
   const wallet = await getWallet(mintUrl);
   const keyset = await wallet.getKeyset(keysetId);
 
@@ -705,10 +706,41 @@ export async function makeChangeOnTill({
     ),
   );
 
-  const swapResponse = await wallet.mint.swap({
-    inputs: chosen as unknown as Proof[],
-    outputs: outputData.map(od => od.blindedMessage),
-  });
+  // A till listing can drift from mint reality: an earlier swap may have
+  // consumed a proof the store still holds. The mint says so with 11001 —
+  // reconcile (checkstate every input, drop the spent listings) and retry
+  // once, so one stale listing cannot block change-making.
+  let swapResponse;
+  try {
+    swapResponse = await wallet.mint.swap({
+      inputs: chosen as unknown as Proof[],
+      outputs: outputData.map(od => od.blindedMessage),
+    });
+  } catch (error) {
+    if (!isMintOperationError(error) || error.code !== TOKEN_ALREADY_SPENT) {
+      throw error;
+    }
+    const states = await wallet.checkProofsStates(chosen as unknown as Proof[]);
+    const spent = new Set(
+      chosen
+        .filter((_, i) => states[i]?.state === 'SPENT')
+        .map(p => p.secret),
+    );
+    if (spent.size === 0) {throw error;}
+    const remaining = (await listSettledProofs()).filter(
+      p => !spent.has(p.secret),
+    );
+    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
+    const reChosen = selectChangeFromTill(remaining, changeSat);
+    if (reChosen === null) {
+      throw error;
+    }
+    swapResponse = await wallet.mint.swap({
+      inputs: reChosen as unknown as Proof[],
+      outputs: outputData.map(od => od.blindedMessage),
+    });
+    chosenFinal = reChosen;
+  }
 
   const change = swapResponse.signatures.map((sig, i) => {
     const proof = outputData[i].toProof(
@@ -725,7 +757,7 @@ export async function makeChangeOnTill({
   });
 
   // Commit: the consumed till proofs leave the store.
-  const consumed = new Set(chosen.map(p => p.secret));
+  const consumed = new Set(chosenFinal.map(p => p.secret));
   const remaining = (await listSettledProofs()).filter(
     p => !consumed.has(p.secret),
   );

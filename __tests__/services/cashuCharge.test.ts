@@ -23,9 +23,17 @@ import {
 const mockStore: Record<string, string> = {};
 const mockMakeChange = jest.fn();
 
+const mockAdapterSwap = jest.fn();
+
 jest.mock('../../src/services/cashuMint', () => ({
   ...jest.requireActual('../../src/services/cashuMint'),
   makeChangeOnTill: (...args: unknown[]) => mockMakeChange(...args),
+  // The settlement drain's swap succeeds in-test: entries settle instead of
+  // hitting the real mint with structurally-fake proofs.
+  createSettlementAdapter: () => ({
+    swap: (...args: unknown[]) => mockAdapterSwap(...args),
+    checkState: async () => 'SPENT',
+  }),
 }));
 
 jest.mock('../../src/services/secureStorage', () => ({
@@ -156,6 +164,7 @@ const tillProofs = () =>
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockAdapterSwap.mockResolvedValue(undefined);
   for (const k of Object.keys(mockStore)) delete mockStore[k];
   await clearQueue();
 });
@@ -299,7 +308,10 @@ describe('chargeCard', () => {
     );
     expect(result.changeLoaded).toBe(2);
     expect(card.loads.map(l => l.nonce)).toEqual(changeNonces);
-    await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(true);
+    // The in-session settle drained the queue: the burn entry ends settled.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+    await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(false);
   });
 
   it('refuses before burning when the till cannot make exact change', async () => {
