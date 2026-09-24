@@ -32,12 +32,7 @@ import {
   type CardProofSlot,
   type Transceiver,
 } from './cashuCard';
-import {
-  listSettledProofs,
-  makeChangeOnTill,
-  rebalanceTill,
-  selectChangeFromTill,
-} from './cashuMint';
+import {makeChangeOnTill} from './cashuMint';
 import {burnPlannedSlot, settlePending} from './cashuSpend';
 import type {SettlementEntry} from './cashuSettlement';
 
@@ -204,67 +199,28 @@ export async function chargeCard({
     getPubkey(transceive).then(toHex),
   );
 
-  // The till must be able to make the change EXACTLY before any burn — a plan
-  // whose change fails later would leave the customer stranded. When the till
-  // is short and the device is ONLINE, one rebalance (a self-swap breaking a
-  // proof into the needed denominations) is attempted before giving up;
-  // offline, the rebalance fails harmlessly and the refusal stands.
-  const planWith = (
-    tillProofs: Awaited<ReturnType<typeof listSettledProofs>>,
-  ): PurchasePlan | {error: string; changeSatHint?: number} => {
-    const candidates = planPurchase(unspent, amountSat);
-    if (candidates.length === 0) {
-      return {
-        error: `card holds ${unspent.reduce(
-          (t, p) => t + p.amount,
-          0,
-        )} sat; the bill is ${amountSat} sat`,
-      };
-    }
-    let minChange: number | undefined;
-    for (const candidate of candidates) {
-      if (candidate.changeSat === 0) {
-        return candidate;
-      }
-      minChange ??= candidate.changeSat;
-      if (selectChangeFromTill(tillProofs, candidate.changeSat) !== null) {
-        return candidate;
-      }
-    }
-    return {
-      error: `the till cannot make ${minChange} sat exact change — ask for a different card`,
-      changeSatHint: minChange,
-    };
-  };
-
-  onPhase('planning');
-
-  let till = await listSettledProofs();
-  let plan = planWith(till);
-  if ('error' in plan) {
-    // ONLINE recovery: reshape the till, then plan once more. Offline the
-    // rebalance fails harmlessly and the refusal stands.
-    try {
-      await rebalanceTill(mintUrl, 'changeSatHint' in plan ? plan.changeSatHint : 0);
-      till = await listSettledProofs();
-      plan = planWith(till);
-    } catch {
-      // Offline or mint unreachable — the refusal stands.
-    }
+  // Coin selection ranks candidates cheapest-change first. The TILL does not
+  // gate the burn: when ONLINE the burned value settles back from the mint
+  // and backs the change itself (the in-session settle below), so any cover
+  // works. OFFLINE, change comes from the float — an inexact cover against a
+  // short float is refused AFTER the attempt with an honest 'change owed'.
+  const plans = planPurchase(unspent, amountSat);
+  if (plans.length === 0) {
+    throw new Error(
+      `card holds ${unspent.reduce((t, p) => t + p.amount, 0)} sat; the bill is ${amountSat} sat`,
+    );
   }
-  if ('error' in plan) {
-    throw new Error(plan.error);
-  }
+  const chosenPlan = plans[0];
 
   const burned: SettlementEntry[] = [];
-  for (const [index, slot] of plan.slots.entries()) {
+  for (const [index, slot] of chosenPlan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
     // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
     // as needs-card instead of losing it (found in the field: a CoreNFC
     // framing error burned a 16-sat slot and the value went unrecorded).
     burned.push(
       await step(
-        `burning ${proof.amount} sat (proof ${index + 1}/${plan.slots.length})`,
+        `burning ${proof.amount} sat (proof ${index + 1}/${chosenPlan.slots.length})`,
         () =>
           burnPlannedSlot({
             transceive,
@@ -279,7 +235,7 @@ export async function chargeCard({
   }
 
   let changeLoaded = 0;
-  const changeSat = plan.changeSat; // narrowed: all error plans threw above
+  const changeSat = chosenPlan.changeSat;
   if (changeSat > 0) {
     // ONLINE: settle BEFORE minting change — the burned value flows back
     // from the mint and backs the change itself, so any bill size works.
@@ -323,7 +279,7 @@ export async function chargeCard({
   return {
     amountSat,
     burned,
-    changeSat: plan.changeSat,
+    changeSat: chosenPlan.changeSat,
     changeLoaded,
     balanceAfter,
   };

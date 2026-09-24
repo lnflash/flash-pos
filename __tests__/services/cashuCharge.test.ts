@@ -314,12 +314,41 @@ describe('chargeCard', () => {
     await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(false);
   });
 
-  it('refuses before burning when the till cannot make exact change', async () => {
+  it('an online charge mints change even when the till was short', async () => {
+    // The till (16) cannot back the 6-sat change up front — but ONLINE the
+    // burned value settles in-session and backs the change itself. The old
+    // pre-burn refusal would have blocked a legitimate payment.
     const card = fakeCard({
       slots: [{amount: 16, status: 0x01}],
       pin: '1234',
     });
     seedTill([{amount: 16, denom: 16}]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.burned).toHaveLength(1);
+    expect(result.changeSat).toBe(6);
+    expect(result.changeLoaded).toBe(2);
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+  });
+
+  it('a failed change-mint records the burns and reports the owed change honestly', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+    });
+    seedTill([{amount: 16, denom: 16}]);
+    mockMakeChange.mockResolvedValue({
+      ok: false as const,
+      reason: 'the till cannot make 6 sat exact change',
+    });
 
     await expect(
       chargeCard({
@@ -327,11 +356,14 @@ describe('chargeCard', () => {
         amountSat: 10,
         pin: '1234',
         mintUrl: MINT_URL,
+        now: 1000,
       }),
-    ).rejects.toThrow(/cannot make 6 sat exact change/);
-    // Nothing burned, nothing recorded, till intact.
-    expect(card.sent.find(([, ins]) => ins === 0x20)).toBeUndefined();
-    await expect(listSettlements()).resolves.toEqual([]);
+    ).rejects.toThrow(/payment recorded, but change could not be written/);
+    // The burn IS recorded AND settled in-session (it settles regardless) —
+    // the merchant owes the change, and the UI said so instead of claiming
+    // success.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
     expect(tillProofs()).toHaveLength(1);
   });
 
