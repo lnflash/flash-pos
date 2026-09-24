@@ -81,6 +81,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        # The action's default package list includes the obsolete `tools`
+        # package, which the current sdkmanager rejects (same fix as
+        # flash-mobile#728/#731). Gradle fetches platforms/build-tools itself.
+        with:
+          packages: platform-tools
 
       - name: Create gradle.properties
         run: cp android/gradle.properties.example android/gradle.properties

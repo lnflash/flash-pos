@@ -17,14 +17,9 @@ import {
   withCardSession,
 } from '../services/cashuCardNfc';
 import {useAppSelector} from '../store/hooks';
-import {
-  getPubkey,
-  readCard,
-  toHex,
-  type CardSummary,
-} from '../services/cashuCard';
+import {getPubkey, toHex} from '../services/cashuCard';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
-import {burnAndRecord, firstUnspentSlot, settlePending} from '../services/cashuSpend';
+import {settlePending} from '../services/cashuSpend';
 import {
   attachRecoveredWitness,
   recoverableForCard,
@@ -59,15 +54,6 @@ const PayoutInput = styled(TextInput)`
   color: #1f2328;
 `;
 
-interface SpendOutcome {
-  summary: CardSummary;
-  entry: SettlementEntry;
-}
-
-interface ChargeOutcome {
-  result: ChargeResult;
-}
-
 /**
  * Cashu card spend screen (dev builds only) — the terminal's first
  * tap-to-settle path, wired to the offline settlement queue.
@@ -82,9 +68,10 @@ interface ChargeOutcome {
 const CashuCardSpend = () => {
   const {username} = useAppSelector(state => state.user);
   const [supported, setSupported] = useState<boolean | null>(null);
-  const [spending, setSpending] = useState(false);
+  // `setSpending` went away with the in-session settle; the flag stays wired
+  // to the UI until the spend path sets it again.
+  const [spending] = useState(false);
   const [settling, setSettling] = useState(false);
-  const [outcome, setOutcome] = useState<SpendOutcome | null>(null);
   const [drain, setDrain] = useState<DrainResult | null>(null);
   const [queue, setQueue] = useState<SettlementEntry[] | null>(null);
   const [payoutInput, setPayoutInput] = useState('');

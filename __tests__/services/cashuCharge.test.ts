@@ -4,15 +4,8 @@
  * and LOAD_PROOF) meets the REAL planning, till staging, and queue recording;
  * the mint adapter is the seam (its wire behaviour is cashuMint.test.ts's).
  */
-import {bytesToHex, utf8ToBytes} from '@noble/hashes/utils';
-import {sha256} from '@noble/hashes/sha256';
-
-import {
-  buildApdu,
-  toHex,
-  type Transceiver,
-} from '../../src/services/cashuCard';
-import {buildCardP2PKSecret, mintChargeChange} from '../../src/services/cashuMint';
+import {toHex, type Transceiver} from '../../src/services/cashuCard';
+import {buildCardP2PKSecret} from '../../src/services/cashuMint';
 import {chargeCard, planPurchase} from '../../src/services/cashuCharge';
 import {
   clearQueue,
@@ -272,7 +265,6 @@ describe('chargeCard', () => {
     // The change proofs are minted P2PK-locked to the customer's card —
     // canonical secrets whose nonces round-trip through the LOAD.
     const changeNonces = ['77'.repeat(32), '88'.repeat(32)];
-    let call = 0;
     mockMintChargeChange.mockResolvedValue({
       change: [
         {
