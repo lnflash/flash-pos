@@ -12,7 +12,7 @@ import {
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
-import {buildCardP2PKSecret} from '../../src/services/cashuMint';
+import {buildCardP2PKSecret, makeChangeOnTill} from '../../src/services/cashuMint';
 import {chargeCard, planPurchase} from '../../src/services/cashuCharge';
 import {
   clearQueue,
@@ -21,6 +21,12 @@ import {
 } from '../../src/services/cashuSettlement';
 
 const mockStore: Record<string, string> = {};
+const mockMakeChange = jest.fn();
+
+jest.mock('../../src/services/cashuMint', () => ({
+  ...jest.requireActual('../../src/services/cashuMint'),
+  makeChangeOnTill: (...args: unknown[]) => mockMakeChange(...args),
+}));
 
 jest.mock('../../src/services/secureStorage', () => ({
   getSecureStrict: jest.fn(async (k: string) => mockStore[k] ?? null),
@@ -242,6 +248,32 @@ describe('chargeCard', () => {
       {amount: 4, denom: 4},
       {amount: 2, denom: 2},
     ]);
+    // The change proofs are minted P2PK-locked to the customer's card —
+    // canonical secrets whose nonces round-trip through the LOAD.
+    const changeNonces = ['77'.repeat(32), '88'.repeat(32)];
+    let call = 0;
+    mockMakeChange.mockImplementation(async ({changeSat}: {changeSat: number}) => {
+      call += 1;
+      return {
+        ok: true as const,
+        change: [
+          {
+            id: KEYSET_ID,
+            amount: changeSat,
+            secret: buildCardP2PKSecret(changeNonces[0], CARD_PUBKEY_HEX),
+            C: CARD_PUBKEY_HEX,
+            mintUrl: MINT_URL,
+          },
+          {
+            id: KEYSET_ID,
+            amount: changeSat - 4,
+            secret: buildCardP2PKSecret(changeNonces[1], CARD_PUBKEY_HEX),
+            C: CARD_PUBKEY_HEX,
+            mintUrl: MINT_URL,
+          },
+        ],
+      };
+    });
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -253,14 +285,11 @@ describe('chargeCard', () => {
 
     expect(result.burned).toHaveLength(1);
     expect(result.changeSat).toBe(6);
-    // Change = [2, 4] — the till's small denominations, spent small-first.
+    expect(mockMakeChange).toHaveBeenCalledWith(
+      expect.objectContaining({changeSat: 6, p2pkPubkey: CARD_PUBKEY_HEX}),
+    );
     expect(result.changeLoaded).toBe(2);
-    expect(card.loads).toEqual([
-      expect.objectContaining({amount: 2}),
-      expect.objectContaining({amount: 4}),
-    ]);
-    // The till paid out its change: those proofs left the store.
-    expect(tillProofs()).toHaveLength(0);
+    expect(card.loads.map(l => l.nonce)).toEqual(changeNonces);
     await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(true);
   });
 
@@ -303,12 +332,22 @@ describe('chargeCard', () => {
     await expect(listSettlements()).resolves.toEqual([]);
   });
 
-  it('the nonce written back is the one from the till secret', async () => {
+  it('the nonce written back is the one the change was minted with', async () => {
     const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
     seedTill([{amount: 4, denom: 4}, {amount: 2, denom: 2}]);
-    const till = JSON.parse(mockStore['@cashu_settled_proofs']) as {
-      secret: string;
-    }[];
+    const changeNonce = '99'.repeat(32);
+    mockMakeChange.mockResolvedValue({
+      ok: true,
+      change: [
+        {
+          id: KEYSET_ID,
+          amount: 6,
+          secret: buildCardP2PKSecret(changeNonce, CARD_PUBKEY_HEX),
+          C: CARD_PUBKEY_HEX,
+          mintUrl: MINT_URL,
+        },
+      ],
+    });
 
     await chargeCard({
       transceive: card.transceive,
@@ -317,10 +356,8 @@ describe('chargeCard', () => {
       mintUrl: MINT_URL,
     });
 
-    // Each loaded proof's nonce comes from its till secret's P2PK envelope.
-    for (const load of card.loads) {
-      const match = till.find(t => load.nonce === JSON.parse(t.secret)[1].nonce);
-      expect(match).toBeDefined();
-    }
+    // The LOAD carries the nonce from the minted P2PK secret, so the
+    // customer's later spend reconstructs exactly what the mint signed.
+    expect(card.loads.map(l => l.nonce)).toEqual([changeNonce]);
   });
 });

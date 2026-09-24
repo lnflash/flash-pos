@@ -32,6 +32,7 @@
 import {
   isMintOperationError,
   isP2PKSpendAuthorised,
+  OutputData,
   serializeSwapPreview,
   Wallet,
   type Proof,
@@ -501,8 +502,6 @@ export async function meltSettledProofs({
 
 // ── the till: change-making and float maintenance ──────────────────────────
 
-const PENDING_CHANGE_KEY = '@cashu_till_change_pending';
-
 /**
  * Select settled proofs summing EXACTLY to `changeSat`, smallest first.
  * Returns [] for 0, null when the till cannot make exact change.
@@ -527,45 +526,6 @@ export function selectChangeFromTill(
     }
   }
   return remaining === 0 ? chosen : null;
-}
-
-/**
- * Stage change from the till: writes a pending record (recoverable if the
- * LOAD onto the customer's card dies mid-flight) and returns the proofs.
- * `commit` removes them from the till; `abort` clears the pending record and
- * leaves the till untouched.
- */
-export async function stageChangeFromTill(
-  changeSat: number,
-): Promise<
-  | {ok: true; proofs: SettledProof[]; commit: () => Promise<void>; abort: () => Promise<void>}
-  | {ok: false; reason: string}
-> {
-  const proofs = await listSettledProofs();
-  const chosen = selectChangeFromTill(proofs, changeSat);
-  if (chosen === null) {
-    const total = proofs.reduce((t, p) => t + p.amount, 0);
-    return {
-      ok: false,
-      reason: `the till cannot make ${changeSat} sat exact change (holds ${total} sat)`,
-    };
-  }
-  await setSecure(
-    PENDING_CHANGE_KEY,
-    JSON.stringify(chosen.map(p => p.secret)),
-  );
-  const commit = async () => {
-    const secrets = new Set(chosen.map(p => p.secret));
-    const remaining = (await listSettledProofs()).filter(
-      p => !secrets.has(p.secret),
-    );
-    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
-    await removeSecure(PENDING_CHANGE_KEY);
-  };
-  const abort = async () => {
-    await removeSecure(PENDING_CHANGE_KEY);
-  };
-  return {ok: true, proofs: chosen, commit, abort};
 }
 
 /**
@@ -664,4 +624,111 @@ export async function sweepSettledProofs(opts: {
     JSON.stringify([...current.filter(c => !survivors.some(s => s.secret === c.secret)), ...survivors]),
   );
   return result;
+}
+
+// ── change minting: till proofs → P2PK proofs for the customer's card ──────
+
+/** Greedy power-of-two decomposition (4 → [4]; 6 → [4,2]; 7 → [4,2,1]). */
+function splitPow2(amountSat: number): number[] {
+  const pieces: number[] = [];
+  let remaining = amountSat;
+  let denom = 1;
+  while (denom * 2 <= remaining) {denom *= 2;}
+  while (remaining > 0) {
+    if (denom <= remaining) {
+      pieces.push(denom);
+      remaining -= denom;
+    } else {
+      denom = Math.floor(denom / 2);
+    }
+  }
+  return pieces;
+}
+
+/**
+ * Mint `changeSat` of change from the till, P2PK-locked to `p2pkPubkey` —
+ * the customer's card key — so the proofs can be written straight onto their
+ * card and spent by it later.
+ *
+ * The change is NEW mint-signed value: the till proofs are consumed as swap
+ * inputs and the outputs are blinded with OUR canonical P2PK secrets
+ * (buildCardP2PKSecret-shape — cashu-ts's serializer is byte-identical, so
+ * the host's spend-time reconstruction reads them back exactly). When the
+ * till cannot make the change exactly, one ONLINE rebalance is attempted
+ * first; offline the function reports the shortfall and nothing moves.
+ */
+export async function makeChangeOnTill({
+  mintUrl,
+  changeSat,
+  p2pkPubkey,
+}: {
+  mintUrl: string;
+  changeSat: number;
+  p2pkPubkey: string;
+}): Promise<
+  | {ok: true; change: SettledProof[]}
+  | {ok: false; reason: string}
+> {
+  if (changeSat <= 0) {return {ok: true, change: []};}
+
+  let proofs = await listSettledProofs();
+  let chosen = selectChangeFromTill(proofs, changeSat);
+  if (chosen === null) {
+    // ONLINE recovery: reshape the till, then select once more.
+    try {
+      await rebalanceTill(mintUrl, changeSat);
+      proofs = await listSettledProofs();
+      chosen = selectChangeFromTill(proofs, changeSat);
+    } catch {
+      // Offline: fall through to the refusal.
+    }
+  }
+  if (chosen === null) {
+    const total = proofs.reduce((t, p) => t + p.amount, 0);
+    return {
+      ok: false,
+      reason: `the till cannot make ${changeSat} sat exact change (holds ${total} sat)`,
+    };
+  }
+
+  const keysetId = chosen[0].id;
+  const wallet = await getWallet(mintUrl);
+  const keyset = await wallet.getKeyset(keysetId);
+
+  // Outputs: the change as P2PK pieces locked to the customer's card.
+  const pieces = splitPow2(changeSat);
+  const outputData = pieces.map(a =>
+    OutputData.createSingleP2PKData(
+      {pubkey: p2pkPubkey, sigFlag: 'SIG_INPUTS'},
+      a,
+      keysetId,
+    ),
+  );
+
+  const swapResponse = await wallet.mint.swap({
+    inputs: chosen as unknown as Proof[],
+    outputs: outputData.map(od => od.blindedMessage),
+  });
+
+  const change = swapResponse.signatures.map((sig, i) => {
+    const proof = outputData[i].toProof(
+      sig,
+      {...keyset.keys} as Parameters<OutputData['toProof']>[1],
+    );
+    return {
+      id: proof.id,
+      amount: Number(proof.amount),
+      secret: proof.secret,
+      C: proof.C,
+      mintUrl,
+    };
+  });
+
+  // Commit: the consumed till proofs leave the store.
+  const consumed = new Set(chosen.map(p => p.secret));
+  const remaining = (await listSettledProofs()).filter(
+    p => !consumed.has(p.secret),
+  );
+  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
+  return {ok: true, change};
 }

@@ -19,32 +19,27 @@
      committed only after every LOAD succeeds — a failed load leaves the
  *     till intact and the error surfaces.
  */
-import {sha256} from '@noble/hashes/sha256';
-import {utf8ToBytes} from '@noble/hashes/utils';
-
 import {
+  getBalance,
   getInfo,
   getProof,
-  getBalance,
   getSlotStatuses,
   getPubkey,
   loadProof,
   selectApplet,
-  spendProof,
   verifyCardPin,
   toHex,
   type CardProofSlot,
   type Transceiver,
 } from './cashuCard';
 import {
-  buildCardP2PKSecret,
   listSettledProofs,
+  makeChangeOnTill,
   rebalanceTill,
   selectChangeFromTill,
-  stageChangeFromTill,
 } from './cashuMint';
 import {burnPlannedSlot} from './cashuSpend';
-import {recordSpend, type SettlementEntry} from './cashuSettlement';
+import type {SettlementEntry} from './cashuSettlement';
 
 export const DEFAULT_UNIT = 'sat';
 
@@ -179,6 +174,7 @@ export async function chargeCard({
     ) {
       return {
         error: `the till cannot make ${candidate.changeSat} sat exact change — ask for a different card`,
+        changeSatHint: candidate.changeSat,
       };
     }
     return candidate;
@@ -187,7 +183,8 @@ export async function chargeCard({
   let till = await listSettledProofs();
   let plan = planWith(till);
   if ('error' in plan) {
-    // ONLINE recovery: reshape the till, then plan once more.
+    // ONLINE recovery: reshape the till, then plan once more. Offline the
+    // rebalance fails harmlessly and the refusal stands.
     try {
       await rebalanceTill(mintUrl, 'changeSatHint' in plan ? plan.changeSatHint : 0);
       till = await listSettledProofs();
@@ -220,31 +217,26 @@ export async function chargeCard({
 
   let changeLoaded = 0;
   if (plan.changeSat > 0) {
-    const staged = await stageChangeFromTill(plan.changeSat);
-    if (!staged.ok) {
-      // The burns are done and recorded; the till shortfall becomes a
-      // settlement-side fact (the full burned value settles regardless).
-      // Surface it — the UI must not tell the customer change was given.
+    const minted = await makeChangeOnTill({
+      mintUrl,
+      changeSat: plan.changeSat,
+      p2pkPubkey: cardPubkey,
+    });
+    if (!minted.ok) {
+      // The burns are done and recorded (the full burned value settles
+      // regardless) — but the UI must not claim change was given.
       throw new Error(
-        `payment recorded, but change could not be written: ${staged.reason}`,
+        `payment recorded, but change could not be written: ${minted.reason}`,
       );
     }
-    try {
-      for (const proof of staged.proofs) {
-        await loadProof(transceive, {
-          keysetId: proof.id,
-          amount: proof.amount,
-          nonce: proof.secret ? nonceFromSecret(proof.secret) : '',
-          C: proof.C,
-        });
-        changeLoaded += 1;
-      }
-      await staged.commit();
-    } catch (error) {
-      // Till intact (pending record still set): the change proofs are safe
-      // and can be re-attempted on the customer's next tap.
-      await staged.abort();
-      throw error instanceof Error ? error : new Error(String(error));
+    for (const proof of minted.change) {
+      await loadProof(transceive, {
+        keysetId: proof.id,
+        amount: proof.amount,
+        nonce: nonceFromSecret(proof.secret),
+        C: proof.C,
+      });
+      changeLoaded += 1;
     }
   }
 

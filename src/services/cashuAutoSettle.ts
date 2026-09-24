@@ -16,7 +16,6 @@
  */
 import {
   listSettledProofs,
-  rebalanceTill,
   sweepSettledProofs,
 } from './cashuMint';
 import {settlePending} from './cashuSpend';
@@ -75,10 +74,6 @@ export async function runAutoSettlement(
           keepReserveSat: 16,
         });
         paidSat = payout.paidSat;
-        // Online maintenance: break the till's largest proof so change can
-        // always be made. Opportunistic — a failed rebalance leaves the
-        // float policy to the next run.
-        await rebalanceTill(FLASH_CASHU_MINT_URL).catch(() => {});
       } catch (error) {
         // The sweep is best-effort on top of a confirmed settlement: the
         // proofs remain in the store and the next run retries the sweep.
