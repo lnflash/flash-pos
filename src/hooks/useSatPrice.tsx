@@ -1,9 +1,28 @@
 import * as React from 'react';
 import {useSubscription} from '@apollo/client';
 import {PriceSubscription} from '../graphql/subscriptions';
+import {useQuery} from '@apollo/client';
+import {RealtimePrice} from '../graphql/queries';
 
 const useSatPrice = () => {
   const [price, setPrice] = React.useState<number>(0);
+
+  // Primary source: the realtimePrice query over HTTP. The backend does not
+  // expose the websocket endpoint the PriceSubscription needs (every path
+  // rejects the upgrade), so polling is what actually delivers the price —
+  // the subscription below stays as a live-update bonus when a WS exists.
+  const {data: rtData} = useQuery(RealtimePrice, {
+    variables: {currency: 'USD'},
+    pollInterval: 20000,
+  });
+
+  React.useEffect(() => {
+    const btc = rtData?.realtimePrice?.btcSatPrice;
+    if (btc) {
+      const nextPrice = btc.base / 10 ** btc.offset;
+      setPrice(Number.isFinite(nextPrice) && nextPrice > 0 ? nextPrice : 0);
+    }
+  }, [rtData]);
 
   const {data} = useSubscription(PriceSubscription, {
     variables: {
