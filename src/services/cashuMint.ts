@@ -562,10 +562,14 @@ export async function rebalanceTill(
   const wallet = await getWallet(mintUrl);
   // Send the needed amount; completeSwap returns the rest as `keep`. The
   // keep/send union is the whole reborn proof set (see the settlement comment).
-  const preview = await wallet.prepareSwapToSend(swapAmount, [
-    {id: target.id, amount: target.amount, secret: target.secret, C: target.C},
-  ]);
-  const {keep, send} = await wallet.completeSwap(preview);
+  const preview = await withRateLimitRetry(() =>
+    wallet.prepareSwapToSend(swapAmount, [
+      {id: target.id, amount: target.amount, secret: target.secret, C: target.C},
+    ]),
+  );
+  const {keep, send} = await withRateLimitRetry(() =>
+    wallet.completeSwap(preview),
+  );
   const reborn = [...keep, ...send].map(p => ({
     id: p.id,
     amount: Number(p.amount),
@@ -593,8 +597,6 @@ export async function reconcileTill(mintUrl: string): Promise<number> {
   if (proofs.length === 0) {return 0;}
   try {
     const wallet = await getWallet(mintUrl);
-    const keysetId = proofs[0].id;
-    const keyset = await wallet.getKeyset(keysetId);
     const states = await wallet.checkProofsStates(
       proofs as unknown as Proof[],
     );
@@ -662,6 +664,28 @@ export async function sweepSettledProofs(opts: {
 }
 
 // ── change minting: till proofs → P2PK proofs for the customer's card ──────
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Forge rate-limits bursts, and a charge is a burst: settle + rebalance +
+ * change-swap inside one session. One retry after the mint's own
+ * retryAfterMs (or 2.5s) clears the routine throttle.
+ */
+async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    const retryable =
+      isMintOperationError(error) ||
+      (error instanceof Error && /rate limit/i.test(error.message));
+    if (!retryable) {throw error;}
+    const wait =
+      (error as {retryAfterMs?: number}).retryAfterMs ?? 2500;
+    await sleep(wait);
+    return fn();
+  }
+}
 
 /** Greedy power-of-two decomposition (4 → [4]; 6 → [4,2]; 7 → [4,2,1]). */
 function splitPow2(amountSat: number): number[] {
