@@ -24,7 +24,7 @@ import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
 
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
-import {setIsPrimaryAmountSats, resetAmount} from '../store/slices/amountSlice';
+import {setIsPrimaryAmountSats, resetAmount, setSatAmount, setDisplayAmount} from '../store/slices/amountSlice';
 import {
   selectRewardConfig,
   selectEventConfig,
@@ -142,10 +142,25 @@ const Keypad = () => {
         return;
       }
 
-      // Convert US$10,000 to local currency for comparison
-      // First convert 1 local currency unit to sats, then estimate USD equivalent
-      const {convertedCurrencyAmount: satsPerLocalUnit} = currencyToSats(1);
+      // The fiat-price validation protects the BTCPay invoice (1-cent
+      // minimum). The Cashu card path is sat-native — no invoice, no price —
+      // so when the merchant is entering SATS, tiny amounts are legitimate
+      // and the gate would wrongly block them. The card flow is selected on
+      // the invoice screen; sat amounts pass straight through.
+      const isSatEntry = currency.id === 'SAT';
       const usdPerSat = satsToUsd(1);
+
+      if (isSatEntry) {
+        // SAT is the native unit: no fiat conversion, no BTCPay invoice. The
+        // card charge takes it directly — including sub-cent amounts a
+        // fiat-denominated Lightning invoice could never represent.
+        dispatch(setSatAmount(String(Number(satAmount))));
+        dispatch(setDisplayAmount(String(Number(displayAmount))));
+        const subCent = Number(satAmount) * usdPerSat * 100 < 1;
+        navigation.navigate(subCent ? 'CashuCardCharge' : 'Invoice');
+        return;
+      }
+
       const invoiceAmount = validateInvoiceAmount(usdPerSat, Number(satAmount));
 
       if (!invoiceAmount.valid) {
@@ -158,7 +173,7 @@ const Keypad = () => {
         return;
       }
 
-      const usdPerLocalUnit = satsPerLocalUnit * usdPerSat;
+      const usdPerLocalUnit = currencyToSats(1).convertedCurrencyAmount * usdPerSat;
       if (!Number.isFinite(usdPerLocalUnit) || usdPerLocalUnit <= 0) {
         toastShow({
           message:
