@@ -227,7 +227,7 @@ describe('describeCardFailure', () => {
       [
         'TagResponseError',
         () => new NfcError.TagResponseError(),
-        'The card returned a malformed response',
+        'The card read was garbled at the NFC layer — hold the card steady and try again',
       ],
       ['Timeout', () => new NfcError.Timeout(), 'Timed out waiting for a tap'],
       [
