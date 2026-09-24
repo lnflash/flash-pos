@@ -43,6 +43,7 @@ import {
   selectChangeFromTill,
   stageChangeFromTill,
 } from './cashuMint';
+import {burnPlannedSlot} from './cashuSpend';
 import {recordSpend, type SettlementEntry} from './cashuSettlement';
 
 export const DEFAULT_UNIT = 'sat';
@@ -202,25 +203,18 @@ export async function chargeCard({
   const burned: SettlementEntry[] = [];
   for (const slot of plan.slots) {
     const proof = unspent.find(p => p.slot === slot)!;
-    const secret = buildCardP2PKSecret(proof.nonce, cardPubkey);
-    const message = Array.from(sha256(utf8ToBytes(secret)));
-    const witness = toHex(await spendProof(transceive, slot, message));
+    // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
+    // as needs-card instead of losing it (found in the field: a CoreNFC
+    // framing error burned a 16-sat slot and the value went unrecorded).
     burned.push(
-      await recordSpend(
-        {
-          cardPubkey,
-          slot,
-          keysetId: proof.keysetId,
-          mintUrl,
-          unit,
-          amount: proof.amount,
-          nonce: proof.nonce,
-          secret,
-          C: proof.C,
-          witness,
-        },
+      await burnPlannedSlot({
+        transceive,
+        proof,
+        cardPubkey,
+        mintUrl,
+        unit,
         now,
-      ),
+      }),
     );
   }
 

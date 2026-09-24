@@ -82,18 +82,49 @@ export async function burnAndRecord({
       `slot ${slot} is ${proof.status}; refusing to spend it again`,
     );
   }
-
   const cardPubkey = toHex(await getPubkey(transceive));
+  return burnPlannedSlot({
+    transceive,
+    proof,
+    cardPubkey,
+    mintUrl,
+    unit,
+    now,
+  });
+}
+
+/**
+ * Burn one ALREADY-PLANNED slot and record it, with the burn-ambiguity
+ * recovery. Shared by the single-slot flow and the multi-slot charge: an
+ * APDU failure mid-burn must never leave a burned slot unrecorded — the
+ * card re-read decides between a `needs-card` entry (burn landed, signature
+ * lost) and surfacing the error (burn never happened).
+ */
+export async function burnPlannedSlot({
+  transceive,
+  proof,
+  cardPubkey,
+  mintUrl,
+  unit = DEFAULT_UNIT,
+  now = Date.now(),
+}: {
+  transceive: Transceiver;
+  proof: CardProofSlot;
+  cardPubkey: string;
+  mintUrl: string;
+  unit?: string;
+  now?: number;
+}): Promise<SettlementEntry> {
   const secret = buildCardP2PKSecret(proof.nonce, cardPubkey);
   const message = Array.from(sha256(utf8ToBytes(secret)));
 
   let witness: string | undefined;
   try {
-    witness = toHex(await spendProof(transceive, slot, message));
+    witness = toHex(await spendProof(transceive, proof.slot, message));
   } catch (error) {
     // The burn may or may not have landed before the failure. Only a slot the
     // card now reports as spent becomes a `needs-card` entry.
-    const after = await getProof(transceive, slot).catch(() => null);
+    const after = await getProof(transceive, proof.slot).catch(() => null);
     if (!after || after.status !== 'spent') {
       throw error;
     }
@@ -102,7 +133,7 @@ export async function burnAndRecord({
   return recordSpend(
     {
       cardPubkey,
-      slot,
+      slot: proof.slot,
       keysetId: proof.keysetId,
       mintUrl,
       unit,

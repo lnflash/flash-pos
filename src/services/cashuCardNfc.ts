@@ -151,7 +151,10 @@ function nfcErrorMessages(): ReadonlyArray<readonly [NfcErrorClass, string]> {
     [classes.TagConnectionLost, 'Card left the field — hold it still'],
     [classes.TagNotConnected, 'Card left the field — hold it still'],
     [classes.RetryExceeded, 'Card stopped responding — hold it still'],
-    [classes.TagResponseError, 'The card returned a malformed response'],
+    [
+      classes.TagResponseError,
+      'The card read was garbled at the NFC layer — hold the card steady and try again',
+    ],
     [classes.Timeout, 'Timed out waiting for a tap'],
     [classes.SessionInvalidated, 'NFC session ended — try again'],
     [classes.SystemBusy, 'NFC is busy — wait a moment and try again'],
