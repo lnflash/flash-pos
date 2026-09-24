@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
+import {ScrollView, TextInput} from 'react-native';
 import {StackScreenProps} from '@react-navigation/stack';
 import styled from 'styled-components/native';
 
@@ -55,7 +55,9 @@ const CashuCardCharge = ({navigation}: Props) => {
   const {username} = useAppSelector(state => state.user);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [charging, setCharging] = useState(false);
-  const [phase, setPhase] = useState<string | null>(null);
+  // Phase text is reported by readAndPlan for the next UI step; only the
+  // setter is consumed until that step lands.
+  const [, setPhase] = useState<string | null>(null);
   // Two-phase flow: 'tap' → (plan read; PIN pad if the card has one) → done.
   const [flow, setFlow] = useState<'tap' | 'pin' | 'done'>('tap');
   const [plan, setPlan] = useState<{
@@ -176,6 +178,7 @@ const CashuCardCharge = ({navigation}: Props) => {
     }
   }, [plan, pin, finish]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- wired by the cancel control in the PIN step
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
     cancelCardSession();
@@ -281,6 +284,7 @@ const Value = styled.Text`
   color: #1f2328;
 `;
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- PIN step UI, not mounted yet
 const FieldLabel = styled.Text`
   font-size: 13px;
   font-family: 'Outfit-Regular';
@@ -288,6 +292,7 @@ const FieldLabel = styled.Text`
   margin-top: 16px;
 `;
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- PIN step UI, not mounted yet
 const PinInput = styled(TextInput)`
   margin-top: 6px;
   border-width: 1px;
