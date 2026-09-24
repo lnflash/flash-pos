@@ -33,6 +33,8 @@ const SW_OK = 0x9000;
 
 export const INS = {
   GET_INFO: 0x01,
+  LOAD_PROOF: 0x30,
+  VERIFY_PIN: 0x40,
   GET_PUBKEY: 0x10,
   GET_BALANCE: 0x11,
   GET_PROOF_COUNT: 0x12,
@@ -271,6 +273,69 @@ export async function getBalance(transceive: Transceiver): Promise<number> {
   // uint32 big-endian. >>> 0 keeps it unsigned; a full card would otherwise
   // read negative once bit 31 is set.
   return ((body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3]) >>> 0;
+}
+
+/**
+ * VERIFY_PIN within the current session. Resolves on success; a wrong PIN
+ * rejects with the card's `63CX` (tries remaining), a blocked PIN with
+ * `6983`, an unset PIN with `6984`. The session flag clears on deselect —
+ * every purchase re-verifies.
+ */
+export async function verifyCardPin(
+  transceive: Transceiver,
+  pin: string,
+): Promise<void> {
+  const data = Array.from(pin).map(c => c.charCodeAt(0));
+  await send(transceive, INS.VERIFY_PIN, {
+    data,
+    context: 'VERIFY_PIN',
+  });
+}
+
+/**
+ * LOAD_PROOF: store a proof (keyset + amount + nonce + C) into the next free
+ * slot. Used for card top-ups and — Model B — for writing change back onto
+ * the customer's card. Wire format mirrors cardctl: 8-byte keyset id (raw,
+ * never ASCII), 4-byte big-endian amount, 32-byte nonce, 33-byte C.
+ */
+export async function loadProof(
+  transceive: Transceiver,
+  proof: {keysetId: string; amount: number; nonce: string; C: string},
+): Promise<number> {
+  if (proof.keysetId.length !== 16) {
+    throw new CardProtocolError(
+      `LOAD_PROOF: keyset id must be 16 hex chars, got ${proof.keysetId.length}`,
+    );
+  }
+  const keysetBytes = (proof.keysetId.match(/../g) ?? []).map(h => parseInt(h, 16));
+  const amount = proof.amount;
+  const nonceBytes = (proof.nonce.match(/../g) ?? []).map(h => parseInt(h, 16));
+  const cBytes = (proof.C.match(/../g) ?? []).map(h => parseInt(h, 16));
+  if (nonceBytes.length !== 32 || cBytes.length !== 33) {
+    throw new CardProtocolError(
+      `LOAD_PROOF: expected 32-byte nonce and 33-byte C, got ${nonceBytes.length}/${cBytes.length}`,
+    );
+  }
+  const data = [
+    ...keysetBytes,
+    (amount >>> 24) & 0xff,
+    (amount >>> 16) & 0xff,
+    (amount >>> 8) & 0xff,
+    amount & 0xff,
+    ...nonceBytes,
+    ...cBytes,
+  ];
+  const body = await send(transceive, INS.LOAD_PROOF, {
+    data,
+    le: 0x01,
+    context: 'LOAD_PROOF',
+  });
+  if (body.length !== 1) {
+    throw new CardProtocolError(
+      `LOAD_PROOF: expected 1-byte slot, got ${body.length}`,
+    );
+  }
+  return body[0];
 }
 
 export type SlotStatus = 'empty' | 'unspent' | 'spent';

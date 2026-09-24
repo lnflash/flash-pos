@@ -24,6 +24,7 @@ import {
   meltSettledProofs,
   type PayoutResult,
 } from '../services/cashuMint';
+import {chargeCard, type ChargeResult} from '../services/cashuCharge';
 import {
   listSettlements,
   type DrainResult,
@@ -52,6 +53,10 @@ interface SpendOutcome {
   entry: SettlementEntry;
 }
 
+interface ChargeOutcome {
+  result: ChargeResult;
+}
+
 /**
  * Cashu card spend screen (dev builds only) — the terminal's first
  * tap-to-settle path, wired to the offline settlement queue.
@@ -74,6 +79,10 @@ const CashuCardSpend = () => {
   const [payoutInput, setPayoutInput] = useState('');
   const [payingOut, setPayingOut] = useState(false);
   const [payout, setPayout] = useState<PayoutResult | null>(null);
+  const [chargeAmount, setChargeAmount] = useState('');
+  const [chargePin, setChargePin] = useState('');
+  const [charging, setCharging] = useState(false);
+  const [charge, setCharge] = useState<ChargeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshQueue = useCallback(async () => {
@@ -106,39 +115,32 @@ const CashuCardSpend = () => {
     [],
   );
 
-  const onSpend = useCallback(async () => {
-    if (spendingRef.current) {
+  const onCharge = useCallback(async () => {
+    const amount = Number(chargeAmount);
+    if (spendingRef.current || !amount || amount <= 0 || !chargePin) {
       return;
     }
     spendingRef.current = true;
     cancelledRef.current = false;
-    setSpending(true);
+    setCharging(true);
     setError(null);
-    setOutcome(null);
+    setCharge(null);
     setDrain(null);
     try {
-      const result = await withCardSession(async transceive => {
-        // One session, card work only — the drain is a network round trip and
-        // runs after the field is released.
-        const summary = await readCard(transceive);
-        const proof = await firstUnspentSlot(transceive, summary.info.maxSlots);
-        if (!proof) {
-          throw new Error('the card has no unspent slot');
-        }
-        const entry = await burnAndRecord({
+      const result = await withCardSession(transceive =>
+        chargeCard({
           transceive,
-          slot: proof.slot,
+          amountSat: amount,
+          pin: chargePin,
           mintUrl: FLASH_CASHU_MINT_URL,
-        });
-        return {summary, entry};
-      }, {
-        alertMessage: 'Hold the Cashu card to the phone',
+        }), {
+        alertMessage: `Charge ${amount} sat — hold the customer's card`,
       });
-      setOutcome(result);
+      setCharge(result);
       await refreshQueue();
-      // The tap is recorded; settle + sweep to the account address now, so
-      // the merchant does nothing. Runs after the NFC session is closed; a
-      // failed auto-run is the offline case — queue holds, banner shows.
+      // The burns are recorded; settle + sweep to the account address now.
+      // Runs after the NFC session is closed; a failed auto-run is the
+      // offline case — queue holds, banner shows.
       if (username) {
         await runAutoSettlement(username).catch(() => {});
         await refreshQueue();
@@ -151,9 +153,9 @@ const CashuCardSpend = () => {
       }
     } finally {
       spendingRef.current = false;
-      setSpending(false);
+      setCharging(false);
     }
-  }, [refreshQueue, username]);
+  }, [chargeAmount, chargePin, refreshQueue, username]);
 
   const onSettle = useCallback(async () => {
     setSettling(true);
@@ -214,13 +216,30 @@ const CashuCardSpend = () => {
         </Value>
       </Row>
 
-      <TextButton
-        icon="wifi"
-        title={spending ? 'Waiting for tap…' : 'Tap card & spend first unspent slot'}
-        btnStyle={readButtonStyle}
-        disabled={spending}
-        onPress={onSpend}
-      />
+      <Results>
+        <Label style={detailLabelStyle}>Charge amount (sat)</Label>
+        <PayoutInput
+          value={chargeAmount}
+          onChangeText={setChargeAmount}
+          placeholder="e.g. 21"
+          keyboardType="number-pad"
+        />
+        <Label style={detailLabelStyle}>Customer PIN</Label>
+        <PayoutInput
+          value={chargePin}
+          onChangeText={setChargePin}
+          placeholder="customer's card PIN"
+          secureTextEntry
+          keyboardType="number-pad"
+        />
+        <TextButton
+          icon="wifi"
+          title={charging ? 'Waiting for tap…' : 'Charge card'}
+          btnStyle={readButtonStyle}
+          disabled={charging || !chargeAmount || !chargePin}
+          onPress={onCharge}
+        />
+      </Results>
       {spending && (
         <>
           <ActivityIndicator />
@@ -249,21 +268,29 @@ const CashuCardSpend = () => {
         </ErrorBox>
       )}
 
-      {outcome && (
+      {charge && (
         <Results>
           <Row>
-            <Label>Card balance after burn</Label>
-            <Value>{outcome.summary.balance}</Value>
+            <Label>Charged</Label>
+            <Value>{charge.amountSat} sat</Value>
           </Row>
           <Row>
-            <Label>Queued</Label>
-            <Value>
-              slot {outcome.entry.slot} · {outcome.entry.amount}{' '}
-              {outcome.entry.unit} · {outcome.entry.status}
-            </Value>
+            <Label>Proofs burned</Label>
+            <Value>{charge.burned.length}</Value>
           </Row>
-          <Label style={detailLabelStyle}>Settlement id</Label>
-          <Mono selectable>{outcome.entry.id}</Mono>
+          {charge.changeSat > 0 && (
+            <Row>
+              <Label>Change written to card</Label>
+              <Value>
+                {charge.changeSat} sat ({charge.changeLoaded}{' '}
+                proof(s))
+              </Value>
+            </Row>
+          )}
+          <Row>
+            <Label>Card balance after</Label>
+            <Value>{charge.balanceAfter}</Value>
+          </Row>
         </Results>
       )}
 

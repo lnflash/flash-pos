@@ -498,3 +498,156 @@ export async function meltSettledProofs({
     change,
   };
 }
+
+// ── the till: change-making and float maintenance ──────────────────────────
+
+const PENDING_CHANGE_KEY = '@cashu_till_change_pending';
+
+/**
+ * Select settled proofs summing EXACTLY to `changeSat`, smallest first.
+ * Returns [] for 0, null when the till cannot make exact change.
+ *
+ * Exactness matters: the till proofs are bearer money — overpaying change
+ * would give the customer more than they are owed, and underpaying steals
+ * from them.
+ */
+export function selectChangeFromTill(
+  proofs: SettledProof[],
+  changeSat: number,
+): SettledProof[] | null {
+  if (changeSat === 0) {return [];}
+  // Small first — spend small denominations before breaking big ones.
+  const sorted = [...proofs].sort((a, b) => a.amount - b.amount);
+  let remaining = changeSat;
+  const chosen: SettledProof[] = [];
+  for (const p of sorted) {
+    if (p.amount <= remaining) {
+      chosen.push(p);
+      remaining -= p.amount;
+    }
+  }
+  return remaining === 0 ? chosen : null;
+}
+
+/**
+ * Stage change from the till: writes a pending record (recoverable if the
+ * LOAD onto the customer's card dies mid-flight) and returns the proofs.
+ * `commit` removes them from the till; `abort` clears the pending record and
+ * leaves the till untouched.
+ */
+export async function stageChangeFromTill(
+  changeSat: number,
+): Promise<
+  | {ok: true; proofs: SettledProof[]; commit: () => Promise<void>; abort: () => Promise<void>}
+  | {ok: false; reason: string}
+> {
+  const proofs = await listSettledProofs();
+  const chosen = selectChangeFromTill(proofs, changeSat);
+  if (chosen === null) {
+    const total = proofs.reduce((t, p) => t + p.amount, 0);
+    return {
+      ok: false,
+      reason: `the till cannot make ${changeSat} sat exact change (holds ${total} sat)`,
+    };
+  }
+  await setSecure(
+    PENDING_CHANGE_KEY,
+    JSON.stringify(chosen.map(p => p.secret)),
+  );
+  const commit = async () => {
+    const secrets = new Set(chosen.map(p => p.secret));
+    const remaining = (await listSettledProofs()).filter(
+      p => !secrets.has(p.secret),
+    );
+    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
+    await removeSecure(PENDING_CHANGE_KEY);
+  };
+  const abort = async () => {
+    await removeSecure(PENDING_CHANGE_KEY);
+  };
+  return {ok: true, proofs: chosen, commit, abort};
+}
+
+/**
+ * Break the till's largest proof into smaller denominations so change can be
+ * made later. A self-swap: the till proofs are the merchant's own unlocked
+ * bearer proofs, so no witness and no external invoice — just a NUT-03 swap
+ * with chosen outputs. One proof per call; the auto-pipeline runs this while
+ * ONLINE so purchases never need the network for change.
+ */
+export async function rebalanceTill(mintUrl: string): Promise<number> {
+  const proofs = await listSettledProofs();
+  if (proofs.length === 0) {return 0;}
+  const smallest = Math.min(...proofs.map(p => p.amount));
+  const target = [...proofs].sort((a, b) => b.amount - a.amount)[0];
+  // Only break a proof that is actually big relative to the till.
+  if (target.amount <= Math.max(2 * (smallest || 1), 2)) {
+    return 0;
+  }
+  const wallet = await getWallet(mintUrl);
+  // Send half; completeSwap returns the other half as `keep`. The keep/send
+  // union is the whole reborn proof set (see the settlement comment above).
+  const half = Math.floor(target.amount / 2);
+  const preview = await wallet.prepareSwapToSend(half, [
+    {id: target.id, amount: target.amount, secret: target.secret, C: target.C},
+  ]);
+  const {keep, send} = await wallet.completeSwap(preview);
+  const reborn = [...keep, ...send].map(p => ({
+    id: p.id,
+    amount: Number(p.amount),
+    secret: p.secret,
+    C: p.C,
+    mintUrl,
+  }));
+  const swappedSecret = new Set([target.secret]);
+  const remaining = (await listSettledProofs()).filter(
+    p => !swappedSecret.has(p.secret),
+  );
+  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...remaining, ...reborn]));
+  return reborn.length;
+}
+
+/**
+ * Sweep everything except the change float to the account address.
+ *
+ * `keepReserveSat` is the till float: small-denomination proofs the terminal
+ * holds back so offline purchases can make change. Greedy from the largest
+ * proof, so the smallest denominations survive in the till.
+ */
+export async function sweepSettledProofs(opts: {
+  mintUrl: string;
+  bolt11?: string;
+  lightningAddress?: string;
+  lnurlpUrl?: string;
+  keepReserveSat?: number;
+  now?: number;
+}): Promise<PayoutResult> {
+  const {keepReserveSat = 0} = opts;
+  const proofs = await listSettledProofs();
+  const total = proofs.reduce((t, p) => t + p.amount, 0);
+  if (total <= keepReserveSat) {
+    return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+  }
+  // Largest-first melt selection, stopping so the remaining proofs still
+  // cover the reserve. Melted proofs leave the store inside
+  // meltSettledProofs; the survivors are the float.
+  const sorted = [...proofs].sort((a, b) => b.amount - a.amount);
+  const meltTarget = total - keepReserveSat;
+  let acc = 0;
+  const meltSet = new Set<string>();
+  for (const p of sorted) {
+    if (acc >= meltTarget) {break;}
+    meltSet.add(p.secret);
+    acc += p.amount;
+  }
+  const survivors = proofs.filter(p => !meltSet.has(p.secret));
+  const result = await meltSettledProofs({...opts});
+  // meltSettledProofs melted the WHOLE store; re-stage the survivors by
+  // writing them back over whatever the melt left (its change).
+  const current = await listSettledProofs();
+  await setSecure(
+    SETTLED_PROOFS_KEY,
+    JSON.stringify([...current.filter(c => !survivors.some(s => s.secret === c.secret)), ...survivors]),
+  );
+  return result;
+}

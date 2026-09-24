@@ -16,7 +16,7 @@ import {
 import {FLASH_LN_ADDRESS, FLASH_LN_ADDRESS_URL} from '@env';
 
 const mockSettlePending = jest.fn();
-const mockMeltSettledProofs = jest.fn();
+const mockSweepSettledProofs = jest.fn();
 const mockListSettledProofs = jest.fn();
 const mockPendingExposure = jest.fn();
 
@@ -27,7 +27,7 @@ jest.mock('../../src/services/cashuSpend', () => ({
 
 jest.mock('../../src/services/cashuMint', () => ({
   ...jest.requireActual('../../src/services/cashuMint'),
-  meltSettledProofs: (...args: unknown[]) => mockMeltSettledProofs(...args),
+  sweepSettledProofs: (...args: unknown[]) => mockSweepSettledProofs(...args),
   listSettledProofs: (...args: unknown[]) => mockListSettledProofs(...args),
 }));
 
@@ -41,7 +41,7 @@ beforeEach(() => {
   mockSettlePending.mockResolvedValue({settled: 0, stillPending: 0, failed: 0, lost: 0});
   mockListSettledProofs.mockResolvedValue([]);
   mockPendingExposure.mockResolvedValue({totals: {}, count: 0});
-  mockMeltSettledProofs.mockResolvedValue({
+  mockSweepSettledProofs.mockResolvedValue({
     paidSat: 16,
     feeReserveSat: 0,
     preimage: 'pre',
@@ -59,7 +59,7 @@ describe('runAutoSettlement', () => {
     const result = await runAutoSettlement('merchant');
 
     expect(result.paidSat).toBe(16);
-    expect(mockMeltSettledProofs).toHaveBeenCalledWith(
+    expect(mockSweepSettledProofs).toHaveBeenCalledWith(
       expect.objectContaining({
         // The account address, resolved through the flash ln-address service
         // (the display domain and the LNURL endpoint are different hosts).
@@ -73,7 +73,7 @@ describe('runAutoSettlement', () => {
     const result = await runAutoSettlement('merchant');
     expect(result.settled).toBe(0);
     expect(result.skippedPayout).toBe('nothing settled to sweep');
-    expect(mockMeltSettledProofs).not.toHaveBeenCalled();
+    expect(mockSweepSettledProofs).not.toHaveBeenCalled();
   });
 
   it('drains even when not logged in, but does not sweep', async () => {
@@ -85,7 +85,7 @@ describe('runAutoSettlement', () => {
     const result = await runAutoSettlement(undefined);
     expect(result.settled).toBe(1);
     expect(result.skippedPayout).toBe('no logged-in account to sweep to');
-    expect(mockMeltSettledProofs).not.toHaveBeenCalled();
+    expect(mockSweepSettledProofs).not.toHaveBeenCalled();
   });
 
   it('a sweep failure surfaces as payoutError, not a thrown settlement', async () => {
@@ -93,7 +93,7 @@ describe('runAutoSettlement', () => {
     mockListSettledProofs.mockResolvedValue([
       {id: 'k', amount: 4, secret: 's', C: 'c', mintUrl: 'https://forge.flashapp.me'},
     ]);
-    mockMeltSettledProofs.mockRejectedValue(new Error('lightning address unreachable'));
+    mockSweepSettledProofs.mockRejectedValue(new Error('lightning address unreachable'));
 
     const result: AutoSettleResult = await runAutoSettlement('merchant');
     expect(result.paidSat).toBeNull();

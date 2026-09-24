@@ -16,7 +16,8 @@
  */
 import {
   listSettledProofs,
-  meltSettledProofs,
+  rebalanceTill,
+  sweepSettledProofs,
 } from './cashuMint';
 import {settlePending} from './cashuSpend';
 import {pendingExposure} from './cashuSettlement';
@@ -65,12 +66,19 @@ export async function runAutoSettlement(
       skippedPayout = 'no logged-in account to sweep to';
     } else {
       try {
-        const payout = await meltSettledProofs({
+        const payout = await sweepSettledProofs({
           mintUrl: FLASH_CASHU_MINT_URL,
           lightningAddress: `${username}@${FLASH_LN_ADDRESS}`,
           lnurlpUrl: FLASH_LN_ADDRESS_URL,
+          // The till float: small proofs held back so offline purchases can
+          // make change without the network. Everything above it sweeps.
+          keepReserveSat: 16,
         });
         paidSat = payout.paidSat;
+        // Online maintenance: break the till's largest proof so change can
+        // always be made. Opportunistic — a failed rebalance leaves the
+        // float policy to the next run.
+        await rebalanceTill(FLASH_CASHU_MINT_URL).catch(() => {});
       } catch (error) {
         // The sweep is best-effort on top of a confirmed settlement: the
         // proofs remain in the store and the next run retries the sweep.
