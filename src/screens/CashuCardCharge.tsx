@@ -16,7 +16,16 @@ import {
   isCardReadingSupported,
   withCardSession,
 } from '../services/cashuCardNfc';
-import {chargeCard} from '../services/cashuCharge';
+import {
+  executeCharge,
+  readAndPlan,
+  type PurchasePlan,
+} from '../services/cashuCharge';
+import PinPad from '../components/cashu/PinPad';
+import {
+  PIN_MAX_LENGTH,
+  PIN_MIN_LENGTH,
+} from '../components/cashu/PinPad';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
 
 // store
@@ -46,6 +55,15 @@ const CashuCardCharge = ({navigation}: Props) => {
   const {username} = useAppSelector(state => state.user);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [charging, setCharging] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
+  // Two-phase flow: 'tap' → (plan read; PIN pad if the card has one) → done.
+  const [flow, setFlow] = useState<'tap' | 'pin' | 'done'>('tap');
+  const [plan, setPlan] = useState<{
+    plan: PurchasePlan;
+    unspent: unknown[];
+    cardPubkey: string;
+    pinRequired: boolean;
+  } | null>(null);
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -66,35 +84,60 @@ const CashuCardCharge = ({navigation}: Props) => {
     [],
   );
 
-  const onCharge = useCallback(async () => {
-    if (chargingRef.current || !satAmount || satAmount <= 0) {
-      return;
-    }
-    chargingRef.current = true;
-    cancelledRef.current = false;
-    setCharging(true);
-    setError(null);
-    try {
+  const finish = useCallback(
+    async (planned: {plan: PurchasePlan; unspent: unknown[]; cardPubkey: string; pinRequired: boolean}, customerPin?: string) => {
       await withCardSession(
         transceive =>
-          chargeCard({
+          executeCharge({
             transceive,
             amountSat: satAmount,
-            pin: pin.trim() || undefined,
+            plan: planned.plan,
+            unspent: planned.unspent as never,
+            cardPubkey: planned.cardPubkey,
+            pin: customerPin,
+            pinRequired: planned.pinRequired,
             mintUrl: FLASH_CASHU_MINT_URL,
+            onPhase: setPhase,
           }),
         {
-          alertMessage: `Charge ${satAmount} sat — hold the customer's card`,
+          alertMessage: 'Finishing the charge — hold the card',
         },
       );
-      // Recorded; settle + sweep in the background. The merchant sees the
-      // success screen immediately — the money finishes moving on its own.
       if (username) {
         await runAutoSettlement(username).catch(() => {});
       }
       navigation.replace('Success', {
         title: `Charged ${satAmount} sat — paid by Cashu card`,
       });
+    },
+    [satAmount, username, navigation],
+  );
+
+  // Session 1: the silent read + plan. A PIN-less card completes in this one
+  // tap; a PIN card hands off to the pad and re-taps (session 2).
+  const onCharge = useCallback(async () => {
+    if (chargingRef.current || satAmount <= 0) {
+      return;
+    }
+    chargingRef.current = true;
+    cancelledRef.current = false;
+    setCharging(true);
+    setError(null);
+    setFlow('tap');
+    try {
+      const planned = await withCardSession(
+        transceive => readAndPlan({transceive, amountSat: satAmount, onPhase: setPhase}),
+        {alertMessage: `Charge ${satAmount} sat — hold the customer's card`},
+      );
+      if (!planned.pinRequired) {
+        setFlow('done');
+        await finish(planned);
+        return;
+      }
+      // The session closes so the pad can take input; the customer taps
+      // again for session 2.
+      setPlan(planned);
+      setFlow('pin');
     } catch (err) {
       if (!cancelledRef.current && !isUserCancel(err)) {
         setError(describeCardFailure(err));
@@ -102,8 +145,36 @@ const CashuCardCharge = ({navigation}: Props) => {
     } finally {
       chargingRef.current = false;
       setCharging(false);
+      setPhase(null);
     }
-  }, [satAmount, pin, username, navigation]);
+  }, [satAmount, finish]);
+
+  const onPinConfirm = useCallback(async () => {
+    if (chargingRef.current || !plan) {
+      return;
+    }
+    if (pin.length < PIN_MIN_LENGTH) {
+      return;
+    }
+    chargingRef.current = true;
+    cancelledRef.current = false;
+    setCharging(true);
+    setError(null);
+    try {
+      await finish(plan, pin);
+      setFlow('done');
+      setPin('');
+    } catch (err) {
+      setFlow('pin');
+      if (!cancelledRef.current && !isUserCancel(err)) {
+        setError(describeCardFailure(err));
+      }
+    } finally {
+      chargingRef.current = false;
+      setCharging(false);
+      setPhase(null);
+    }
+  }, [plan, pin, finish]);
 
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
@@ -126,41 +197,48 @@ const CashuCardCharge = ({navigation}: Props) => {
         </Value>
       </Row>
 
-      <FieldLabel>Customer card PIN (leave blank if their card has none)</FieldLabel>
-      <PinInput
-        value={pin}
-        onChangeText={setPin}
-        placeholder="customer's card PIN"
-        secureTextEntry
-        keyboardType="number-pad"
-      />
+      {flow === 'pin' ? (
+        <Results>
+          <PadTitle>Enter card PIN</PadTitle>
+          <Dots>
+            {Array.from({length: Math.max(PIN_MIN_LENGTH, pin.length)}).map(
+              (_, i) => (
+                <Dot key={i} filled={i < pin.length} />
+              ),
+            )}
+          </Dots>
+          <PinPad
+            onDigit={d => setPin(p => (p.length < PIN_MAX_LENGTH ? p + d : p))}
+            onBackspace={() => setPin(p => p.slice(0, -1))}
+            onClear={() => setPin('')}
+          />
+          <TextButton
+            title={charging ? 'Charging…' : 'Charge now'}
+            btnStyle={buttonStyle}
+            disabled={charging || pin.length < PIN_MIN_LENGTH}
+            onPress={onPinConfirm}
+          />
+        </Results>
+      ) : (
+        <TextButton
+          icon="wifi"
+          title={
+            charging
+              ? 'Waiting for tap…'
+              : satAmount > 0
+                ? 'Tap card to charge'
+                : 'Enter an amount first'
+          }
+          btnStyle={buttonStyle}
+          disabled={charging || satAmount <= 0}
+          onPress={onCharge}
+        />
+      )}
 
       {error && (
         <ErrorBox>
           <ErrorText>{error}</ErrorText>
         </ErrorBox>
-      )}
-
-      {charging ? (
-        <>
-          <ActivityIndicator style={buttonStyle} />
-          <TextButton
-            icon="xmark"
-            title="Cancel"
-            btnStyle={buttonStyle}
-            onPress={onCancel}
-          />
-        </>
-      ) : (
-        <TextButton
-          icon="wifi"
-          title={
-            satAmount > 0 ? 'Tap card to charge' : 'Enter an amount first'
-          }
-          btnStyle={buttonStyle}
-          disabled={satAmount <= 0}
-          onPress={onCharge}
-        />
       )}
     </Wrapper>
   );
@@ -221,6 +299,30 @@ const PinInput = styled(TextInput)`
 `;
 
 const buttonStyle = {marginTop: 20};
+
+const PadTitle = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-SemiBold';
+  color: #1f2328;
+`;
+
+const Dots = styled.View`
+  flex-direction: row;
+  justify-content: center;
+  margin-top: 12px;
+`;
+
+const Dot = styled.View<{filled: boolean}>`
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  margin-horizontal: 6px;
+  background-color: ${props => (props.filled ? '#1f2328' : '#ececf1')};
+`;
+
+const Results = styled.View`
+  margin-top: 8px;
+`;
 
 const ErrorBox = styled.View`
   background-color: #fdf0ef;

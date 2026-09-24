@@ -153,20 +153,25 @@ export interface ChargeResult {
 }
 
 /**
- * The full in-session charge: verify PIN → read the card → plan → burn →
- * change from the till → load change back onto the card. Everything needs the
- * customer's card in the field and nothing needs the network — the settlement
- * and sweep happen afterwards through the normal auto-pipeline.
+ * Session 1: read the card and rank the covers — NO PIN yet. The customer's
+ * card is only on the antenna for the silent read; a PIN-required card gets
+ * the pad afterwards (tap → PIN → tap, D13's session flag is satisfied by the
+ * fresh verify inside session 2).
  */
-export async function chargeCard({
+export async function readAndPlan({
   transceive,
   amountSat,
-  pin,
-  mintUrl,
-  unit = DEFAULT_UNIT,
-  now = Date.now(),
   onPhase = () => {},
-}: ChargeArgs): Promise<ChargeResult> {
+}: {
+  transceive: Transceiver;
+  amountSat: number;
+  onPhase?: (phase: string) => void;
+}): Promise<{
+  plan: PurchasePlan;
+  unspent: CardProofSlot[];
+  cardPubkey: string;
+  pinRequired: boolean;
+}> {
   const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
     onPhase(phase);
     try {
@@ -177,19 +182,10 @@ export async function chargeCard({
     }
   };
 
-  // D13: one VERIFY covers spend AND load for this session.
   await step('reading card', () => selectApplet(transceive));
   const info = await step('reading card', () => getInfo(transceive));
   if (info.pinState === 'locked') {
     throw new Error('card PIN is blocked — the card must be re-provisioned');
-  }
-  if (info.pinState === 'set') {
-    if (!pin) {
-      throw new Error(
-        'this card has a PIN — ask the customer for it before tapping',
-      );
-    }
-    await step('verifying PIN', () => verifyCardPin(transceive, pin));
   }
 
   const statuses = await step('reading card', () =>
@@ -205,28 +201,114 @@ export async function chargeCard({
     getPubkey(transceive).then(toHex),
   );
 
-  // Coin selection ranks candidates cheapest-change first. The TILL does not
-  // gate the burn: when ONLINE the burned value settles back from the mint
-  // and backs the change itself (the in-session settle below), so any cover
-  // works. OFFLINE, change comes from the float — an inexact cover against a
-  // short float is refused AFTER the attempt with an honest 'change owed'.
   const plans = planPurchase(unspent, amountSat);
   if (plans.length === 0) {
     throw new Error(
       `card holds ${unspent.reduce((t, p) => t + p.amount, 0)} sat; the bill is ${amountSat} sat`,
     );
   }
-  const chosenPlan = plans[0];
+  return {
+    plan: plans[0],
+    cardPubkey,
+    pinRequired: info.pinState === 'set',
+    unspent,
+  };
+}
+
+/**
+ * The one-session charge used by the dev harness: readAndPlan + executeCharge
+ * composed into a single session (the PIN, when required, must be provided
+ * up front).
+ */
+export async function chargeCard({
+  transceive,
+  amountSat,
+  pin,
+  mintUrl,
+  unit = DEFAULT_UNIT,
+  now = Date.now(),
+  onPhase = () => {},
+}: ChargeArgs): Promise<ChargeResult> {
+  const {plan, unspent, cardPubkey, pinRequired} = await readAndPlan({
+    transceive,
+    amountSat,
+    onPhase,
+  });
+  if (pinRequired && !pin) {
+    throw new Error('this card has a PIN — ask the customer for it before tapping');
+  }
+  return executeCharge({
+    transceive,
+    amountSat,
+    plan,
+    unspent,
+    cardPubkey,
+    pin,
+    pinRequired,
+    mintUrl,
+    unit,
+    now,
+    onPhase,
+  });
+}
+
+export interface ExecuteChargeArgs {
+  transceive: Transceiver;
+  amountSat: number;
+  plan: PurchasePlan;
+  unspent: CardProofSlot[];
+  cardPubkey: string;
+  pin?: string;
+  pinRequired: boolean;
+  mintUrl: string;
+  unit?: string;
+  now?: number;
+  onPhase?: (phase: string) => void;
+}
+
+/**
+ * The money leg: verify the PIN if the card has one, burn the planned slots,
+ * settle + mint change in the atomic swap, write the change onto the card.
+ */
+export async function executeCharge({
+  transceive,
+  amountSat,
+  plan,
+  unspent,
+  cardPubkey,
+  pin,
+  pinRequired,
+  mintUrl,
+  unit = DEFAULT_UNIT,
+  now = Date.now(),
+  onPhase = () => {},
+}: ExecuteChargeArgs): Promise<ChargeResult> {
+  const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    onPhase(phase);
+    try {
+      return await fn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`[${phase}] ${message}`);
+    }
+  };
+
+  if (pinRequired) {
+    if (!pin) {
+      throw new Error('this card has a PIN — ask the customer for it');
+    }
+    await step('verifying PIN', () => verifyCardPin(transceive, pin));
+  }
 
   const burned: SettlementEntry[] = [];
-  for (const [index, slot] of chosenPlan.slots.entries()) {
+  for (const [index, slot] of plan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
     // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
     // as needs-card instead of losing it (found in the field: a CoreNFC
     // framing error burned a 16-sat slot and the value went unrecorded).
     burned.push(
       await step(
-        `burning ${proof.amount} sat (proof ${index + 1}/${chosenPlan.slots.length})`,
+        `burning ${proof.amount} sat (proof ${index + 1}/${plan.slots.length})`,
         () =>
           burnPlannedSlot({
             transceive,
@@ -241,7 +323,7 @@ export async function chargeCard({
   }
 
   let changeLoaded = 0;
-  const changeSat = chosenPlan.changeSat;
+  const changeSat = plan.changeSat;
   if (changeSat > 0) {
     // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
     // (witnessed) go in; the outputs come out as P2PK change for THIS card
@@ -296,7 +378,7 @@ export async function chargeCard({
   return {
     amountSat,
     burned,
-    changeSat: chosenPlan.changeSat,
+    changeSat: plan.changeSat,
     changeLoaded,
     balanceAfter,
   };
