@@ -39,6 +39,7 @@ import {
 import {
   buildCardP2PKSecret,
   listSettledProofs,
+  rebalanceTill,
   selectChangeFromTill,
   stageChangeFromTill,
 } from './cashuMint';
@@ -55,7 +56,7 @@ export function planPurchase(
   unspent: CardProofSlot[],
   amountSat: number,
   tillCoverableSat: number,
-): {slots: number[]; burnedSat: number; changeSat: number} | {error: string} {
+): {slots: number[]; burnedSat: number; changeSat: number} | {error: string; changeSatHint?: number} {
   if (amountSat <= 0) {
     return {error: 'amount must be positive'};
   }
@@ -92,6 +93,7 @@ export function planPurchase(
       error:
         `change would be ${changeSat} sat but the till holds ${tillCoverableSat} sat — ` +
         'ask for a different card (exact change settles offline too)',
+      changeSatHint: changeSat,
     };
   }
   return {slots, burnedSat: sum, changeSat};
@@ -154,18 +156,47 @@ export async function chargeCard({
   }
   const cardPubkey = toHex(await getPubkey(transceive));
 
-  const till = await listSettledProofs();
-  const plan = planPurchase(unspent, amountSat, till.reduce((t, p) => t + p.amount, 0));
+  // The till must be able to make the change EXACTLY before any burn — a plan
+  // whose change fails later would leave the customer stranded. When the till
+  // is short and the device is ONLINE, one rebalance (a self-swap breaking a
+  // proof into the needed denominations) is attempted before giving up;
+  // offline, the rebalance fails harmlessly and the refusal stands.
+  const planWith = (
+    tillProofs: Awaited<ReturnType<typeof listSettledProofs>>,
+  ): {slots: number[]; burnedSat: number; changeSat: number} | {error: string; changeSatHint?: number} => {
+    const candidate = planPurchase(
+      unspent,
+      amountSat,
+      tillProofs.reduce((t, p) => t + p.amount, 0),
+    );
+    if ('error' in candidate) {
+      return {error: candidate.error, changeSatHint: candidate.changeSatHint};
+    }
+    if (
+      candidate.changeSat > 0 &&
+      selectChangeFromTill(tillProofs, candidate.changeSat) === null
+    ) {
+      return {
+        error: `the till cannot make ${candidate.changeSat} sat exact change — ask for a different card`,
+      };
+    }
+    return candidate;
+  };
+
+  let till = await listSettledProofs();
+  let plan = planWith(till);
+  if ('error' in plan) {
+    // ONLINE recovery: reshape the till, then plan once more.
+    try {
+      await rebalanceTill(mintUrl, 'changeSatHint' in plan ? plan.changeSatHint : 0);
+      till = await listSettledProofs();
+      plan = planWith(till);
+    } catch {
+      // Offline or mint unreachable — the refusal stands.
+    }
+  }
   if ('error' in plan) {
     throw new Error(plan.error);
-  }
-  // Exactness is validated BEFORE the burns: a plan whose change the till
-  // cannot make exactly would otherwise burn the card and then strand the
-  // customer's change on a technicality.
-  if (plan.changeSat > 0 && selectChangeFromTill(till, plan.changeSat) === null) {
-    throw new Error(
-      `the till cannot make ${plan.changeSat} sat exact change — ask for a different card`,
-    );
   }
 
   const burned: SettlementEntry[] = [];

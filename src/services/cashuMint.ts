@@ -575,20 +575,34 @@ export async function stageChangeFromTill(
  * with chosen outputs. One proof per call; the auto-pipeline runs this while
  * ONLINE so purchases never need the network for change.
  */
-export async function rebalanceTill(mintUrl: string): Promise<number> {
+export async function rebalanceTill(
+  mintUrl: string,
+  needSat?: number,
+): Promise<number> {
   const proofs = await listSettledProofs();
   if (proofs.length === 0) {return 0;}
-  const smallest = Math.min(...proofs.map(p => p.amount));
-  const target = [...proofs].sort((a, b) => b.amount - a.amount)[0];
-  // Only break a proof that is actually big relative to the till.
-  if (target.amount <= Math.max(2 * (smallest || 1), 2)) {
+  const sortedDesc = [...proofs].sort((a, b) => b.amount - a.amount);
+  let target = sortedDesc[0];
+  let swapAmount = Math.floor(target.amount / 2);
+  if (needSat && needSat > 0) {
+    // Break the SMALLEST proof that covers the need — preserves bigger
+    // denominations. No single proof covers it: the purchase plan already
+    // reported that, so this call is a no-op.
+    const sufficient = [...proofs].sort((a, b) => a.amount - b.amount).find(
+      p => p.amount >= needSat,
+    );
+    if (!sufficient) {
+      return 0;
+    }
+    target = sufficient;
+    swapAmount = needSat;
+  } else if (target.amount < 2) {
     return 0;
   }
   const wallet = await getWallet(mintUrl);
-  // Send half; completeSwap returns the other half as `keep`. The keep/send
-  // union is the whole reborn proof set (see the settlement comment above).
-  const half = Math.floor(target.amount / 2);
-  const preview = await wallet.prepareSwapToSend(half, [
+  // Send the needed amount; completeSwap returns the rest as `keep`. The
+  // keep/send union is the whole reborn proof set (see the settlement comment).
+  const preview = await wallet.prepareSwapToSend(swapAmount, [
     {id: target.id, amount: target.amount, secret: target.secret, C: target.C},
   ]);
   const {keep, send} = await wallet.completeSwap(preview);
