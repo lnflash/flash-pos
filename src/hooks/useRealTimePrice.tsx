@@ -5,6 +5,9 @@ import {useQuery, useSubscription} from '@apollo/client';
 import {useDisplayCurrency} from './useDisplayCurrency';
 import {useAppSelector} from '../store/hooks';
 
+// utils
+import {SAT_CURRENCY} from '../utils/satCurrency';
+
 // gql
 import {RealtimePriceSubscription} from '../graphql/subscriptions';
 import {RealtimePrice} from '../graphql/queries';
@@ -24,8 +27,13 @@ const useRealtimePrice = () => {
     },
   });
 
+  // SAT is the native unit: conversions are the identity and no price feed
+  // is needed. Subscribing with a 'SAT' currency would only error.
+  const isSat = currency.id === SAT_CURRENCY.id;
+
   const {loading} = useSubscription(RealtimePriceSubscription, {
     variables: {currency: currency.id},
+    skip: isSat,
     onData({data}) {
       if (data.data.realtimePrice.realtimePrice.btcSatPrice) {
         const {base, offset} =
@@ -34,6 +42,21 @@ const useRealtimePrice = () => {
       }
     },
   });
+
+  const satConversions = React.useMemo(
+    () => ({
+      satsToCurrency: (sats: number) => ({
+        convertedCurrencyAmount: sats,
+        formattedCurrency: `${SAT_CURRENCY.symbol} ${sats}`,
+      }),
+      currencyToSats: (currencyAmount: number) => ({
+        convertedCurrencyAmount: currencyAmount,
+        formattedCurrency: `${SAT_CURRENCY.symbol} ${currencyAmount}`,
+      }),
+      loading: false,
+    }),
+    [],
+  );
 
   const conversions = React.useMemo(
     () => ({
@@ -69,6 +92,10 @@ const useRealtimePrice = () => {
     }),
     [price, formatCurrency, loading, initLoading, currency],
   );
+
+  if (isSat) {
+    return satConversions;
+  }
 
   if (price === 0) {
     return {

@@ -18,6 +18,9 @@ import {
   setSatAmount,
 } from '../../store/slices/amountSlice';
 
+// utils
+import {FALLBACK_CURRENCY_LIST, SAT_CURRENCY} from '../../utils/satCurrency';
+
 type Props = {
   btnStyle?: ViewStyle;
   showCompleteText?: boolean;
@@ -39,6 +42,17 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
 
   const handleCurrencyChange = async (newCurrency: CurrencyItem) => {
     const currentDisplayAmount = displayAmount;
+
+    // Switching to SAT is the identity: the entered number IS the sats.
+    if (newCurrency.id === SAT_CURRENCY.id) {
+      dispatch(setCurrency(newCurrency));
+      if (currentDisplayAmount && Number(currentDisplayAmount) > 0) {
+        dispatch(setSatAmount(currentDisplayAmount));
+        dispatch(setDisplayAmount(currentDisplayAmount));
+      }
+      setVisible(false);
+      return;
+    }
 
     // First update the currency
     dispatch(setCurrency(newCurrency));
@@ -95,13 +109,15 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
               </Close>
             </RowWrapper>
             <ScrollWrapper>
-              {data?.currencyList.map(currencyItem => (
-                <ItemBtn
-                  key={currencyItem.id}
-                  onPress={() => handleCurrencyChange(currencyItem)}>
-                  <ItemText>{`${currencyItem.id} - ${currencyItem.name} ${currencyItem.flag}`}</ItemText>
-                </ItemBtn>
-              ))}
+              {[SAT_CURRENCY, ...(data?.currencyList?.length ? data.currencyList : FALLBACK_CURRENCY_LIST.slice(1))].map(
+                currencyItem => (
+                  <ItemBtn
+                    key={currencyItem.id}
+                    onPress={() => handleCurrencyChange(currencyItem as CurrencyItem)}>
+                    <ItemText>{`${currencyItem.id} - ${currencyItem.name} ${currencyItem.flag}`}</ItemText>
+                  </ItemBtn>
+                ),
+              )}
             </ScrollWrapper>
           </ModalView>
         </Backdrop>

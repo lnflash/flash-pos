@@ -2,6 +2,8 @@ import {useQuery} from '@apollo/client';
 import {useCallback, useMemo} from 'react';
 import {CurrencyList} from '../graphql/queries';
 
+import {SAT_CURRENCY} from '../utils/satCurrency';
+
 const usdDisplayCurrency = {
   symbol: '$',
   id: 'USD',
@@ -39,10 +41,17 @@ export const useDisplayCurrency = () => {
 
   const displayCurrencyDictionary = useMemo(() => {
     const currencyList = dataCurrencyList?.currencyList || [];
-    return currencyList.reduce((acc, currency) => {
+    const dictionary = currencyList.reduce((acc, currency) => {
       acc[currency.id] = currency;
       return acc;
     }, {} as Record<string, typeof defaultDisplayCurrency>);
+    // SAT formats even when the backend list is unreachable.
+    dictionary[SAT_CURRENCY.id] = {
+      symbol: SAT_CURRENCY.symbol,
+      id: SAT_CURRENCY.id,
+      fractionDigits: SAT_CURRENCY.fractionDigits,
+    };
+    return dictionary;
   }, [dataCurrencyList?.currencyList]);
 
   const formatCurrency = useCallback(
