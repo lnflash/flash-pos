@@ -19,6 +19,7 @@ type RootStackType = {
   // src/routes/index.tsx, so navigating here in a release build typechecks but
   // fails at runtime with an unhandled NAVIGATE action. Guard every call site
   // with `__DEV__`; the Profile screen's dev row is the intended entry point.
+  CashuCardCharge: undefined;
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
 };

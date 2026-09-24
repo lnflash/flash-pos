@@ -16,6 +16,7 @@ import {
   TransactionHistory,
   RegisteredRewardCards,
   EventSettings,
+  CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
 } from '../screens';
@@ -149,6 +150,16 @@ const Root = () => {
           }}
         />
       )}
+      {/* Production: the merchant's tap-to-charge flow off the invoice
+          screen. Amount comes from the keypad via redux. */}
+      <Stack.Screen
+        name="CashuCardCharge"
+        component={CashuCardCharge}
+        options={{
+          headerTitle: 'Charge by card',
+          animation: 'slide_from_right',
+        }}
+      />
       {/* Cashu card spend harness. Moves money and belongs in dev builds
           only — same __DEV__ pairing as the row that reaches it. */}
       {__DEV__ && (

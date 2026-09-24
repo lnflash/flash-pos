@@ -379,6 +379,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   return (
     <Wrapper>
       {Platform.OS === 'ios' && <NfcButton />}
+      <TextButton
+        icon="credit-card"
+        title="Customer pays by Cashu card"
+        onPress={() => navigation.navigate('CashuCardCharge')}
+      />
       <InnerWrapper>
         <Amount
           hideTransactionHistory={!!paymentRequest}

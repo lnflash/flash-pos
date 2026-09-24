@@ -100,7 +100,9 @@ export function planPurchase(
 export interface ChargeArgs {
   transceive: Transceiver;
   amountSat: number;
-  pin: string;
+  /** The CUSTOMER's card PIN — required only when their card has one. The
+   *  terminal learns that from GET_INFO.pinState and prompts accordingly. */
+  pin?: string;
   mintUrl: string;
   unit?: string;
   now?: number;
@@ -135,6 +137,11 @@ export async function chargeCard({
     throw new Error('card PIN is blocked — the card must be re-provisioned');
   }
   if (info.pinState === 'set') {
+    if (!pin) {
+      throw new Error(
+        'this card has a PIN — ask the customer for it before tapping',
+      );
+    }
     await verifyCardPin(transceive, pin);
   }
 
