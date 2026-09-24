@@ -147,17 +147,20 @@ const Keypad = () => {
       // so when the merchant is entering SATS, tiny amounts are legitimate
       // and the gate would wrongly block them. The card flow is selected on
       // the invoice screen; sat amounts pass straight through.
-      const isSatEntry = currency.id === 'SAT';
       const usdPerSat = satsToUsd(1);
 
-      if (isSatEntry) {
-        // SAT is the native unit: no fiat conversion, no BTCPay invoice. The
-        // card charge takes it directly — including sub-cent amounts a
-        // fiat-denominated Lightning invoice could never represent.
+      // Sub-cent SAT amounts cannot become a fiat-denominated Lightning
+      // invoice (BTCPay's 1-cent minimum) — but the Cashu card charge is
+      // sat-native and takes them directly. Everything else flows through
+      // the shared invoice creation below.
+      const isSatEntry = currency.id === 'SAT';
+      const subCentSat =
+        isSatEntry && Number(satAmount) * usdPerSat * 100 < 1;
+
+      if (subCentSat) {
         dispatch(setSatAmount(String(Number(satAmount))));
         dispatch(setDisplayAmount(String(Number(displayAmount))));
-        const subCent = Number(satAmount) * usdPerSat * 100 < 1;
-        navigation.navigate(subCent ? 'CashuCardCharge' : 'Invoice');
+        navigation.navigate('CashuCardCharge');
         return;
       }
 
