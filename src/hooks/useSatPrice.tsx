@@ -11,9 +11,13 @@ const useSatPrice = () => {
   // expose the websocket endpoint the PriceSubscription needs (every path
   // rejects the upgrade), so polling is what actually delivers the price —
   // the subscription below stays as a live-update bonus when a WS exists.
-  const {data: rtData} = useQuery(RealtimePrice, {
+  const {
+    data: rtData,
+    refetch: refetchQuery,
+  } = useQuery(RealtimePrice, {
     variables: {currency: 'USD'},
     pollInterval: 20000,
+    notifyOnNetworkStatusChange: true,
   });
 
   React.useEffect(() => {
@@ -61,7 +65,28 @@ const useSatPrice = () => {
     [price],
   );
 
-  return conversions;
+  /**
+   * On-demand price fetch: resolves with a usable USD-per-sat or 0. The
+   * keypad awaits this once before bouncing the merchant with 'price is
+   * still loading' — a cold start should not cost a tap.
+   */
+  const refetchPrice = async (): Promise<number> => {
+    try {
+      const {data} = await refetchQuery();
+      const btc = data?.realtimePrice?.btcSatPrice;
+      if (btc) {
+        const next = btc.base / 10 ** btc.offset;
+        const usable = Number.isFinite(next) && next > 0 ? next : 0;
+        setPrice(usable);
+        return usable;
+      }
+    } catch {
+      // fall through: 0
+    }
+    return 0;
+  };
+
+  return {...conversions, refetchPrice};
 };
 
 export default useSatPrice;

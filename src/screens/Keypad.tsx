@@ -64,7 +64,7 @@ const Keypad = () => {
   const [createInvoice] = useMutation(LnUsdInvoiceCreateOnBehalfOfRecipient);
 
   const {toggleLoading} = useActivityIndicator();
-  const {satsToUsd} = useSatPrice();
+  const {satsToUsd, refetchPrice} = useSatPrice();
   const {currencyToSats} = useRealtimePrice();
 
   const dispatch = useAppDispatch();

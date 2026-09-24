@@ -160,7 +160,10 @@ function seedTill(proofs: {amount: number; denom: number}[]) {
 }
 
 const tillProofs = () =>
-  JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]') as {secret: string}[];
+  JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]') as {
+    secret: string;
+    amount: number;
+  }[];
 
 beforeEach(async () => {
   jest.clearAllMocks();
