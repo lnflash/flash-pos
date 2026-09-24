@@ -107,9 +107,16 @@ const Amount: React.FC<Props> = ({
   };
 
   // Calculate font sizes for current display
+  // SAT renders unit-first and pluralised: "0 sats", "1 sat", "21 sats".
+  const satDisplay = `${Number(displayAmount || 0)} ${
+    Number(displayAmount || 0) === 1 ? 'sat' : 'sats'
+  }`;
+
   const primaryText = !isPrimaryAmountSats
-    ? `${currency.symbol} ${displayAmount || 0}`
-    : `${satAmount || 0}`;
+    ? currency.id === 'SAT'
+      ? satDisplay
+      : `${currency.symbol} ${displayAmount || 0}`
+    : `${satAmount || 0} sats`;
 
   const secondaryText = !isPrimaryAmountSats
     ? `≈ ${satAmount || 0} sats`
@@ -131,9 +138,11 @@ const Amount: React.FC<Props> = ({
             fontSize={primaryFontSize}
             numberOfLines={1}
             adjustsFontSizeToFit>
-            {`${currency.symbol} ${displayAmount || 0}`}
+            {currency.id === 'SAT'
+              ? satDisplay
+              : `${currency.symbol} ${displayAmount || 0}`}
           </Primary>
-          {!hideSecondary && (
+          {!hideSecondary && currency.id !== 'SAT' && (
             <Secondary
               fontSize={secondaryFontSize}
               numberOfLines={1}
