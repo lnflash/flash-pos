@@ -12,7 +12,7 @@ import {
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
-import {buildCardP2PKSecret, makeChangeOnTill} from '../../src/services/cashuMint';
+import {buildCardP2PKSecret, mintChargeChange} from '../../src/services/cashuMint';
 import {chargeCard, planPurchase} from '../../src/services/cashuCharge';
 import {
   clearQueue,
@@ -21,13 +21,13 @@ import {
 } from '../../src/services/cashuSettlement';
 
 const mockStore: Record<string, string> = {};
-const mockMakeChange = jest.fn();
+const mockMintChargeChange = jest.fn();
 
 const mockAdapterSwap = jest.fn();
 
 jest.mock('../../src/services/cashuMint', () => ({
   ...jest.requireActual('../../src/services/cashuMint'),
-  makeChangeOnTill: (...args: unknown[]) => mockMakeChange(...args),
+  mintChargeChange: (...args: unknown[]) => mockMintChargeChange(...args),
   // The settlement drain's swap succeeds in-test: entries settle instead of
   // hitting the real mint with structurally-fake proofs.
   createSettlementAdapter: () => ({
@@ -270,27 +270,32 @@ describe('chargeCard', () => {
     // canonical secrets whose nonces round-trip through the LOAD.
     const changeNonces = ['77'.repeat(32), '88'.repeat(32)];
     let call = 0;
-    mockMakeChange.mockImplementation(async ({changeSat}: {changeSat: number}) => {
-      call += 1;
-      return {
-        ok: true as const,
-        change: [
-          {
-            id: KEYSET_ID,
-            amount: changeSat,
-            secret: buildCardP2PKSecret(changeNonces[0], CARD_PUBKEY_HEX),
-            C: CARD_PUBKEY_HEX,
-            mintUrl: MINT_URL,
-          },
-          {
-            id: KEYSET_ID,
-            amount: changeSat - 4,
-            secret: buildCardP2PKSecret(changeNonces[1], CARD_PUBKEY_HEX),
-            C: CARD_PUBKEY_HEX,
-            mintUrl: MINT_URL,
-          },
-        ],
-      };
+    mockMintChargeChange.mockResolvedValue({
+      change: [
+        {
+          id: KEYSET_ID,
+          amount: 4,
+          secret: buildCardP2PKSecret(changeNonces[0], CARD_PUBKEY_HEX),
+          C: CARD_PUBKEY_HEX,
+          mintUrl: MINT_URL,
+        },
+        {
+          id: KEYSET_ID,
+          amount: 2,
+          secret: buildCardP2PKSecret(changeNonces[1], CARD_PUBKEY_HEX),
+          C: CARD_PUBKEY_HEX,
+          mintUrl: MINT_URL,
+        },
+      ],
+      till: [
+        {
+          id: KEYSET_ID,
+          amount: 10,
+          secret: 'aa'.repeat(32),
+          C: CARD_PUBKEY_HEX,
+          mintUrl: MINT_URL,
+        },
+      ],
     });
 
     const result = await chargeCard({
@@ -303,14 +308,16 @@ describe('chargeCard', () => {
 
     expect(result.burned).toHaveLength(1);
     expect(result.changeSat).toBe(6);
-    expect(mockMakeChange).toHaveBeenCalledWith(
+    expect(mockMintChargeChange).toHaveBeenCalledWith(
       expect.objectContaining({changeSat: 6, p2pkPubkey: CARD_PUBKEY_HEX}),
     );
     expect(result.changeLoaded).toBe(2);
     expect(card.loads.map(l => l.nonce)).toEqual(changeNonces);
-    // The in-session settle drained the queue: the burn entry ends settled.
+    // The swap consumed the burned proofs: the entry ends settled, and the
+    // merchant's take joined the till.
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+    expect(tillProofs().some(t => t.amount === 10)).toBe(true);
     await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(false);
   });
 
@@ -345,10 +352,9 @@ describe('chargeCard', () => {
       pin: '1234',
     });
     seedTill([{amount: 16, denom: 16}]);
-    mockMakeChange.mockResolvedValue({
-      ok: false as const,
-      reason: 'the till cannot make 6 sat exact change',
-    });
+    mockMintChargeChange.mockRejectedValue(
+      new Error('the till cannot make 6 sat exact change'),
+    );
 
     await expect(
       chargeCard({
@@ -358,12 +364,12 @@ describe('chargeCard', () => {
         mintUrl: MINT_URL,
         now: 1000,
       }),
-    ).rejects.toThrow(/payment recorded, but change could not be written/);
-    // The burn IS recorded AND settled in-session (it settles regardless) —
-    // the merchant owes the change, and the UI said so instead of claiming
-    // success.
+    ).rejects.toThrow(/cannot make 6 sat/);
+    // The swap never landed: the burn entry stays PENDING with its witness
+    // intact — the next online auto-run settles it. Nothing is lost, and the
+    // UI did not claim success.
     const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
     expect(tillProofs()).toHaveLength(1);
   });
 
@@ -389,8 +395,7 @@ describe('chargeCard', () => {
     const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
     seedTill([{amount: 4, denom: 4}, {amount: 2, denom: 2}]);
     const changeNonce = '99'.repeat(32);
-    mockMakeChange.mockResolvedValue({
-      ok: true,
+    mockMintChargeChange.mockResolvedValue({
       change: [
         {
           id: KEYSET_ID,
@@ -400,6 +405,7 @@ describe('chargeCard', () => {
           mintUrl: MINT_URL,
         },
       ],
+      till: [],
     });
 
     await chargeCard({

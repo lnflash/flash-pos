@@ -265,6 +265,15 @@ function isFetchNetworkError(error: unknown): boolean {
   return error instanceof TypeError;
 }
 
+/** Append merchant-take proofs to the till (the settled store). */
+export async function appendSettledProofsTill(proofs: SettledProof[]): Promise<void> {
+  const existing = await listSettledProofs();
+  await setSecure(
+    SETTLED_PROOFS_KEY,
+    JSON.stringify([...existing, ...proofs]),
+  );
+}
+
 export async function listSettledProofs(): Promise<SettledProof[]> {
   const raw = await getSecureStrict(SETTLED_PROOFS_KEY);
   if (!raw) {
@@ -804,7 +813,7 @@ export async function makeChangeOnTill({
   const change = swapResponse.signatures.map((sig, i) => {
     const proof = outputData[i].toProof(
       sig,
-      {...keyset.keys} as Parameters<OutputData['toProof']>[1],
+      keyset as Parameters<OutputData['toProof']>[1],
     );
     return {
       id: proof.id,
@@ -822,4 +831,87 @@ export async function makeChangeOnTill({
   );
   await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
   return {ok: true, change};
+}
+
+/**
+ * The charge swap: consume the burned proofs (witnessed) and mint the outputs
+ * in ONE atomic swap —
+ *
+ *   inputs : the customer's burned proofs (NUT-11 witnesses attached)
+ *   outputs: P2PK(change, customer's card key) + random(burned − change)
+ *
+ * The P2PK outputs are the customer's change, written straight onto their
+ * card; the random outputs are the merchant's take, appended to the till for
+ * the sweep. When the device is ONLINE this is the whole settlement — the
+ * till never gates anything, and change of any size is possible by
+ * construction. Requires the burned entries to carry witnesses.
+ */
+export async function mintChargeChange({
+  mintUrl,
+  entries,
+  changeSat,
+  p2pkPubkey,
+}: {
+  mintUrl: string;
+  entries: {id: string; keysetId: string; amount: number; secret: string; C: string; witness: string}[];
+  changeSat: number;
+  p2pkPubkey: string;
+}): Promise<{change: SettledProof[]; till: SettledProof[]}> {
+  const burnedTotal = entries.reduce((t, e) => t + e.amount, 0);
+  if (changeSat > burnedTotal) {
+    throw new Error(
+      `change ${changeSat} sat exceeds the burned ${burnedTotal} sat`,
+    );
+  }
+  const wallet = await getWallet(mintUrl);
+  const keysetId = entries[0].keysetId;
+  const keyset = await wallet.getKeyset(keysetId);
+
+  // Change pieces: P2PK-locked to the customer's card, OUR canonical secrets.
+  const changePieces = splitPow2(changeSat);
+  const changeData = changePieces.map(a =>
+    OutputData.createSingleP2PKData(
+      {pubkey: p2pkPubkey, sigFlag: 'SIG_INPUTS'},
+      a,
+      keysetId,
+    ),
+  );
+
+  // Merchant take: random secrets, liquid till proofs for the sweep.
+  const merchantSat = burnedTotal - changeSat;
+  const merchantList =
+    merchantSat > 0
+      ? OutputData.createRandomData(merchantSat, keyset)
+      : [];
+
+  const allOutputs = [...changeData, ...merchantList];
+
+  const swapResponse = await withRateLimitRetry(() =>
+    wallet.mint.swap({
+      inputs: entries as unknown as Proof[],
+      outputs: allOutputs.map(od => od.blindedMessage),
+    }),
+  );
+
+  const change: SettledProof[] = [];
+  const till: SettledProof[] = [];
+  swapResponse.signatures.forEach((sig, i) => {
+    const proof = allOutputs[i].toProof(
+      sig,
+      keyset as Parameters<OutputData['toProof']>[1],
+    );
+    const settled = {
+      id: proof.id,
+      amount: Number(proof.amount),
+      secret: proof.secret,
+      C: proof.C,
+      mintUrl,
+    };
+    if (i < changeData.length) {
+      change.push(settled);
+    } else {
+      till.push(settled);
+    }
+  });
+  return {change, till};
 }

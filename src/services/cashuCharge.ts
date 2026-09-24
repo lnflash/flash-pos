@@ -32,9 +32,15 @@ import {
   type CardProofSlot,
   type Transceiver,
 } from './cashuCard';
-import {makeChangeOnTill} from './cashuMint';
-import {burnPlannedSlot, settlePending} from './cashuSpend';
-import type {SettlementEntry} from './cashuSettlement';
+import {
+  appendSettledProofsTill,
+  mintChargeChange,
+} from './cashuMint';
+import {burnPlannedSlot} from './cashuSpend';
+import {
+  markEntriesSettled,
+  type SettlementEntry,
+} from './cashuSettlement';
 
 export const DEFAULT_UNIT = 'sat';
 
@@ -237,29 +243,40 @@ export async function chargeCard({
   let changeLoaded = 0;
   const changeSat = chosenPlan.changeSat;
   if (changeSat > 0) {
-    // ONLINE: settle BEFORE minting change — the burned value flows back
-    // from the mint and backs the change itself, so any bill size works.
-    // OFFLINE: the settle fails into the queue (entries hold) and the till
-    // float backs exact change only — the plan already guaranteed that.
-    await step('settling payment', () =>
-      settlePending(now).catch(() => {
-        // The queue holds the entries; the auto-pipeline retries.
-      }),
-    );
-    const minted = await step('making change', () =>
-      makeChangeOnTill({
+    // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
+    // (witnessed) go in; the outputs come out as P2PK change for THIS card
+    // plus the merchant's take. The till never gates anything — change of
+    // any size is possible by construction while online. OFFLINE: no swap —
+    // the entries hold in the queue and the settle happens on the next
+    // online auto-run (the change write follows on the card's next tap).
+    const witnessed = burned.map(e => ({
+      id: e.keysetId,
+      keysetId: e.keysetId,
+      amount: e.amount,
+      secret: e.secret,
+      C: e.C,
+      // NUT-11 witness envelope — the raw SPEND_PROOF signature wrapped the
+      // way the mint's verification expects.
+      witness: JSON.stringify({signatures: [e.witness]}),
+    }));
+    const minted = await step('settling payment and minting change', () =>
+      mintChargeChange({
         mintUrl,
+        entries: witnessed,
         changeSat,
         p2pkPubkey: cardPubkey,
       }),
     );
-    if (!minted.ok) {
-      // The burns are done and recorded (the full burned value settles
-      // regardless) — but the UI must not claim change was given.
-      throw new Error(
-        `payment recorded, but change could not be written: ${minted.reason}`,
-      );
-    }
+
+    // The swap consumed the burned proofs: mark the entries settled.
+    await markEntriesSettled(
+      burned.map(e => e.id),
+      now,
+    );
+    // The merchant's take joins the till (the sweep melts it above the
+    // float reserve to the account address).
+    await appendSettledProofsTill(minted.till);
+
     for (const proof of minted.change) {
       await step('writing change to card', () =>
         loadProof(transceive, {

@@ -944,6 +944,33 @@ export const markAttemptFailed = (
  * and indistinguishable from success, and a recovery screen would tell the
  * merchant an entry was repaired when nothing was written.
  */
+/**
+ * Mark specific pending/submitting entries settled — used by the charge flow,
+ * whose swap consumes the burned proofs and produces the change directly
+ * (the entries do not go through drainQueue's generic swap).
+ */
+export async function markEntriesSettled(
+  ids: string[],
+  now: number,
+): Promise<number> {
+  const idSet = new Set(ids);
+  return withQueue(async ({entries}) => {
+    let marked = 0;
+    for (let i = 0; i < entries.length; i++) {
+      if (idSet.has(entries[i].id) && entries[i].witness) {
+        entries[i] = {
+          ...entries[i],
+          status: 'settled',
+          updatedAt: now,
+        };
+        marked += 1;
+      }
+    }
+    await writeQueue(entries);
+    return marked;
+  });
+}
+
 export async function attachRecoveredWitness(
   id: string,
   witness: string,
