@@ -138,6 +138,9 @@ export interface ChargeArgs {
   mintUrl: string;
   unit?: string;
   now?: number;
+  /** Progress callback — the trust surface: the screen renders exactly where
+   *  the charge is, and an error names the step it died on. */
+  onPhase?: (phase: string) => void;
 }
 
 export interface ChargeResult {
@@ -161,10 +164,21 @@ export async function chargeCard({
   mintUrl,
   unit = DEFAULT_UNIT,
   now = Date.now(),
+  onPhase = () => {},
 }: ChargeArgs): Promise<ChargeResult> {
+  const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    onPhase(phase);
+    try {
+      return await fn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`[${phase}] ${message}`);
+    }
+  };
+
   // D13: one VERIFY covers spend AND load for this session.
-  await selectApplet(transceive);
-  const info = await getInfo(transceive);
+  await step('reading card', () => selectApplet(transceive));
+  const info = await step('reading card', () => getInfo(transceive));
   if (info.pinState === 'locked') {
     throw new Error('card PIN is blocked — the card must be re-provisioned');
   }
@@ -174,17 +188,21 @@ export async function chargeCard({
         'this card has a PIN — ask the customer for it before tapping',
       );
     }
-    await verifyCardPin(transceive, pin);
+    await step('verifying PIN', () => verifyCardPin(transceive, pin));
   }
 
-  const statuses = await getSlotStatuses(transceive, info.maxSlots);
+  const statuses = await step('reading card', () =>
+    getSlotStatuses(transceive, info.maxSlots),
+  );
   const unspent: CardProofSlot[] = [];
   for (let slot = 0; slot < statuses.length; slot++) {
     if (statuses[slot] === 'unspent') {
-      unspent.push(await getProof(transceive, slot));
+      unspent.push(await step('reading card', () => getProof(transceive, slot)));
     }
   }
-  const cardPubkey = toHex(await getPubkey(transceive));
+  const cardPubkey = await step('reading card', () =>
+    getPubkey(transceive).then(toHex),
+  );
 
   // The till must be able to make the change EXACTLY before any burn — a plan
   // whose change fails later would leave the customer stranded. When the till
@@ -219,6 +237,8 @@ export async function chargeCard({
     };
   };
 
+  onPhase('planning');
+
   let till = await listSettledProofs();
   let plan = planWith(till);
   if ('error' in plan) {
@@ -237,30 +257,37 @@ export async function chargeCard({
   }
 
   const burned: SettlementEntry[] = [];
-  for (const slot of plan.slots) {
+  for (const [index, slot] of plan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
     // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
     // as needs-card instead of losing it (found in the field: a CoreNFC
     // framing error burned a 16-sat slot and the value went unrecorded).
     burned.push(
-      await burnPlannedSlot({
-        transceive,
-        proof,
-        cardPubkey,
-        mintUrl,
-        unit,
-        now,
-      }),
+      await step(
+        `burning ${proof.amount} sat (proof ${index + 1}/${plan.slots.length})`,
+        () =>
+          burnPlannedSlot({
+            transceive,
+            proof,
+            cardPubkey,
+            mintUrl,
+            unit,
+            now,
+          }),
+      ),
     );
   }
 
   let changeLoaded = 0;
-  if (plan.changeSat > 0) {
-    const minted = await makeChangeOnTill({
-      mintUrl,
-      changeSat: plan.changeSat,
-      p2pkPubkey: cardPubkey,
-    });
+  const changeSat = plan.changeSat; // narrowed: all error plans threw above
+  if (changeSat > 0) {
+    const minted = await step('making change', () =>
+      makeChangeOnTill({
+        mintUrl,
+        changeSat,
+        p2pkPubkey: cardPubkey,
+      }),
+    );
     if (!minted.ok) {
       // The burns are done and recorded (the full burned value settles
       // regardless) — but the UI must not claim change was given.
@@ -269,17 +296,21 @@ export async function chargeCard({
       );
     }
     for (const proof of minted.change) {
-      await loadProof(transceive, {
-        keysetId: proof.id,
-        amount: proof.amount,
-        nonce: nonceFromSecret(proof.secret),
-        C: proof.C,
-      });
+      await step('writing change to card', () =>
+        loadProof(transceive, {
+          keysetId: proof.id,
+          amount: proof.amount,
+          nonce: nonceFromSecret(proof.secret),
+          C: proof.C,
+        }),
+      );
       changeLoaded += 1;
     }
   }
 
-  const balanceAfter = await getBalance(transceive);
+  const balanceAfter = await step('reading card', () =>
+    getBalance(transceive),
+  );
   return {
     amountSat,
     burned,

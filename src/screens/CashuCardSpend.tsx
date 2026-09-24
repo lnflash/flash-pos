@@ -17,9 +17,19 @@ import {
   withCardSession,
 } from '../services/cashuCardNfc';
 import {useAppSelector} from '../store/hooks';
-import {readCard, type CardSummary} from '../services/cashuCard';
+import {
+  getPubkey,
+  readCard,
+  toHex,
+  type CardSummary,
+} from '../services/cashuCard';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
 import {burnAndRecord, firstUnspentSlot, settlePending} from '../services/cashuSpend';
+import {
+  attachRecoveredWitness,
+  recoverableForCard,
+} from '../services/cashuSettlement';
+import {resignWitness} from '../services/cashuCard';
 import {
   meltSettledProofs,
   type PayoutResult,
@@ -31,6 +41,7 @@ import {
   type SettlementEntry,
 } from '../services/cashuSettlement';
 import {FLASH_CASHU_MINT_URL} from '@env';
+import {toastShow} from '../utils/toast';
 
 const contentStyle = {padding: 20};
 const readButtonStyle = {marginTop: 24, marginBottom: 8};
@@ -79,9 +90,11 @@ const CashuCardSpend = () => {
   const [payoutInput, setPayoutInput] = useState('');
   const [payingOut, setPayingOut] = useState(false);
   const [payout, setPayout] = useState<PayoutResult | null>(null);
+  const [recovering, setRecovering] = useState(false);
   const [chargeAmount, setChargeAmount] = useState('');
   const [chargePin, setChargePin] = useState('');
   const [charging, setCharging] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
   const [charge, setCharge] = useState<ChargeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -133,6 +146,7 @@ const CashuCardSpend = () => {
           amountSat: amount,
           pin: chargePin,
           mintUrl: FLASH_CASHU_MINT_URL,
+          onPhase: setPhase,
         }), {
         alertMessage: `Charge ${amount} sat — hold the customer's card`,
       });
@@ -154,6 +168,7 @@ const CashuCardSpend = () => {
     } finally {
       spendingRef.current = false;
       setCharging(false);
+      setPhase(null);
     }
   }, [chargeAmount, chargePin, refreshQueue, username]);
 
@@ -195,6 +210,39 @@ const CashuCardSpend = () => {
       setPayingOut(false);
     }
   }, [payoutInput, payingOut, refreshQueue]);
+
+  // Recovery: `needs-card` entries have a burned slot whose signature was
+  // lost to a mid-burn failure. The slot is still readable, so the card can
+  // re-sign the same message (PIN session) and the entry settles normally.
+  const onRecover = useCallback(async () => {
+    setRecovering(true);
+    setError(null);
+    try {
+      await withCardSession(async transceive => {
+        const pubkey = toHex(await getPubkey(transceive));
+        const recoverable = await recoverableForCard(pubkey);
+        if (recoverable.length === 0) {
+          toastShow({message: 'Cashu: nothing to recover', type: 'success'});
+          return;
+        }
+        for (const entry of recoverable) {
+          const signature = await resignWitness(transceive, entry);
+          await attachRecoveredWitness(entry.id, toHex(signature), Date.now());
+        }
+        toastShow({
+          message: `Cashu: recovered ${recoverable.length} settlement(s)`,
+          type: 'success',
+        });
+        await refreshQueue();
+      });
+    } catch (err) {
+      if (!cancelledRef.current && !isUserCancel(err)) {
+        setError(describeCardFailure(err));
+      }
+    } finally {
+      setRecovering(false);
+    }
+  }, [refreshQueue]);
 
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
@@ -239,6 +287,9 @@ const CashuCardSpend = () => {
           disabled={charging || !chargeAmount || !chargePin}
           onPress={onCharge}
         />
+        {charging && phase && (
+          <Label style={detailLabelStyle}>Step: {phase}</Label>
+        )}
       </Results>
       {spending && (
         <>
@@ -320,6 +371,18 @@ const CashuCardSpend = () => {
           ))}
         </Results>
       )}
+
+      <TextButton
+        title={
+          recovering
+            ? 'Recovering…'
+            : 'Recover needs-card settlements (this card)'
+        }
+        btnStyle={settleButtonStyle}
+        disabled={recovering}
+        onPress={onRecover}
+      />
+      {recovering && <ActivityIndicator style={detailLabelStyle} />}
 
       {payout && (
         <Results>
