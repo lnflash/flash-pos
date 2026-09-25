@@ -19,6 +19,7 @@ import {
 import {ActivityIndicator} from '../contexts/ActivityIndicator';
 
 // hooks
+import {useCardPaymentRouter} from '../hooks/useCardPaymentRouter';
 import {useFlashcard} from '../hooks';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 
@@ -69,6 +70,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
 
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
+  const routeCardPayment = useCardPaymentRouter();
 
   const {data, error} = useSubscription(LnInvoicePaymentStatus, {
     variables: {
@@ -379,10 +381,10 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   return (
     <Wrapper>
       {Platform.OS === 'ios' && <NfcButton />}
-      <TextButton
+      <PrimaryButton
         icon="credit-card"
-        title="Customer pays by Cashu card"
-        onPress={() => navigation.navigate('CashuCardCharge')}
+        btnText="Pay by Flashcard"
+        onPress={() => routeCardPayment()}
       />
       <InnerWrapper>
         <Amount

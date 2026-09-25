@@ -210,7 +210,11 @@ const CashuCardCharge = ({navigation}: Props) => {
         {charging && phase && (
           <Results>
             <Label>Step</Label>
-            <Value>{phase}</Value>
+            {/* The key re-mounts on every phase change: each step animates
+                in, so the merchant SEES the payment progressing. */}
+            <Animatable.View key={phase} animation="fadeInUp" duration={300} useNativeDriver>
+              <Value>{phase}</Value>
+            </Animatable.View>
           </Results>
         )}
       </Animatable.View>

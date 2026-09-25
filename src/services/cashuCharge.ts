@@ -293,6 +293,12 @@ export async function executeCharge({
     }
   };
 
+  // Session 2 opens a FRESH IsoDep channel: the card's active applet resets
+  // to the default, so the applet SELECT must run again before any gated
+  // command — without it Android answers 0x6E00 (CLA not supported) for
+  // every verify/burn. Idempotent for the one-session wrapper.
+  await step('reading card', () => selectApplet(transceive));
+
   if (pinRequired) {
     if (!pin) {
       throw new Error('this card has a PIN — ask the customer for it');
