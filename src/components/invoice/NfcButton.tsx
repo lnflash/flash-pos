@@ -1,5 +1,6 @@
 import React, {useCallback, useEffect} from 'react';
 import {useNavigation} from '@react-navigation/native';
+import {StackNavigationProp} from '@react-navigation/stack';
 import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 import styled from 'styled-components/native';
 import {Alert} from 'react-native';
@@ -7,11 +8,18 @@ import {Alert} from 'react-native';
 // hooks
 import {useFlashcard} from '../../hooks';
 
+// RootStackParamList is ambient (src/types/routes.d.ts).
+type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
+
+// One NFC icon, two card families: the multi-tech session lets the tap
+// decide — an IsoDep javacard routes to the Cashu charge flow, an NDEF
+// BoltCard to the lnurlw withdraw.
+
 // assets
 import NfcSignal from '../../assets/icons/nfc-signal.svg';
 
 const NfcButton = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<InvoiceNav>();
   const {handleTag} = useFlashcard();
 
   const dismiss = useCallback(() => {
@@ -37,10 +45,20 @@ const NfcButton = () => {
 
       NfcManager.start();
 
-      await NfcManager.requestTechnology(NfcTech.Ndef);
+      const wantedTechs: NfcTech[] = [NfcTech.IsoDep, NfcTech.Ndef];
+      await NfcManager.requestTechnology(wantedTechs);
 
       const tag = await NfcManager.getTag();
       if (tag) {
+        // Route by the detected tech: an IsoDep javacard is a Cashu card
+        // (the charge flow runs its own tap→PIN→tap sessions); an NDEF tag
+        // is a BoltCard — the lnurlw withdraw handles it in place.
+        const techs = (tag.techTypes ?? []) as string[];
+        if (techs.includes('IsoDep')) {
+          await NfcManager.cancelTechnologyRequest();
+          navigation.navigate('CashuCardCharge');
+          return;
+        }
         handleTag(tag);
       }
     } catch (error) {
@@ -53,7 +71,7 @@ const NfcButton = () => {
     }
 
     dismiss();
-  }, [dismiss, handleTag]);
+  }, [dismiss, handleTag, navigation]);
 
   const renderHeaderRight = useCallback(
     () => (
