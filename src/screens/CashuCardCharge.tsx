@@ -1,7 +1,13 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ScrollView} from 'react-native';
+import {Dimensions, ScrollView} from 'react-native';
+
+const width = Dimensions.get('screen').width;
 import {StackScreenProps} from '@react-navigation/stack';
+import * as Animatable from 'react-native-animatable';
 import styled from 'styled-components/native';
+
+// assets
+import NfcSignal from '../assets/icons/nfc-signal.svg';
 
 // components
 // Leaf imports, not the barrel — this screen ships in release builds and must
@@ -183,79 +189,97 @@ const CashuCardCharge = ({navigation}: Props) => {
 
   return (
     <Wrapper contentContainerStyle={contentStyle}>
-      <Title>Charge by Cashu card</Title>
-      <Caption>
-        {satAmount > 0
-          ? `Customer pays ${satAmount} sat by tapping their card.`
-          : 'No amount entered — go back and enter an amount first.'}
-      </Caption>
+      <Animatable.View animation="fadeInDown" duration={500} useNativeDriver>
+        <Title>Charge by Cashu card</Title>
+        <HeroAmount>{satAmount > 0 ? `${satAmount} sats` : '—'}</HeroAmount>
+        <Caption>
+          {satAmount > 0
+            ? 'Customer pays by tapping their card.'
+            : 'No amount entered — go back and enter an amount first.'}
+        </Caption>
+      </Animatable.View>
 
-      <Row>
-        <Label>NFC available</Label>
-        <Value>
-          {supported === null ? 'checking…' : supported ? 'yes' : 'no'}
-        </Value>
-      </Row>
+      <Animatable.View animation="fadeInUp" duration={500} delay={120} useNativeDriver>
+        <Row>
+          <Label>NFC available</Label>
+          <Value>
+            {supported === null ? 'checking…' : supported ? 'yes' : 'no'}
+          </Value>
+        </Row>
 
-      {charging && phase && (
-        <Results>
-          <Label>Step</Label>
-          <Value>{phase}</Value>
-        </Results>
-      )}
+        {charging && phase && (
+          <Results>
+            <Label>Step</Label>
+            <Value>{phase}</Value>
+          </Results>
+        )}
+      </Animatable.View>
 
       {flow === 'pin' ? (
-        <Results>
-          <PadTitle>Enter card PIN</PadTitle>
-          <Dots>
-            {Array.from({length: Math.max(PIN_MIN_LENGTH, pin.length)}).map(
-              (_, i) => (
-                <Dot key={i} filled={i < pin.length} />
-              ),
-            )}
-          </Dots>
-          <PinPad
-            onDigit={d => setPin(p => (p.length < PIN_MAX_LENGTH ? p + d : p))}
-            onBackspace={() => setPin(p => p.slice(0, -1))}
-            onClear={() => setPin('')}
-          />
-          <TextButton
-            title={charging ? 'Charging…' : 'Charge now'}
-            btnStyle={buttonStyle}
-            disabled={charging || pin.length < PIN_MIN_LENGTH}
-            onPress={onPinConfirm}
-          />
-        </Results>
-      ) : (
-        <>
-          <TextButton
-            icon="wifi"
-            title={
-              charging
-                ? 'Waiting for tap…'
-                : satAmount > 0
-                  ? 'Tap card to charge'
-                  : 'Enter an amount first'
-            }
-            btnStyle={buttonStyle}
-            disabled={charging || satAmount <= 0}
-            onPress={onCharge}
-          />
-          {charging && (
+        <Animatable.View animation="fadeInUp" duration={400} useNativeDriver>
+          <Results>
+            <PadTitle>Enter card PIN</PadTitle>
+            <Dots>
+              {Array.from({length: Math.max(PIN_MIN_LENGTH, pin.length)}).map(
+                (_, i) => (
+                  <Animatable.View
+                    key={`${i}-${pin.length >= i}`}
+                    animation={i === pin.length - 1 ? 'zoomIn' : undefined}
+                    duration={220}
+                    useNativeDriver>
+                    <Dot filled={i < pin.length} />
+                  </Animatable.View>
+                ),
+              )}
+            </Dots>
+            <PinPad
+              onDigit={d => setPin(p => (p.length < PIN_MAX_LENGTH ? p + d : p))}
+              onBackspace={() => setPin(p => p.slice(0, -1))}
+              onClear={() => setPin('')}
+            />
             <TextButton
-              icon="xmark"
-              title="Cancel read"
+              title={charging ? 'Charging…' : 'Charge now'}
               btnStyle={buttonStyle}
-              onPress={onCancel}
+              disabled={charging || pin.length < PIN_MIN_LENGTH}
+              onPress={onPinConfirm}
+            />
+          </Results>
+        </Animatable.View>
+      ) : (
+        <Animatable.View animation="fadeInUp" duration={400} useNativeDriver>
+          {charging ? (
+            <PulseRing>
+              <Animatable.View animation="pulse" iterationCount="infinite" useNativeDriver>
+                <NfcSignal width={width / 2.4} height={width / 2.4} />
+              </Animatable.View>
+              <StepText>{phase || 'Waiting for tap…'}</StepText>
+              <TextButton
+                icon="xmark"
+                title="Cancel read"
+                btnStyle={buttonStyle}
+                onPress={onCancel}
+              />
+            </PulseRing>
+          ) : (
+            <TextButton
+              icon="wifi"
+              title={
+                satAmount > 0 ? 'Tap card to charge' : 'Enter an amount first'
+              }
+              btnStyle={buttonStyle}
+              disabled={satAmount <= 0}
+              onPress={onCharge}
             />
           )}
-        </>
+        </Animatable.View>
       )}
 
       {error && (
-        <ErrorBox>
-          <ErrorText>{error}</ErrorText>
-        </ErrorBox>
+        <Animatable.View animation="shake" duration={500} useNativeDriver>
+          <ErrorBox>
+            <ErrorText>{error}</ErrorText>
+          </ErrorBox>
+        </Animatable.View>
       )}
     </Wrapper>
   );
@@ -304,6 +328,26 @@ const PadTitle = styled.Text`
   font-size: 16px;
   font-family: 'Outfit-SemiBold';
   color: #1f2328;
+`;
+
+const HeroAmount = styled.Text`
+  font-size: 44px;
+  font-family: 'Outfit-SemiBold';
+  color: #1f2328;
+  margin-top: 8px;
+`;
+
+const PulseRing = styled.View`
+  align-items: center;
+  padding-vertical: 16px;
+`;
+
+const StepText = styled.Text`
+  font-size: 15px;
+  font-family: 'Outfit-Medium';
+  color: #1f2328;
+  margin-top: 10px;
+  text-align: center;
 `;
 
 const Dots = styled.View`
