@@ -15,6 +15,7 @@ interface ContextProps {
   handleTag: (tag: TagEvent) => void;
   resetFlashcard: () => void;
   setNfcEnabled: (enabled: boolean) => void;
+  setNfcBusy: (busy: boolean) => void;
   getCardRewardLnurl: () => string | undefined;
   getAllStoredCards: () => Promise<StoredCardInfo[]>;
   deleteStoredCard: (tagId: string) => Promise<boolean>;

@@ -18,6 +18,10 @@ jest.mock('@apollo/client', () => ({
   useLazyQuery: (...args: unknown[]) => mockUseLazyQuery(...args),
 }));
 
+jest.mock('../../src/hooks/useCardPaymentRouter', () => ({
+  useCardPaymentRouter: () => async () => false,
+}));
+
 jest.mock('@react-navigation/native', () => ({
   useFocusEffect: (callback: () => void) => callback(),
 }));

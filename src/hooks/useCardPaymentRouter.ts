@@ -7,6 +7,9 @@ import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 // hooks
 import {useFlashcard} from './useFlashcard';
 
+// utils
+import {isIsoDepTag} from '../utils/nfcTag';
+
 // RootStackParamList is ambient (src/types/routes.d.ts).
 type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
 
@@ -19,12 +22,16 @@ type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
  *   - an NDEF BoltCard → the lnurlw withdraw, handled in place by the
  *     Flashcard context.
  *
+ * The session marks the Flashcard context busy so its Android
+ * DiscoverTag listener (which sees the same reader-mode broadcast)
+ * doesn't process the tag twice.
+ *
  * Returns true when the tap routed to the Cashu charge flow (the caller may
  * want to stop rendering its own payment prompts), false otherwise.
  */
 export function useCardPaymentRouter() {
   const navigation = useNavigation<InvoiceNav>();
-  const {handleTag} = useFlashcard();
+  const {handleTag, setNfcBusy} = useFlashcard();
 
   return useCallback(async (): Promise<boolean> => {
     const isSupported = await NfcManager.isSupported();
@@ -38,6 +45,7 @@ export function useCardPaymentRouter() {
       return false;
     }
     NfcManager.start();
+    setNfcBusy(true);
 
     try {
       const wantedTechs: NfcTech[] = [NfcTech.IsoDep, NfcTech.Ndef];
@@ -48,11 +56,9 @@ export function useCardPaymentRouter() {
         return false;
       }
 
-      // Route by the detected tech: an IsoDep javacard is a Cashu card (the
-      // charge flow runs its own tap → PIN → tap sessions); an NDEF tag is a
-      // BoltCard — the lnurlw withdraw handles it in place.
-      const techs = (tag.techTypes ?? []) as string[];
-      if (techs.includes('IsoDep')) {
+      if (isIsoDepTag(tag)) {
+        // Close this session first so the charge flow can open its own
+        // tap → PIN → tap session.
         await NfcManager.cancelTechnologyRequest();
         navigation.navigate('CashuCardCharge');
         return true;
@@ -66,7 +72,8 @@ export function useCardPaymentRouter() {
       );
       return false;
     } finally {
+      setNfcBusy(false);
       NfcManager.cancelTechnologyRequest();
     }
-  }, [handleTag, navigation]);
+  }, [handleTag, navigation, setNfcBusy]);
 }

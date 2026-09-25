@@ -1,10 +1,17 @@
-import React, {createContext, useEffect, useRef, useState} from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
 import {Platform} from 'react-native';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
 import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
+import {isIsoDepTag} from '../utils/nfcTag';
 import {navigationRef} from '../routes';
 import {isRewardsEnabled} from '../utils/featureFlags';
 import {
@@ -33,6 +40,8 @@ interface FlashcardInterface {
   handleTag: (tag: TagEvent) => void;
   resetFlashcard: () => void;
   setNfcEnabled: (enabled: boolean) => void;
+  /** Set by the card payment router while it owns the NFC session. */
+  setNfcBusy: (busy: boolean) => void;
   getCardRewardLnurl: () => string | undefined;
   getAllStoredCards: () => Promise<StoredCardInfo[]>;
   deleteStoredCard: (tagId: string) => Promise<boolean>;
@@ -44,6 +53,7 @@ const defaultValue: FlashcardInterface = {
   handleTag: (_tag: TagEvent) => {},
   resetFlashcard: () => {},
   setNfcEnabled: () => {},
+  setNfcBusy: () => {},
   getCardRewardLnurl: () => undefined,
   getAllStoredCards: async () => [],
   deleteStoredCard: async () => false,
@@ -68,6 +78,11 @@ export const FlashcardProvider = ({children}: Props) => {
   const [isNfcEnabled, setNfcEnabled] = useState<boolean>(true);
   const isNfcEnabledRef = useRef(isNfcEnabled);
   const handleTagRef = useRef<(scannedTag: TagEvent) => void>(() => {});
+  const nfcBusyRef = useRef(false);
+
+  const setNfcBusy = useCallback((busy: boolean) => {
+    nfcBusyRef.current = busy;
+  }, []);
 
   useEffect(() => {
     checkNfc();
@@ -105,6 +120,11 @@ export const FlashcardProvider = ({children}: Props) => {
     if (scannedTag?.id) {
       const ndefRecord = scannedTag?.ndefMessage?.[0];
       if (!ndefRecord) {
+        // A Flashcard v2 (Cashu javacard) has no NDEF surface; it is
+        // routed by the card payment router, not this lnurlw flow.
+        if (isIsoDepTag(scannedTag)) {
+          return;
+        }
         toastShow({message: 'NDEF message not found.', type: 'error'});
       } else {
         setLoading(true);
@@ -145,6 +165,11 @@ export const FlashcardProvider = ({children}: Props) => {
     }
 
     const onDiscoverTag = (scannedTag: TagEvent) => {
+      // The reader-mode broadcast of an active router session reaches
+      // this listener too; the router dispatches those tags itself.
+      if (nfcBusyRef.current) {
+        return;
+      }
       handleTagRef.current(scannedTag);
     };
 
@@ -351,6 +376,7 @@ export const FlashcardProvider = ({children}: Props) => {
     handleTag,
     resetFlashcard,
     setNfcEnabled,
+    setNfcBusy,
     getCardRewardLnurl,
     getAllStoredCards,
     deleteStoredCard,
