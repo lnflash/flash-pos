@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
+import {ActivityIndicator, ScrollView} from 'react-native';
 import {StackScreenProps} from '@react-navigation/stack';
 import styled from 'styled-components/native';
 
@@ -197,6 +197,13 @@ const CashuCardCharge = ({navigation}: Props) => {
         </Value>
       </Row>
 
+      {charging && phase && (
+        <Results>
+          <Label>Step</Label>
+          <Value>{phase}</Value>
+        </Results>
+      )}
+
       {flow === 'pin' ? (
         <Results>
           <PadTitle>Enter card PIN</PadTitle>
@@ -220,19 +227,29 @@ const CashuCardCharge = ({navigation}: Props) => {
           />
         </Results>
       ) : (
-        <TextButton
-          icon="wifi"
-          title={
-            charging
-              ? 'Waiting for tap…'
-              : satAmount > 0
-                ? 'Tap card to charge'
-                : 'Enter an amount first'
-          }
-          btnStyle={buttonStyle}
-          disabled={charging || satAmount <= 0}
-          onPress={onCharge}
-        />
+        <>
+          <TextButton
+            icon="wifi"
+            title={
+              charging
+                ? 'Waiting for tap…'
+                : satAmount > 0
+                  ? 'Tap card to charge'
+                  : 'Enter an amount first'
+            }
+            btnStyle={buttonStyle}
+            disabled={charging || satAmount <= 0}
+            onPress={onCharge}
+          />
+          {charging && (
+            <TextButton
+              icon="xmark"
+              title="Cancel read"
+              btnStyle={buttonStyle}
+              onPress={onCancel}
+            />
+          )}
+        </>
       )}
 
       {error && (
@@ -278,23 +295,6 @@ const Label = styled.Text`
 const Value = styled.Text`
   font-size: 14px;
   font-family: 'Outfit-SemiBold';
-  color: #1f2328;
-`;
-
-const FieldLabel = styled.Text`
-  font-size: 13px;
-  font-family: 'Outfit-Regular';
-  color: #7a7a8c;
-  margin-top: 16px;
-`;
-
-const PinInput = styled(TextInput)`
-  margin-top: 6px;
-  border-width: 1px;
-  border-color: #ececf1;
-  border-radius: 8px;
-  padding: 10px;
-  font-size: 15px;
   color: #1f2328;
 `;
 

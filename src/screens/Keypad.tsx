@@ -147,7 +147,12 @@ const Keypad = () => {
       // so when the merchant is entering SATS, tiny amounts are legitimate
       // and the gate would wrongly block them. The card flow is selected on
       // the invoice screen; sat amounts pass straight through.
-      const usdPerSat = satsToUsd(1);
+      let usdPerSat = satsToUsd(1);
+      if (!(usdPerSat > 0)) {
+        // Cold start or a missed poll: one on-demand fetch before bouncing
+        // the merchant — the price takes a beat, not a retry cycle.
+        usdPerSat = await refetchPrice();
+      }
 
       // Sub-cent SAT amounts cannot become a fiat-denominated Lightning
       // invoice (BTCPay's 1-cent minimum) — but the Cashu card charge is
