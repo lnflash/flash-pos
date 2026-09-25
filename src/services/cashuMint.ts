@@ -30,6 +30,8 @@
  * later step can sweep them to the flash backend; nothing here assumes one.
  */
 import {
+  Amount,
+  blindMessage,
   isMintOperationError,
   isP2PKSpendAuthorised,
   OutputData,
@@ -38,6 +40,7 @@ import {
   type Proof,
   type ProofLike,
 } from '@cashu/cashu-ts';
+import {bytesToHex, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
 
 import {
   PermanentSettlementError,
@@ -74,6 +77,33 @@ export function buildCardP2PKSecret(nonce: string, cardPubkey: string): string {
       tags: [['sigflag', 'SIG_INPUTS']],
     },
   ]);
+}
+
+/**
+ * A blinded output whose secret is byte-identical to what
+ * `buildCardP2PKSecret` rebuilds at spend time.
+ *
+ * cashu-ts's own `createSingleP2PKData` omits the `sigflag` tag for the
+ * default SIG_INPUTS flag, so its serialized secret differs by four bytes
+ * from the canonical form — a different hashToCurve, a different Y, and a
+ * proof the mint refuses the moment the card's slot is rebuilt. Found in
+ * the field: change minted through the cashu-ts path and written onto a
+ * card was unspendable at the next tap ("proofs could not be verified").
+ * Every card-bound output MUST go through this factory.
+ */
+export function makeCanonicalCardOutput(
+  amount: number,
+  keysetId: string,
+  cardPubkey: string,
+): OutputData {
+  const secret = buildCardP2PKSecret(bytesToHex(randomBytes(32)), cardPubkey);
+  const secretBytes = utf8ToBytes(secret);
+  const {r, B_} = blindMessage(secretBytes);
+  return new OutputData(
+    {id: keysetId, amount: Amount.from(amount), B_: bytesToHex(B_.toBytes(true))},
+    r,
+    secretBytes,
+  );
 }
 
 /** Bearer ecash the merchant holds once a settlement confirms. */
@@ -767,11 +797,7 @@ export async function makeChangeOnTill({
   // Outputs: the change as P2PK pieces locked to the customer's card.
   const pieces = splitPow2(changeSat);
   const outputData = pieces.map(a =>
-    OutputData.createSingleP2PKData(
-      {pubkey: p2pkPubkey, sigFlag: 'SIG_INPUTS'},
-      a,
-      keysetId,
-    ),
+    makeCanonicalCardOutput(a, keysetId, p2pkPubkey),
   );
 
   // A till listing can drift from mint reality: an earlier swap may have
@@ -870,11 +896,7 @@ export async function mintChargeChange({
   // Change pieces: P2PK-locked to the customer's card, OUR canonical secrets.
   const changePieces = splitPow2(changeSat);
   const changeData = changePieces.map(a =>
-    OutputData.createSingleP2PKData(
-      {pubkey: p2pkPubkey, sigFlag: 'SIG_INPUTS'},
-      a,
-      keysetId,
-    ),
+    makeCanonicalCardOutput(a, keysetId, p2pkPubkey),
   );
 
   // Merchant take: random secrets, liquid till proofs for the sweep.

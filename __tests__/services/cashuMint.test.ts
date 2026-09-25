@@ -19,6 +19,7 @@ import {
 import {
   __resetWalletCache,
   buildCardP2PKSecret,
+  makeCanonicalCardOutput,
   createSettlementAdapter,
   listSettledProofs,
   meltSettledProofs,
@@ -175,6 +176,17 @@ describe('buildCardP2PKSecret', () => {
   it('lower-cases whatever the card reports', () => {
     const s = buildCardP2PKSecret(NONCE.toUpperCase(), CARD_PUBKEY.toUpperCase());
     expect(s).toBe(buildCardP2PKSecret(NONCE, CARD_PUBKEY));
+  });
+});
+
+describe('makeCanonicalCardOutput', () => {
+  it('blinds a secret the card-side rebuild reproduces byte for byte', () => {
+    const output = makeCanonicalCardOutput(8, KEYSET_ID, CARD_PUBKEY);
+    const written = new TextDecoder().decode(
+      output.secret instanceof Uint8Array ? output.secret : output.secret,
+    );
+    const {nonce} = JSON.parse(written)[1];
+    expect(written).toBe(buildCardP2PKSecret(nonce, CARD_PUBKEY));
   });
 });
 
