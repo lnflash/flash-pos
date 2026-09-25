@@ -132,11 +132,12 @@ const Keypad = () => {
   const onCreateInvoice = async () => {
     try {
       // Validate amount before processing
-      const numericAmount = Number(displayAmount);
+      const numericAmount = Number(displayAmount || satAmount);
 
       if (!numericAmount || numericAmount <= 0) {
         toastShow({
           message: 'Please enter a valid amount',
+
           type: 'error',
         });
         return;
@@ -169,7 +170,16 @@ const Keypad = () => {
         return;
       }
 
-      const invoiceAmount = validateInvoiceAmount(usdPerSat, Number(satAmount));
+      // Fiat typing only updates displayAmount — derive the sats from the
+      // display when the store's satAmount is stale/missing (the JMD/GBP
+      // entry path).
+      const satAmountSafe =
+        Number(satAmount) > 0
+          ? Number(satAmount)
+          : currencyToSats(numericAmount).convertedCurrencyAmount;
+      dispatch(setSatAmount(String(Math.round(satAmountSafe))));
+
+      const invoiceAmount = validateInvoiceAmount(usdPerSat, satAmountSafe);
 
       if (!invoiceAmount.valid) {
         toastShow({
