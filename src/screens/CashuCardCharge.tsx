@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, ScrollView} from 'react-native';
+import {ScrollView} from 'react-native';
 import {StackScreenProps} from '@react-navigation/stack';
 import styled from 'styled-components/native';
 
