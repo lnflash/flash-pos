@@ -7,7 +7,7 @@ import * as Animatable from 'react-native-animatable';
 import styled from 'styled-components/native';
 
 // assets
-import NfcSignal from '../assets/icons/nfc-signal.svg';
+import Icon from 'react-native-vector-icons/FontAwesome6';
 
 // components
 // Leaf imports, not the barrel — this screen ships in release builds and must
@@ -250,7 +250,7 @@ const CashuCardCharge = ({navigation}: Props) => {
           {charging ? (
             <PulseRing>
               <Animatable.View animation="pulse" iterationCount="infinite" useNativeDriver>
-                <NfcSignal width={width / 2.4} height={width / 2.4} />
+                <Icon name="wifi" size={Math.round(width / 4)} color="#1f2328" />
               </Animatable.View>
               <StepText>{phase || 'Waiting for tap…'}</StepText>
               <TextButton
