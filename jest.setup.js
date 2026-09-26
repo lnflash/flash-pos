@@ -44,6 +44,7 @@ jest.mock('react-native-nfc-manager', () => ({
     registerTagEvent: jest.fn(),
     cancelTechnologyRequest: jest.fn(),
     unregisterTagEvent: jest.fn(),
+    setTimeout: jest.fn(() => Promise.resolve()),
   },
   Ndef: {
     text: {

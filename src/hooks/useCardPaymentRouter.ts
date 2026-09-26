@@ -12,6 +12,7 @@ import {useFlashcard} from './useFlashcard';
 import {readAndPlan} from '../services/cashuCharge';
 import {
   describeCardFailure,
+  extendCardTimeout,
   isUserCancel,
   nfcTransceiver,
 } from '../services/cashuCardNfc';
@@ -76,6 +77,7 @@ export function useCardPaymentRouter() {
 
       if (isIsoDepTag(tag)) {
         try {
+          await extendCardTimeout();
           const preRead = await readAndPlan({
             transceive: nfcTransceiver,
             amountSat: satAmount,

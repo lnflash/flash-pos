@@ -1,8 +1,11 @@
+import {Platform} from 'react-native';
 import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 
 import {
+  CARD_TRANSCEIVE_TIMEOUT_MS,
   cancelCardSession,
   describeCardFailure,
+  extendCardTimeout,
   isUserCancel,
   isCardReadingSupported,
   nfcTransceiver,
@@ -21,6 +24,7 @@ jest.mock('react-native-nfc-manager', () => ({
     isEnabled: jest.fn(() => Promise.resolve(true)),
     requestTechnology: jest.fn(() => Promise.resolve()),
     cancelTechnologyRequest: jest.fn(() => Promise.resolve()),
+    setTimeout: jest.fn(() => Promise.resolve()),
     isoDepHandler: {transceive: jest.fn()},
   },
   NfcTech: {IsoDep: 'IsoDep'},
@@ -32,6 +36,7 @@ const mockNfc = NfcManager as unknown as {
   isEnabled: jest.Mock;
   requestTechnology: jest.Mock;
   cancelTechnologyRequest: jest.Mock;
+  setTimeout: jest.Mock;
   isoDepHandler: {transceive: jest.Mock};
 };
 
@@ -41,6 +46,7 @@ beforeEach(() => {
   mockNfc.isEnabled.mockResolvedValue(true);
   mockNfc.requestTechnology.mockResolvedValue(undefined);
   mockNfc.cancelTechnologyRequest.mockResolvedValue(undefined);
+  mockNfc.setTimeout.mockResolvedValue(undefined);
 });
 
 describe('nfcTransceiver', () => {
@@ -109,6 +115,65 @@ describe('withCardSession', () => {
     expect(mockNfc.requestTechnology).toHaveBeenCalledWith(NfcTech.IsoDep, {
       alertMessage: 'Tap to pay',
     });
+  });
+});
+
+describe('extendCardTimeout', () => {
+  // The jest preset resolves react-native as iOS; pin the platform either way
+  // so the Android path is what is under test, not the preset's default.
+  const onPlatform = (os: 'android' | 'ios') =>
+    jest.replaceProperty(Platform, 'OS', os);
+
+  it('raises the IsoDep transceive timeout on Android', async () => {
+    const platform = onPlatform('android');
+    try {
+      await extendCardTimeout();
+    } finally {
+      platform.restore();
+    }
+    expect(mockNfc.setTimeout).toHaveBeenCalledWith(CARD_TRANSCEIVE_TIMEOUT_MS);
+  });
+
+  it('leaves iOS alone — CoreNFC has no such knob', async () => {
+    const platform = onPlatform('ios');
+    try {
+      await extendCardTimeout();
+    } finally {
+      platform.restore();
+    }
+    expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+  });
+
+  it('never fails the session when the bridge refuses', async () => {
+    const platform = onPlatform('android');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockNfc.setTimeout.mockRejectedValue(new Error('ERR_API_NOT_SUPPORT'));
+    try {
+      await expect(extendCardTimeout()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      platform.restore();
+      warn.mockRestore();
+    }
+  });
+
+  it('runs inside withCardSession after the tag connects and before the read', async () => {
+    const platform = onPlatform('android');
+    try {
+      await withCardSession(async () => {
+        // The read itself must already enjoy the longer budget — the whole
+        // point is that SPEND_PROOF's signature gets it.
+        expect(mockNfc.setTimeout).toHaveBeenCalledWith(
+          CARD_TRANSCEIVE_TIMEOUT_MS,
+        );
+        return 'ok';
+      });
+    } finally {
+      platform.restore();
+    }
+    const [armed] = mockNfc.requestTechnology.mock.invocationCallOrder;
+    const [extended] = mockNfc.setTimeout.mock.invocationCallOrder;
+    expect(extended).toBeGreaterThan(armed);
   });
 });
 

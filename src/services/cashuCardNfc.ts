@@ -30,6 +30,7 @@
  * Anything that can start a session must therefore also be able to end one —
  * see `cancelCardSession`, which screens call on unmount.
  */
+import {Platform} from 'react-native';
 import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 
 import {
@@ -50,6 +51,48 @@ export const nfcTransceiver: Transceiver = async (apdu: number[]) => {
 export interface CardSessionOptions {
   /** iOS-only prompt shown in the system NFC sheet. */
   alertMessage?: string;
+}
+
+/**
+ * How long Android waits for the card to answer a single APDU.
+ *
+ * Android's IsoDep transceive timeout defaults to 618 ms (AOSP `NfcTag.cpp`,
+ * `resetAllTransceiveTimeouts`), and the NFC stack reports an expiry to the
+ * app as `TagLostException` — indistinguishable from the card leaving the
+ * field. `SPEND_PROOF` and `SIGN_ARBITRARY` compute a BIP-340 Schnorr
+ * signature on-card, and under NFC power that can outlive the default: on
+ * 2026-09-26 every burn on the Pixel died ~0.6 s into the APDU with
+ * `libnfc_nci: nativeNfcTag_doTransceive: wait response timeout` on the line
+ * before the TagLost, on a card that never moved — and each one still burned
+ * its slot, because the applet marks the proof spent before it signs.
+ *
+ * A card that genuinely leaves the field fails at the RF layer at once, so a
+ * long budget costs nothing there; it only matters while the card is present
+ * and busy. iOS has no equivalent knob (CoreNFC waits on the card's own WTX
+ * requests) and the library's iOS module has no `setTimeout`.
+ */
+export const CARD_TRANSCEIVE_TIMEOUT_MS = 5000;
+
+/**
+ * Raises the transceive timeout for the connected IsoDep tag.
+ *
+ * Call it after `requestTechnology` resolves, once per session — IsoDep resets
+ * the timeout when the tag closes. Best-effort by design: if the bridge
+ * refuses, the session carries on with the platform default rather than
+ * failing a charge over a tuning knob.
+ */
+export async function extendCardTimeout(): Promise<void> {
+  if (Platform.OS !== 'android') {
+    return;
+  }
+  try {
+    await NfcManager.setTimeout(CARD_TRANSCEIVE_TIMEOUT_MS);
+  } catch (error) {
+    console.warn(
+      '[card-session] could not extend the transceive timeout',
+      String(error),
+    );
+  }
 }
 
 /**
@@ -86,6 +129,7 @@ export async function withCardSession<T>(
   await NfcManager.requestTechnology(NfcTech.IsoDep, {alertMessage});
   console.log('[card-session] tag connected');
   try {
+    await extendCardTimeout();
     return await fn(nfcTransceiver);
   } catch (error) {
     console.log('[card-session] session fn failed', String(error));
