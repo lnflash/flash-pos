@@ -45,6 +45,22 @@ const PendingSettlementBanner = () => {
     setSettling(true);
     try {
       const result = await runAutoSettlement(username);
+      // TEMP DEBUG — pending 8-sat entry diagnosis (remove when resolved).
+      const entries = await listSettlements();
+      console.log(
+        '[settle-debug]',
+        JSON.stringify(
+          entries.map(e => ({
+            id: e.id.slice(-16),
+            status: e.status,
+            attempts: e.attempts,
+            witness: !!e.witness,
+            amount: e.amount,
+            lastError: e.lastError,
+          })),
+        ),
+      );
+      console.log('[settle-result]', JSON.stringify(result));
       if (result.paidSat != null && result.paidSat > 0) {
         toastShow({
           message: `Cashu: paid out ${result.paidSat} sat to your wallet`,
