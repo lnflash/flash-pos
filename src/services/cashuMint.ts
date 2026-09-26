@@ -198,7 +198,22 @@ export function createSettlementAdapter(): SettlementAdapter {
 
     let settled: SettledProof[];
     try {
-      const {keep, send} = await wallet.completeSwap(preview);
+      // A 429 mid-burst is the routine throttle, not a verdict — retrying
+      // inside the adapter keeps it from surfacing as a permanent settlement
+      // failure (the drain used to park entries on exactly that). Mint
+      // operation errors are deliberately NOT retried here: codes like
+      // 11002 are the mint's answer, and mapSwapError owns them.
+      const attempt = () => wallet.completeSwap(preview);
+      let swapped;
+      try {
+        swapped = await attempt();
+      } catch (error) {
+        if ((error as {status?: number}).status !== 429) {
+          throw error;
+        }
+        await sleep((error as {retryAfterMs?: number}).retryAfterMs ?? 2500);
+        swapped = await attempt();
+      }
       // The keep/send split is PAYMENT-flow semantics — send is what a payer
       // hands to a recipient. In a settlement the terminal is the recipient
       // of the entire swap: every output the mint signs is merchant money.
@@ -206,6 +221,7 @@ export function createSettlementAdapter(): SettlementAdapter {
       // amount, because send shapes the full amount) books a settled payment
       // as nothing — found in the field when the payout step then read an
       // empty store.
+      const {keep, send} = swapped;
       settled = [...keep, ...send].map(p => ({
         id: p.id,
         amount: Number(p.amount),

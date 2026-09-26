@@ -35,7 +35,9 @@ import {
 import {runAutoSettlement} from '../services/cashuAutoSettle';
 
 // store
-import {useAppSelector} from '../store/hooks';
+import {useAppDispatch, useAppSelector} from '../store/hooks';
+import {addTransaction} from '../store/slices/transactionHistorySlice';
+import {resetInvoice} from '../store/slices/invoiceSlice';
 
 // env
 import {FLASH_CASHU_MINT_URL} from '@env';
@@ -57,8 +59,16 @@ type Props = StackScreenProps<RootStackType, 'CashuCardCharge'>;
 const CashuCardCharge = ({navigation, route}: Props) => {
   // The keypad stores the amount as a string; a non-numeric entry is treated
   // as no amount rather than NaN-ed into a silent zero charge.
-  const satAmount = Number(useAppSelector(state => state.amount.satAmount) ?? 0);
+  const {
+    satAmount: satAmountRaw,
+    displayAmount,
+    currency,
+    isPrimaryAmountSats,
+    memo,
+  } = useAppSelector(state => state.amount);
+  const satAmount = Number(satAmountRaw ?? 0);
   const {username} = useAppSelector(state => state.user);
+  const dispatch = useAppDispatch();
   const [supported, setSupported] = useState<boolean | null>(null);
   const [charging, setCharging] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
@@ -112,11 +122,43 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       if (username) {
         await runAutoSettlement(username).catch(() => {});
       }
-      navigation.replace('Success', {
+      // Same bookkeeping the lightning path does on payment: history entry,
+      // cleared invoice (the QR screen must not resurrect a paid bill), and a
+      // stack that lands Back past the invoice.
+      dispatch(
+        addTransaction({
+          id: `cashu_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          transactionType: 'ecash',
+          paymentMethod: 'card',
+          amount: {
+            satAmount,
+            displayAmount: displayAmount || '0',
+            currency,
+            isPrimaryAmountSats: isPrimaryAmountSats || false,
+          },
+          merchant: {username: username || 'Unknown'},
+          invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+          memo,
+          status: 'completed',
+        }),
+      );
+      dispatch(resetInvoice());
+      navigation.pop(2);
+      navigation.navigate('Success', {
         title: `Charged ${satAmount} sat — paid by Cashu card`,
       });
     },
-    [satAmount, username, navigation],
+    [
+      satAmount,
+      username,
+      navigation,
+      dispatch,
+      displayAmount,
+      currency,
+      isPrimaryAmountSats,
+      memo,
+    ],
   );
 
   // Session 1: the silent read + plan. A PIN-less card completes in this one

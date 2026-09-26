@@ -103,6 +103,8 @@ export interface CashuOutstanding {
   queueCount: number;
   /** Sats swapped at the mint but not yet swept to the account address. */
   settledSat: number;
+  /** Settles that failed and await a retry (the drain re-attempts them). */
+  failedCount: number;
 }
 
 /**
@@ -120,5 +122,6 @@ export async function cashuOutstanding(): Promise<CashuOutstanding> {
     queueSat: sat ? sat.amount : 0,
     queueCount: exposure.count,
     settledSat: settled.reduce((t, p) => t + p.amount, 0),
+    failedCount: exposure.failed,
   };
 }

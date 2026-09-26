@@ -1,5 +1,10 @@
 // Transaction type enumeration for different payment flows
-type TransactionType = 'lightning' | 'rewards-only' | 'standalone' | 'refund';
+type TransactionType =
+  | 'lightning'
+  | 'ecash'
+  | 'rewards-only'
+  | 'standalone'
+  | 'refund';
 
 // Payment method types for tracking how the payment was made
 type PaymentMethod =

@@ -56,7 +56,15 @@ const CashuAutoSettle = () => {
       }
     });
     run();
-    return () => appState.remove();
+    // Foreground events alone left stuck entries stranded: a drain that died
+    // on a rate limit is only retried when something fires it again, and a
+    // POS device can sit in the foreground for hours. Re-run on a cadence —
+    // single-flight collapsing keeps this safe against an in-flight run.
+    const interval = setInterval(run, 20000);
+    return () => {
+      appState.remove();
+      clearInterval(interval);
+    };
   }, []);
 
   return null;

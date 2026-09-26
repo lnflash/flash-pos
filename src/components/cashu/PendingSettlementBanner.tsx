@@ -2,10 +2,13 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState} from 'react-native';
 import styled from 'styled-components/native';
 
+import {useAppSelector} from '../../store/hooks';
 import {
   cashuOutstanding,
+  runAutoSettlement,
   type CashuOutstanding,
 } from '../../services/cashuAutoSettle';
+import {toastShow} from '../../utils/toast';
 
 /**
  * The loud one. When the device is offline (or a sweep failed), tapped value
@@ -17,7 +20,9 @@ import {
  */
 const PendingSettlementBanner = () => {
   const [outstanding, setOutstanding] = useState<CashuOutstanding | null>(null);
+  const [settling, setSettling] = useState(false);
   const mountedRef = useRef(true);
+  const username = useAppSelector(state => state.user.username);
 
   const refresh = useCallback(async () => {
     try {
@@ -30,6 +35,34 @@ const PendingSettlementBanner = () => {
       // known state is the honest one.
     }
   }, []);
+
+  const settleNow = useCallback(async () => {
+    setSettling(true);
+    try {
+      const result = await runAutoSettlement(username);
+      if (result.paidSat != null && result.paidSat > 0) {
+        toastShow({
+          message: `Cashu: paid out ${result.paidSat} sat to your wallet`,
+          type: 'success',
+        });
+      } else if (result.payoutError) {
+        toastShow({
+          message: `Cashu payout pending: ${result.payoutError}`,
+          type: 'error',
+        });
+      } else if (result.stillPending > 0) {
+        toastShow({
+          message: 'Cashu: settlement retrying — the mint is throttling, it will clear',
+          type: 'info',
+        });
+      }
+    } catch {
+      toastShow({message: 'Cashu: settlement run failed — retrying automatically', type: 'error'});
+    } finally {
+      setSettling(false);
+      refresh();
+    }
+  }, [username, refresh]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -50,8 +83,8 @@ const PendingSettlementBanner = () => {
   if (!outstanding) {
     return null;
   }
-  const {queueSat, queueCount, settledSat} = outstanding;
-  if (queueSat === 0 && settledSat === 0) {
+  const {queueSat, queueCount, settledSat, failedCount} = outstanding;
+  if (queueSat === 0 && settledSat === 0 && failedCount === 0) {
     return null;
   }
 
@@ -67,7 +100,13 @@ const PendingSettlementBanner = () => {
         {settledSat > 0
           ? `${settledSat} sat settled at the mint, sweeping to your wallet.`
           : ''}
+        {failedCount > 0
+          ? `${failedCount} settlement(s) failed — Settle now retries them.`
+          : ''}
       </BannerSub>
+      <SettleBtn onPress={settleNow} disabled={settling}>
+        <SettleText>{settling ? 'Settling…' : 'Settle now'}</SettleText>
+      </SettleBtn>
     </Banner>
   );
 };
@@ -94,4 +133,19 @@ const BannerSub = styled.Text`
   font-family: 'Outfit-Regular';
   color: #92400e;
   margin-top: 4px;
+`;
+
+const SettleBtn = styled.TouchableOpacity`
+  margin-top: 10px;
+  align-self: flex-start;
+  background-color: #d97706;
+  border-radius: 6px;
+  padding-vertical: 6px;
+  padding-horizontal: 14px;
+`;
+
+const SettleText = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-SemiBold';
+  color: #ffffff;
 `;

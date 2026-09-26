@@ -770,6 +770,14 @@ export const isOutstanding = (e: SettlementEntry): boolean =>
   e.status === 'submitting' ||
   e.status === 'needs-card';
 
+/**
+ * How many drain passes a `failed` entry is re-attempted on. Permanent
+ * re-failures increment `attempts`, so a genuinely bad entry (a witness the
+ * mint will never take) stops here instead of being resubmitted forever;
+ * transient ones (a rate-limited swap) clear on the first retry.
+ */
+const FAILED_RETRY_MAX = 8;
+
 /** A failure an operator has reconciled — the only evictable failure. */
 const isRetiredFailure = (e: SettlementEntry): boolean =>
   e.status === 'failed' && e.acknowledgedAt !== undefined;
@@ -1292,8 +1300,12 @@ export async function drainQueue(
     const {entries} = await loadQueue();
 
     for (const entry of entries) {
+      const retryableFailed =
+        entry.status === 'failed' && entry.attempts < FAILED_RETRY_MAX;
       if (
-        (entry.status !== 'pending' && entry.status !== 'submitting') ||
+        (entry.status !== 'pending' &&
+          entry.status !== 'submitting' &&
+          !retryableFailed) ||
         !entry.witness
       ) {
         continue;
@@ -1309,7 +1321,12 @@ export async function drainQueue(
       // an ambiguous rejection from `swap`. It does *not* mean the mint saw it:
       // the claim write lands before the swap. The in-memory `mintConfirmed`
       // set cannot survive either.
-      let outcomeUnknown = entry.status === 'submitting';
+      let outcomeUnknown =
+        entry.status === 'submitting' ||
+        // A retried failure's earlier attempt ended in an *ambiguous* place
+        // (the rejection may have raced a rate-limited write), so the mint is
+        // asked before this attempt's outcome is trusted.
+        entry.status === 'failed';
 
       if (outcomeUnknown && options.checkState) {
         // Ask the mint what actually happened rather than inferring it later.
@@ -1335,7 +1352,11 @@ export async function drainQueue(
       // inference is available to the next launch if this process dies here.
       let raced = false;
       const claimed = await update(entry.id, e => {
-        if (e.status !== 'pending' && e.status !== 'submitting') {
+        if (
+          e.status !== 'pending' &&
+          e.status !== 'submitting' &&
+          !(e.status === 'failed' && e.attempts < FAILED_RETRY_MAX)
+        ) {
           raced = true;
           return e;
         }
