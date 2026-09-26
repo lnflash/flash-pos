@@ -26,6 +26,7 @@ import {
   getSlotStatuses,
   getPubkey,
   loadProof,
+  resignWitness,
   selectApplet,
   verifyCardPin,
   toHex,
@@ -38,6 +39,8 @@ import {
 } from './cashuMint';
 import {burnPlannedSlot} from './cashuSpend';
 import {
+  attachRecoveredWitness,
+  listSettlements,
   markEntriesSettled,
   type SettlementEntry,
 } from './cashuSettlement';
@@ -315,6 +318,19 @@ export async function executeCharge({
   }
 
   const burned: SettlementEntry[] = [];
+  // Witness recovery: entries parked as needs-card by earlier sessions (a
+  // burn whose SPEND_PROOF response was lost mid-NFC) are re-signed here —
+  // the card is in the field and PIN-verified, and SIGN_ARBITRARY consumes
+  // nothing. The re-signed entries rejoin the queue as pending for the drain.
+  const orphaned = (await listSettlements()).filter(
+    e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
+  );
+  for (const entry of orphaned) {
+    await step(`re-signing recovered ${entry.amount} sat`, async () => {
+      const signature = await resignWitness(transceive, entry);
+      await attachRecoveredWitness(entry.id, toHex(signature), now);
+    });
+  }
   for (const [index, slot] of plan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
     // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
