@@ -318,19 +318,6 @@ export async function executeCharge({
   }
 
   const burned: SettlementEntry[] = [];
-  // Witness recovery: entries parked as needs-card by earlier sessions (a
-  // burn whose SPEND_PROOF response was lost mid-NFC) are re-signed here —
-  // the card is in the field and PIN-verified, and SIGN_ARBITRARY consumes
-  // nothing. The re-signed entries rejoin the queue as pending for the drain.
-  const orphaned = (await listSettlements()).filter(
-    e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
-  );
-  for (const entry of orphaned) {
-    await step(`re-signing recovered ${entry.amount} sat`, async () => {
-      const signature = await resignWitness(transceive, entry);
-      await attachRecoveredWitness(entry.id, toHex(signature), now);
-    });
-  }
   for (const [index, slot] of plan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
     // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
@@ -413,6 +400,26 @@ export async function executeCharge({
         }),
       );
       changeLoaded += 1;
+    }
+  }
+
+  // Witness recovery — AFTER the customer's critical path: entries parked as
+  // needs-card by earlier sessions (a burn whose SPEND_PROOF response was lost
+  // mid-NFC) are re-signed while the card is still in the field and
+  // PIN-verified; SIGN_ARBITRARY consumes nothing. Best-effort by design: a
+  // tag lost mid-sign leaves the entry needs-card for the next session, and
+  // must never fail the charge that is already complete.
+  const orphaned = (await listSettlements()).filter(
+    e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
+  );
+  for (const entry of orphaned) {
+    onPhase(`re-signing recovered ${entry.amount} sat`);
+    try {
+      const signature = await resignWitness(transceive, entry);
+      await attachRecoveredWitness(entry.id, toHex(signature), now);
+    } catch {
+      // The card left the field mid-sign: the entry stays needs-card and the
+      // next session retries it. Never fail a completed charge for this.
     }
   }
 
