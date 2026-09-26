@@ -53,6 +53,46 @@ export interface CardSessionOptions {
 }
 
 /**
+ * The dispatch handover for card sessions.
+ *
+ * The Flashcard context registers NDEF-oriented foreground dispatch at app
+ * start; a javacard has no NDEF tech, so its taps fall through to the system's
+ * launch PendingIntent — whose activity relaunch (pause → deliver → resume)
+ * kills an in-flight IsoDep connection ~1s in with TagLostException (found in
+ * the field: every session-2 APDU sequence died until this handover existed).
+ * Reader mode takes the tag directly to the app's own callback, no launch.
+ *
+ * Always paired with `endCardDispatch` in a finally.
+ */
+const CARD_READER_MODE_FLAGS = 0x81; // FLAG_READER_NFC_A | FLAG_READER_SKIP_NDEF_CHECK
+
+export async function beginCardDispatch(): Promise<void> {
+  try {
+    await NfcManager.unregisterTagEvent();
+  } catch {
+    // Nothing registered yet — the handover is still correct.
+  }
+  await NfcManager.registerTagEvent({
+    isReaderModeEnabled: true,
+    readerModeFlags: CARD_READER_MODE_FLAGS,
+  });
+}
+
+export async function endCardDispatch(): Promise<void> {
+  try {
+    await NfcManager.unregisterTagEvent();
+  } catch {
+    // The session may have already torn the registration down.
+  }
+  try {
+    await NfcManager.registerTagEvent();
+  } catch {
+    // Restoring the context's registration is best-effort; the context
+    // re-registers on its next mount anyway.
+  }
+}
+
+/**
  * Ends any in-flight IsoDep session, from outside the `withCardSession` frame.
  *
  * `withCardSession`'s `finally` only runs once a tag arrives or the read fails.
@@ -83,6 +123,7 @@ export async function withCardSession<T>(
   {alertMessage = 'Hold the Flash card to the phone'}: CardSessionOptions = {},
 ): Promise<T> {
   console.log('[card-session] arming IsoDep request');
+  await beginCardDispatch();
   await NfcManager.requestTechnology(NfcTech.IsoDep, {alertMessage});
   console.log('[card-session] tag connected');
   try {
@@ -95,6 +136,7 @@ export async function withCardSession<T>(
     // swallows every subsequent tap app-wide, including BoltCard payments.
     // cancelCardSession never throws, so it cannot mask the original error.
     await cancelCardSession();
+    await endCardDispatch();
     console.log('[card-session] session closed');
   }
 }
