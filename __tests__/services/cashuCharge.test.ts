@@ -216,7 +216,7 @@ describe('planPurchase', () => {
 });
 
 describe('chargeCard', () => {
-  it('exact charge: verifies PIN, burns, records — no change, no till writes', async () => {
+  it('exact charge: verifies PIN, burns, settles inline — the take joins the till', async () => {
     const card = fakeCard({
       slots: [
         {amount: 16, status: 0x01},
@@ -226,6 +226,18 @@ describe('chargeCard', () => {
       pin: '1234',
     });
     seedTill([{amount: 8, denom: 8}]);
+    mockMintChargeChange.mockResolvedValue({
+      change: [],
+      till: [
+        {
+          id: KEYSET_ID,
+          amount: 5,
+          secret: buildCardP2PKSecret('aa'.repeat(32), CARD_PUBKEY_HEX),
+          C: CARD_PUBKEY_HEX,
+          mintUrl: MINT_URL,
+        },
+      ],
+    });
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -239,7 +251,9 @@ describe('chargeCard', () => {
     expect(result.changeSat).toBe(0);
     expect(result.changeLoaded).toBe(0);
     expect(result.burned).toHaveLength(2);
-    expect(result.burned.every(e => e.status === 'pending')).toBe(true);
+    expect(mockMintChargeChange).toHaveBeenCalledWith(
+      expect.objectContaining({changeSat: 0}),
+    );
 
     // VERIFY_PIN before any burn (D13): its APDU precedes the SPEND_PROOFs.
     const verifyIdx = card.sent.findIndex(([, ins]) => ins === 0x40);
@@ -247,9 +261,39 @@ describe('chargeCard', () => {
     expect(verifyIdx).toBeGreaterThanOrEqual(0);
     expect(verifyIdx).toBeLessThan(burnIdx);
 
+    // The exact-bill swap settled inline — no dependence on the drain.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(2);
+    expect(tillProofs()).toHaveLength(2);
+    expect(tillProofs().some(t => t.amount === 5)).toBe(true);
+  });
+
+  it('exact bill with a failed swap defers to the drain instead of failing', async () => {
+    const card = fakeCard({
+      slots: [
+        {amount: 16, status: 0x01},
+        {amount: 4, status: 0x01},
+        {amount: 1, status: 0x01},
+      ],
+      pin: '1234',
+    });
+    seedTill([{amount: 8, denom: 8}]);
+    mockMintChargeChange.mockRejectedValue(new Error('429 rate limited'));
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 5,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    // The customer's payment still completes; the burned entries stay
+    // 'pending' for the drain (nothing owed back onto the card).
+    expect(result.changeSat).toBe(0);
+    expect(result.changeLoaded).toBe(0);
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'pending')).toHaveLength(2);
-    // The till is untouched by an exact purchase.
     expect(tillProofs()).toHaveLength(1);
   });
 

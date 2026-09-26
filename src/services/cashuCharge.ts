@@ -338,24 +338,28 @@ export async function executeCharge({
 
   let changeLoaded = 0;
   const changeSat = plan.changeSat;
-  if (changeSat > 0) {
-    // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
-    // (witnessed) go in; the outputs come out as P2PK change for THIS card
-    // plus the merchant's take. The till never gates anything — change of
-    // any size is possible by construction while online. OFFLINE: no swap —
-    // the entries hold in the queue and the settle happens on the next
-    // online auto-run (the change write follows on the card's next tap).
-    const witnessed = burned.map(e => ({
-      id: e.keysetId,
-      keysetId: e.keysetId,
-      amount: e.amount,
-      secret: e.secret,
-      C: e.C,
-      // NUT-11 witness envelope — the raw SPEND_PROOF signature wrapped the
-      // way the mint's verification expects.
-      witness: JSON.stringify({signatures: [e.witness]}),
-    }));
-    const minted = await step('settling payment and minting change', () =>
+  // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
+  // (witnessed) go in; the outputs come out as P2PK change for THIS card
+  // plus the merchant's take. The till never gates anything — change of
+  // any size is possible by construction while online. Exact bills
+  // (changeSat = 0) settle here too — deferring them to the drain left the
+  // merchant's money queued on a silent drain failure. OFFLINE: the swap
+  // throws and, when nothing must be written back onto the card this
+  // session, the entries hold in the queue for the next online auto-run
+  // (the change write follows on the card's next tap).
+  const witnessed = burned.map(e => ({
+    id: e.keysetId,
+    keysetId: e.keysetId,
+    amount: e.amount,
+    secret: e.secret,
+    C: e.C,
+    // NUT-11 witness envelope — the raw SPEND_PROOF signature wrapped the
+    // way the mint's verification expects.
+    witness: JSON.stringify({signatures: [e.witness]}),
+  }));
+  let minted: Awaited<ReturnType<typeof mintChargeChange>> | null = null;
+  try {
+    minted = await step('settling payment and minting change', () =>
       mintChargeChange({
         mintUrl,
         entries: witnessed,
@@ -363,7 +367,17 @@ export async function executeCharge({
         p2pkPubkey: cardPubkey,
       }),
     );
+  } catch (error) {
+    if (changeSat > 0) {
+      throw error;
+    }
+    // Exact bill: no card write is pending, so a failed swap costs the
+    // customer nothing — the entries stay 'pending' in the queue and the
+    // drain settles (and pays out) on its next run.
+    minted = null;
+  }
 
+  if (minted) {
     // The swap consumed the burned proofs: mark the entries settled.
     await markEntriesSettled(
       burned.map(e => e.id),
