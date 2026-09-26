@@ -19,7 +19,16 @@ type RootStackType = {
   // src/routes/index.tsx, so navigating here in a release build typechecks but
   // fails at runtime with an unhandled NAVIGATE action. Guard every call site
   // with `__DEV__`; the Profile screen's dev row is the intended entry point.
-  CashuCardCharge: undefined;
+  // preRead carries the card read the payment router already performed in its
+  // own NFC session, so the screen skips its first tap.
+  CashuCardCharge?: {
+    preRead?: {
+      plan: {slots: number[]; burnedSat: number; changeSat: number};
+      unspent: unknown[];
+      cardPubkey: string;
+      pinRequired: boolean;
+    };
+  };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
 };

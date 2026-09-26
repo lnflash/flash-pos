@@ -21,6 +21,7 @@ import {ActivityIndicator} from '../contexts/ActivityIndicator';
 // hooks
 import {useCardPaymentRouter} from '../hooks/useCardPaymentRouter';
 import {useFlashcard} from '../hooks';
+import {cancelCardSession} from '../services/cashuCardNfc';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
 
 // utils
@@ -71,6 +72,15 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
   const routeCardPayment = useCardPaymentRouter();
+
+  // A router session left armed when the merchant leaves this screen swallows
+  // every later BoltCard tap app-wide — end it with the screen.
+  useEffect(
+    () => () => {
+      cancelCardSession();
+    },
+    [],
+  );
 
   const {data, error} = useSubscription(LnInvoicePaymentStatus, {
     variables: {

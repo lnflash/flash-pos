@@ -54,7 +54,7 @@ type Props = StackScreenProps<RootStackType, 'CashuCardCharge'>;
  * Works offline: PIN verify, burns, and change are on-card plus the local
  * till — the network only appears in the settle/sweep after the tap.
  */
-const CashuCardCharge = ({navigation}: Props) => {
+const CashuCardCharge = ({navigation, route}: Props) => {
   // The keypad stores the amount as a string; a non-numeric entry is treated
   // as no amount rather than NaN-ed into a silent zero charge.
   const satAmount = Number(useAppSelector(state => state.amount.satAmount) ?? 0);
@@ -154,6 +154,45 @@ const CashuCardCharge = ({navigation}: Props) => {
       setPhase(null);
     }
   }, [satAmount, finish]);
+
+  // The payment router read and planned the card in its own NFC session and
+  // handed the result over: skip session 1 entirely. A PIN card lands straight
+  // on the pad; a PIN-less card goes straight to the finish tap.
+  const preRead = route.params?.preRead;
+  useEffect(() => {
+    if (!preRead || chargingRef.current) {
+      return;
+    }
+    navigation.setParams({preRead: undefined});
+    const planned = {
+      plan: preRead.plan,
+      unspent: preRead.unspent,
+      cardPubkey: preRead.cardPubkey,
+      pinRequired: preRead.pinRequired,
+    };
+    if (planned.pinRequired) {
+      setPlan(planned);
+      setFlow('pin');
+      return;
+    }
+    chargingRef.current = true;
+    cancelledRef.current = false;
+    setCharging(true);
+    setError(null);
+    setFlow('done');
+    finish(planned)
+      .catch((err: unknown) => {
+        setFlow('tap');
+        if (!cancelledRef.current && !isUserCancel(err)) {
+          setError(describeCardFailure(err));
+        }
+      })
+      .finally(() => {
+        chargingRef.current = false;
+        setCharging(false);
+        setPhase(null);
+      });
+  }, [preRead, finish, navigation]);
 
   const onPinConfirm = useCallback(async () => {
     if (chargingRef.current || !plan) {

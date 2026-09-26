@@ -158,6 +158,19 @@ export interface ChargeResult {
  * the pad afterwards (tap → PIN → tap, D13's session flag is satisfied by the
  * fresh verify inside session 2).
  */
+/**
+ * Session 1: read the card and rank the covers — NO PIN yet. The customer's
+ * card is only on the antenna for the silent read; a PIN-required card gets
+ * the pad afterwards (tap → PIN → tap, D13's session flag is satisfied by the
+ * fresh verify inside session 2).
+ */
+export interface PreReadCharge {
+  plan: PurchasePlan;
+  unspent: CardProofSlot[];
+  cardPubkey: string;
+  pinRequired: boolean;
+}
+
 export async function readAndPlan({
   transceive,
   amountSat,
@@ -166,12 +179,7 @@ export async function readAndPlan({
   transceive: Transceiver;
   amountSat: number;
   onPhase?: (phase: string) => void;
-}): Promise<{
-  plan: PurchasePlan;
-  unspent: CardProofSlot[];
-  cardPubkey: string;
-  pinRequired: boolean;
-}> {
+}): Promise<PreReadCharge> {
   const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
     onPhase(phase);
     try {
