@@ -1329,15 +1329,14 @@ export async function drainQueue(
       // an ambiguous rejection from `swap`. It does *not* mean the mint saw it:
       // the claim write lands before the swap. The in-memory `mintConfirmed`
       // set cannot survive either.
-      let outcomeUnknown =
-        entry.status === 'submitting' ||
-        // A retried failure's earlier attempt ended in an *ambiguous* place
-        // (the rejection may have raced a rate-limited write), so the mint is
-        // asked before this attempt's outcome is trusted.
-        entry.status === 'failed';
+      let outcomeUnknown = entry.status === 'submitting';
 
-      if (outcomeUnknown && options.checkState) {
+      if (options.checkState) {
         // Ask the mint what actually happened rather than inferring it later.
+        // Pending entries get the same question: a proof settled out-of-band
+        // (an operator recovery, a second terminal) resubmits into a 11001
+        // that the pending path books as a failure — the check resolves it as
+        // the money-received outcome it is.
         let state: 'spent' | 'unspent' | 'unknown';
         try {
           state = await options.checkState(entry);

@@ -1112,11 +1112,24 @@ describe('resolving an unknown outcome with a state check', () => {
     expect(result).toEqual(drained({settled: 1}));
   });
 
-  it('is not consulted for an entry that was never submitted', async () => {
+  it('is consulted for a pending entry too, and unspent proceeds to the swap', async () => {
+    // A pending proof can already have been settled out-of-band (an operator
+    // recovery); the check resolves that as money-received instead of letting
+    // the resubmit book a 11001 as a fresh failure.
     await record();
     const checkState = jest.fn(async () => 'unspent' as const);
-    await drainQueue(async () => {}, T0, {checkState});
-    expect(checkState).not.toHaveBeenCalled();
+    const result = await drainQueue(async () => {}, T0, {checkState});
+    expect(checkState).toHaveBeenCalledWith(expect.objectContaining({status: 'pending'}));
+    expect(result.settled).toBe(0);
+  });
+
+  it('settles a pending entry the mint already holds', async () => {
+    await record();
+    const checkState = jest.fn(async () => 'spent' as const);
+    const result = await drainQueue(async () => {}, T0, {checkState});
+    expect(result.settled).toBe(1);
+    const [entry] = await listSettlements();
+    expect(entry?.status).toBe('settled');
   });
 });
 

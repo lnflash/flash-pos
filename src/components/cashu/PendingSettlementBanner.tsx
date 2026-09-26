@@ -60,6 +60,10 @@ const PendingSettlementBanner = () => {
           message: 'Cashu: settlement retrying — the mint is throttling, it will clear',
           type: 'info',
         });
+      } else if (result.settled === 0 && result.skippedPayout) {
+        // The run resolved nothing new and swept nothing — say so, or the
+        // button reads as dead exactly when the operator is probing it.
+        toastShow({message: `Cashu: ${result.skippedPayout}`, type: 'info'});
       }
     } catch {
       toastShow({message: 'Cashu: settlement run failed — retrying automatically', type: 'error'});
