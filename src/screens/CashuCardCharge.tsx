@@ -237,6 +237,10 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   }, [preRead, finish, navigation]);
 
   const onPinConfirm = useCallback(async () => {
+    console.log(
+      '[charge] pin confirm',
+      JSON.stringify({chargingRef: chargingRef.current, hasPlan: !!plan, pinLen: pin.length}),
+    );
     if (chargingRef.current || !plan) {
       return;
     }

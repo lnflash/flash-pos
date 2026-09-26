@@ -82,14 +82,20 @@ export async function withCardSession<T>(
   fn: (transceive: Transceiver) => Promise<T>,
   {alertMessage = 'Hold the Flash card to the phone'}: CardSessionOptions = {},
 ): Promise<T> {
+  console.log('[card-session] arming IsoDep request');
   await NfcManager.requestTechnology(NfcTech.IsoDep, {alertMessage});
+  console.log('[card-session] tag connected');
   try {
     return await fn(nfcTransceiver);
+  } catch (error) {
+    console.log('[card-session] session fn failed', String(error));
+    throw error;
   } finally {
     // Never let a failed read strand the session — a pending techRequest
     // swallows every subsequent tap app-wide, including BoltCard payments.
     // cancelCardSession never throws, so it cannot mask the original error.
     await cancelCardSession();
+    console.log('[card-session] session closed');
   }
 }
 
