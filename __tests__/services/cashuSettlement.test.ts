@@ -1120,7 +1120,8 @@ describe('resolving an unknown outcome with a state check', () => {
     const checkState = jest.fn(async () => 'unspent' as const);
     const result = await drainQueue(async () => {}, T0, {checkState});
     expect(checkState).toHaveBeenCalledWith(expect.objectContaining({status: 'pending'}));
-    expect(result.settled).toBe(0);
+    // Unspent → the swap runs and settles normally.
+    expect(result.settled).toBe(1);
   });
 
   it('settles a pending entry the mint already holds', async () => {
