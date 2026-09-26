@@ -330,10 +330,16 @@ const CashuCardCharge = ({navigation, route}: Props) => {
                 ),
               )}
             </Dots>
-            {pin.length === PIN_MIN_LENGTH && !charging && (
+            {charging ? (
               <Animatable.View animation="fadeIn" duration={300} useNativeDriver>
-                <AutoHint>Auto-charging — hold the card when it vibrates…</AutoHint>
+                <AutoHint>Lift the card, then tap again to complete</AutoHint>
               </Animatable.View>
+            ) : (
+              pin.length === PIN_MIN_LENGTH && (
+                <Animatable.View animation="fadeIn" duration={300} useNativeDriver>
+                  <AutoHint>Auto-charging — lift the card, then tap again</AutoHint>
+                </Animatable.View>
+              )
             )}
             <TextButton
               title={charging ? 'Charging…' : 'Charge now'}
