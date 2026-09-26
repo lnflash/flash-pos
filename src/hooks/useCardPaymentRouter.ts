@@ -11,9 +11,7 @@ import {useFlashcard} from './useFlashcard';
 // services
 import {readAndPlan} from '../services/cashuCharge';
 import {
-  beginCardDispatch,
   describeCardFailure,
-  endCardDispatch,
   isUserCancel,
   nfcTransceiver,
 } from '../services/cashuCardNfc';
@@ -68,7 +66,6 @@ export function useCardPaymentRouter() {
 
     try {
       const wantedTechs: NfcTech[] = [NfcTech.IsoDep, NfcTech.Ndef];
-      await beginCardDispatch();
       await NfcManager.requestTechnology(wantedTechs);
 
       const tag = await NfcManager.getTag();
@@ -107,7 +104,6 @@ export function useCardPaymentRouter() {
       setNfcBusy(false);
       setIsScanning(false);
       NfcManager.cancelTechnologyRequest();
-      await endCardDispatch();
     }
   }, [handleTag, navigation, setNfcBusy, satAmount]);
 

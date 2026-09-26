@@ -21,8 +21,6 @@ jest.mock('react-native-nfc-manager', () => ({
     isEnabled: jest.fn(() => Promise.resolve(true)),
     requestTechnology: jest.fn(() => Promise.resolve()),
     cancelTechnologyRequest: jest.fn(() => Promise.resolve()),
-    registerTagEvent: jest.fn(() => Promise.resolve()),
-    unregisterTagEvent: jest.fn(() => Promise.resolve()),
     isoDepHandler: {transceive: jest.fn()},
   },
   NfcTech: {IsoDep: 'IsoDep'},
@@ -34,8 +32,6 @@ const mockNfc = NfcManager as unknown as {
   isEnabled: jest.Mock;
   requestTechnology: jest.Mock;
   cancelTechnologyRequest: jest.Mock;
-  registerTagEvent: jest.Mock;
-  unregisterTagEvent: jest.Mock;
   isoDepHandler: {transceive: jest.Mock};
 };
 
@@ -45,8 +41,6 @@ beforeEach(() => {
   mockNfc.isEnabled.mockResolvedValue(true);
   mockNfc.requestTechnology.mockResolvedValue(undefined);
   mockNfc.cancelTechnologyRequest.mockResolvedValue(undefined);
-  mockNfc.registerTagEvent.mockResolvedValue(undefined);
-  mockNfc.unregisterTagEvent.mockResolvedValue(undefined);
 });
 
 describe('nfcTransceiver', () => {
