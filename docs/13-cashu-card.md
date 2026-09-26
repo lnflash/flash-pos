@@ -2,6 +2,11 @@
 
 ## Status
 
+> **2026-09-26: this document's settlement and NFC sections are superseded by
+> [`14-cashu-card-milestone-2026-09-26.md`](./14-cashu-card-milestone-2026-09-26.md)**
+> — the first end-to-end customer payment ran on Android, and the charge flow,
+> settlement pipeline, and every field-found defect are documented there.
+
 **Hardware-validated on iOS (2026-09-23).** A dev build on an iPhone 13 Pro Max
 (iOS 26.5) ran SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE against a loaded
 JCOP4 J3R180 card over IsoDep, first session: applet version, balance and the
