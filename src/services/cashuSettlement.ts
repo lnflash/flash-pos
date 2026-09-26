@@ -1066,9 +1066,12 @@ export async function pendingExposure(): Promise<Exposure> {
     totals,
     count: outstanding.length,
     needsCard: entries.filter(e => e.status === 'needs-card').length,
-    failed: entries.filter(e => e.status === 'failed').length,
+    failed: entries.filter(e => e.status === 'failed' && !e.acknowledgedAt)
+      .length,
     failedSat: entries
-      .filter(e => e.status === 'failed' && e.unit === 'sat')
+      .filter(
+        e => e.status === 'failed' && !e.acknowledgedAt && e.unit === 'sat',
+      )
       .reduce((t, e) => t + e.amount, 0),
     ...(unknownSince === undefined ? {} : {unknownSince}),
   };

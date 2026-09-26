@@ -8,6 +8,11 @@ import {
   runAutoSettlement,
   type CashuOutstanding,
 } from '../../services/cashuAutoSettle';
+import {
+  acknowledgeFailed,
+  listSettlements,
+  pruneFailed,
+} from '../../services/cashuSettlement';
 import {toastShow} from '../../utils/toast';
 
 /**
@@ -64,6 +69,35 @@ const PendingSettlementBanner = () => {
     }
   }, [username, refresh]);
 
+  // Operator assertion: those failed settles were reconciled outside the app
+  // (recovered on-card, settled by hand) — retire them so the banner can rest.
+  const dismissFailed = useCallback(async () => {
+    setSettling(true);
+    try {
+      const entries = await listSettlements();
+      let n = 0;
+      for (const e of entries) {
+        if (e.status === 'failed' && !e.acknowledgedAt) {
+          if (await acknowledgeFailed(e.id, Date.now())) {
+            n += 1;
+          }
+        }
+      }
+      await pruneFailed();
+      if (n > 0) {
+        toastShow({
+          message: `Cashu: retired ${n} reconciled settlement(s)`,
+          type: 'info',
+        });
+      }
+    } catch {
+      toastShow({message: 'Cashu: could not retire the failed settlements', type: 'error'});
+    } finally {
+      setSettling(false);
+      refresh();
+    }
+  }, [refresh]);
+
   useEffect(() => {
     mountedRef.current = true;
     refresh();
@@ -104,9 +138,16 @@ const PendingSettlementBanner = () => {
           ? `${failedCount} settlement(s) failed (${failedSat} sat) — Settle now retries them.`
           : ''}
       </BannerSub>
-      <SettleBtn onPress={settleNow} disabled={settling}>
-        <SettleText>{settling ? 'Settling…' : 'Settle now'}</SettleText>
-      </SettleBtn>
+      <BtnRow>
+        <SettleBtn onPress={settleNow} disabled={settling}>
+          <SettleText>{settling ? 'Settling…' : 'Settle now'}</SettleText>
+        </SettleBtn>
+        {failedCount > 0 && (
+          <DismissBtn onPress={dismissFailed} disabled={settling}>
+            <DismissText>Settled elsewhere</DismissText>
+          </DismissBtn>
+        )}
+      </BtnRow>
     </Banner>
   );
 };
@@ -137,11 +178,31 @@ const BannerSub = styled.Text`
 
 const SettleBtn = styled.TouchableOpacity`
   margin-top: 10px;
-  align-self: flex-start;
   background-color: #d97706;
   border-radius: 6px;
   padding-vertical: 6px;
   padding-horizontal: 14px;
+`;
+
+const BtnRow = styled.View`
+  margin-top: 10px;
+  flex-direction: row;
+  gap: 10px;
+`;
+
+const DismissBtn = styled.TouchableOpacity`
+  background-color: #fef3c7;
+  border-width: 1px;
+  border-color: #d97706;
+  border-radius: 6px;
+  padding-vertical: 6px;
+  padding-horizontal: 14px;
+`;
+
+const DismissText = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-SemiBold';
+  color: #92400e;
 `;
 
 const SettleText = styled.Text`
