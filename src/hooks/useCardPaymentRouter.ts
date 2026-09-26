@@ -1,5 +1,5 @@
-import {useCallback} from 'react';
-import {Alert, Platform} from 'react-native';
+import {useCallback, useState} from 'react';
+import {Alert} from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 import NfcManager, {NfcTech} from 'react-native-nfc-manager';
@@ -18,7 +18,6 @@ import {
 
 // utils
 import {isIsoDepTag} from '../utils/nfcTag';
-import {toastShow} from '../utils/toast';
 
 // RootStackParamList is ambient (src/types/routes.d.ts).
 type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
@@ -37,15 +36,16 @@ type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
  * DiscoverTag listener (which sees the same reader-mode broadcast)
  * doesn't process the tag twice.
  *
- * Returns true when the tap routed to the Cashu charge flow (the caller may
- * want to stop rendering its own payment prompts), false otherwise.
+ * Returns {routeCardPayment, isScanning}: isScanning drives the invoice's
+ * CardTapSheet — on Android the armed reader is otherwise invisible.
  */
 export function useCardPaymentRouter() {
   const navigation = useNavigation<InvoiceNav>();
   const {handleTag, setNfcBusy} = useFlashcard();
   const satAmount = Number(useAppSelector(state => state.amount.satAmount) ?? 0);
+  const [isScanning, setIsScanning] = useState(false);
 
-  return useCallback(async (): Promise<boolean> => {
+  const routeCardPayment = useCallback(async (): Promise<boolean> => {
     const isSupported = await NfcManager.isSupported();
     if (!isSupported) {
       Alert.alert('NFC is not supported on this device');
@@ -62,14 +62,7 @@ export function useCardPaymentRouter() {
     }
     NfcManager.start();
     setNfcBusy(true);
-    if (Platform.OS === 'android') {
-      // Android arms the reader silently — no system sheet like iOS — so
-      // say what the press did, or the merchant reads the button as dead.
-      toastShow({
-        message: `Charge ${satAmount} sat — hold the customer's card to the reader`,
-        type: 'info',
-      });
-    }
+    setIsScanning(true);
 
     try {
       const wantedTechs: NfcTech[] = [NfcTech.IsoDep, NfcTech.Ndef];
@@ -79,6 +72,7 @@ export function useCardPaymentRouter() {
       if (!tag) {
         return false;
       }
+      setIsScanning(false);
 
       if (isIsoDepTag(tag)) {
         try {
@@ -108,7 +102,10 @@ export function useCardPaymentRouter() {
       return false;
     } finally {
       setNfcBusy(false);
+      setIsScanning(false);
       NfcManager.cancelTechnologyRequest();
     }
   }, [handleTag, navigation, setNfcBusy, satAmount]);
+
+  return {routeCardPayment, isScanning};
 }

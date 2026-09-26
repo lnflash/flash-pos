@@ -221,6 +221,19 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     }
   }, [plan, pin, finish]);
 
+  // Auto-commit: pilot cards carry 4-digit PINs, so a full 4-digit entry with
+  // a short settle pauses opens session 2 on its own. Typing past four digits
+  // cancels the timer — only the button commits those.
+  useEffect(() => {
+    if (flow !== 'pin' || chargingRef.current || pin.length !== PIN_MIN_LENGTH) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      onPinConfirm();
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [flow, pin, onPinConfirm]);
+
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
     cancelCardSession();
@@ -275,16 +288,21 @@ const CashuCardCharge = ({navigation, route}: Props) => {
                 ),
               )}
             </Dots>
-            <PinPad
-              onDigit={d => setPin(p => (p.length < PIN_MAX_LENGTH ? p + d : p))}
-              onBackspace={() => setPin(p => p.slice(0, -1))}
-              onClear={() => setPin('')}
-            />
+            {pin.length === PIN_MIN_LENGTH && !charging && (
+              <Animatable.View animation="fadeIn" duration={300} useNativeDriver>
+                <AutoHint>Auto-charging — hold the card when it vibrates…</AutoHint>
+              </Animatable.View>
+            )}
             <TextButton
               title={charging ? 'Charging…' : 'Charge now'}
               btnStyle={buttonStyle}
               disabled={charging || pin.length < PIN_MIN_LENGTH}
               onPress={onPinConfirm}
+            />
+            <PinPad
+              onDigit={d => setPin(p => (p.length < PIN_MAX_LENGTH ? p + d : p))}
+              onBackspace={() => setPin(p => p.slice(0, -1))}
+              onClear={() => setPin('')}
             />
           </Results>
         </Animatable.View>
@@ -397,6 +415,14 @@ const Dots = styled.View`
   flex-direction: row;
   justify-content: center;
   margin-top: 12px;
+`;
+
+const AutoHint = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-Medium';
+  color: #db254e;
+  margin-top: 8px;
+  text-align: center;
 `;
 
 const Dot = styled.View<{filled: boolean}>`

@@ -12,7 +12,7 @@ import NfcSignal from '../../assets/icons/nfc-signal.svg';
 
 const NfcButton = () => {
   const navigation = useNavigation();
-  const routeCardPayment = useCardPaymentRouter();
+  const {routeCardPayment} = useCardPaymentRouter();
 
   const dismiss = useCallback(() => {
     NfcManager.cancelTechnologyRequest();
