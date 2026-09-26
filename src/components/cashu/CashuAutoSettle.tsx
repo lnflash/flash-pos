@@ -26,9 +26,17 @@ const CashuAutoSettle = () => {
   }, [username]);
 
   useEffect(() => {
-    const run = () => {
-      // One run per foreground event; a tap can also start one, and
-      // runAutoSettlement collapses concurrent calls into the first.
+    // Forge's limiter sustains its block under steady pressure: a fixed
+    // cadence re-arms it every tick and a throttled settlement never clears.
+    // The retry loop therefore backs off while runs come back incomplete and
+    // snaps back to the fast baseline once a run lands clean.
+    const BASELINE_MS = 20000;
+    const MAX_MS = 240000;
+    let delay = BASELINE_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = () => {
+      // One run per tick; a tap can also start one, and runAutoSettlement
+      // collapses concurrent calls into the first.
       if (!autoSettleInFlight() && usernameRef.current) {
         runAutoSettlement(usernameRef.current)
           .then(result => {
@@ -43,27 +51,32 @@ const CashuAutoSettle = () => {
                 type: 'error',
               });
             }
+            if (result.stillPending > 0 || result.payoutError) {
+              delay = Math.min(delay * 2, MAX_MS);
+            } else {
+              delay = BASELINE_MS;
+            }
           })
           .catch(() => {
-            // Drain-level failure: the queue holds the entries and the
-            // pending-settlement banner carries the visibility.
+            delay = Math.min(delay * 2, MAX_MS);
           });
       }
     };
+    const run = () => {
+      attempt();
+      timer = setTimeout(run, delay);
+    };
     const appState = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        run();
+        attempt();
       }
     });
     run();
-    // Foreground events alone left stuck entries stranded: a drain that died
-    // on a rate limit is only retried when something fires it again, and a
-    // POS device can sit in the foreground for hours. Re-run on a cadence —
-    // single-flight collapsing keeps this safe against an in-flight run.
-    const interval = setInterval(run, 20000);
     return () => {
       appState.remove();
-      clearInterval(interval);
+      if (timer) {
+        clearTimeout(timer);
+      }
     };
   }, []);
 
