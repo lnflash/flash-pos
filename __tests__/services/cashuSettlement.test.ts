@@ -410,6 +410,7 @@ describe('pendingExposure', () => {
       count: 2,
       needsCard: 1,
       failed: 0,
+      failedSat: 0,
     });
   });
 
@@ -419,6 +420,7 @@ describe('pendingExposure', () => {
       count: 0,
       needsCard: 0,
       failed: 0,
+      failedSat: 0,
     });
   });
 

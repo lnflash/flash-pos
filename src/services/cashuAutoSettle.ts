@@ -105,6 +105,8 @@ export interface CashuOutstanding {
   settledSat: number;
   /** Settles that failed and await a retry (the drain re-attempts them). */
   failedCount: number;
+  /** Sats held by those failed settles — the stakes, not just a count. */
+  failedSat: number;
 }
 
 /**
@@ -123,5 +125,6 @@ export async function cashuOutstanding(): Promise<CashuOutstanding> {
     queueCount: exposure.count,
     settledSat: settled.reduce((t, p) => t + p.amount, 0),
     failedCount: exposure.failed,
+    failedSat: exposure.failedSat,
   };
 }

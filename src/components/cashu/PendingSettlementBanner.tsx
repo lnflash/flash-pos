@@ -83,7 +83,7 @@ const PendingSettlementBanner = () => {
   if (!outstanding) {
     return null;
   }
-  const {queueSat, queueCount, settledSat, failedCount} = outstanding;
+  const {queueSat, queueCount, settledSat, failedCount, failedSat} = outstanding;
   if (queueSat === 0 && settledSat === 0 && failedCount === 0) {
     return null;
   }
@@ -101,7 +101,7 @@ const PendingSettlementBanner = () => {
           ? `${settledSat} sat settled at the mint, sweeping to your wallet.`
           : ''}
         {failedCount > 0
-          ? `${failedCount} settlement(s) failed — Settle now retries them.`
+          ? `${failedCount} settlement(s) failed (${failedSat} sat) — Settle now retries them.`
           : ''}
       </BannerSub>
       <SettleBtn onPress={settleNow} disabled={settling}>

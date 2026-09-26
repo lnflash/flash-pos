@@ -1024,6 +1024,8 @@ export interface Exposure {
   needsCard: number;
   /** Permanently failed — a human has to look at these. */
   failed: number;
+  /** Sats carried by the failed entries (sat-unit only, like the totals). */
+  failedSat: number;
   /**
    * Set when the queue was corrupt at some point and no operator has
    * acknowledged it: ms epoch of the first corrupt read, or `0` if even that
@@ -1065,6 +1067,9 @@ export async function pendingExposure(): Promise<Exposure> {
     count: outstanding.length,
     needsCard: entries.filter(e => e.status === 'needs-card').length,
     failed: entries.filter(e => e.status === 'failed').length,
+    failedSat: entries
+      .filter(e => e.status === 'failed' && e.unit === 'sat')
+      .reduce((t, e) => t + e.amount, 0),
     ...(unknownSince === undefined ? {} : {unknownSince}),
   };
 }
