@@ -33,27 +33,43 @@ import CashuAutoSettle from './src/components/cashu/CashuAutoSettle';
 import {toastConfig} from './src/utils/toast';
 
 /**
- * What the status-bar band is painted where Android still draws one: the app's
- * own background, so the band is invisible against the screen below it.
+ * The colour under the status-bar icons, on every platform, OS version and
+ * system theme. The icons are dark, so it must stay light (ENG-613).
+ *
+ * What sits under the icons depends on where the app runs:
+ * - Android 7–14 (minSdk 24): an opaque band drawn by the window. Before JS runs
+ *   it is `android:statusBarColor` in android/app/src/main/res/values/styles.xml,
+ *   then the <StatusBar> backgroundColor below. Both are this colour.
+ * - Android 15+ (targetSdk 35): edge-to-edge is enforced, the bar is transparent
+ *   and setBackgroundColor is a no-op. The app draws under the bar, so the root
+ *   SafeAreaView's top inset shows, and the root paints it this colour
+ *   (styles.container). Before JS runs it is the light launch theme's window
+ *   background, #FAFAFA.
+ * - iOS: the bar is always transparent, so the same root inset shows.
  */
 export const STATUS_BAR_BAND = '#FFFFFF';
 
 function App(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.container}>
+      {/* Dark icons on both platforms (ENG-613). Android used to get white
+          icons over a black band, but Android 15+ never paints the band, so the
+          white icons landed on the white screens.
+
+          The screens are all light, but the native shells behind them follow
+          the system theme: under the system dark theme the iOS root view is
+          black (systemBackgroundColor), and the Android window background was
+          #303030 while AppTheme was DayNight. Where the bar is transparent that
+          shell is what shows through the unpainted inset, so the root paints the
+          band colour itself rather than trusting it.
+
+          Mounted outside PersistGate so it applies on the first render: inside
+          the gate it waited for the store to rehydrate, with the native launch
+          state still on screen. It reads nothing from the store. The launch
+          state in styles.xml matches it, so nothing flips when JS takes over. */}
+      <StatusBar barStyle="dark-content" backgroundColor={STATUS_BAR_BAND} />
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
-          {/* Dark icons on both platforms: the app has one light look (ENG-613).
-              Android used to get white icons over a black band, but Android 15+
-              enforces edge-to-edge and ignores setBackgroundColor, so the band
-              never paints and the white icons landed on the white screen. The
-              band is kept and painted the app's own background for Android 7–14
-              (minSdk 24), where the window still draws a real one and RN would
-              otherwise fall back to colorPrimaryDark grey. */}
-          <StatusBar
-            barStyle="dark-content"
-            backgroundColor={STATUS_BAR_BAND}
-          />
           <ApolloProvider client={client}>
             <ActivityIndicatorProvider>
               <FlashcardProvider>
@@ -72,6 +88,10 @@ function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    // What shows under the status bar wherever it is transparent (Android 15+,
+    // iOS). Left unpainted, that was the native root, which the system dark
+    // theme turns dark. See STATUS_BAR_BAND.
+    backgroundColor: STATUS_BAR_BAND,
   },
 });
 
