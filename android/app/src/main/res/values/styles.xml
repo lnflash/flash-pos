@@ -2,22 +2,31 @@
 
     <!-- Base application theme.
 
-         Pinned light rather than DayNight: every screen the app draws is light
-         and the status-bar icons are dark to match (App.tsx, ENG-613). Under
-         DayNight the system dark theme turns the window background #303030,
-         and on Android 15+, where the bar is transparent, the window background
-         is what sits under the icons until App.tsx paints over it. That is also
-         why windowLightStatusBar needs the light parent: without it, night-mode
-         launches put dark icons on #303030.
+         DayNight on purpose, although every screen the app draws is light and
+         the status-bar icons are dark to match (App.tsx, ENG-613). The
+         accessibility force invert dark theme (the secure setting
+         accessibility_force_invert_color_enabled, live on the Pixel 8 Pro under
+         Android 17) only considers windows whose theme says isLightTheme=true
+         while the system dark theme is on: ViewRootImpl.determineForceDarkType.
+         At night a DayNight parent resolves to a dark theme, which says
+         isLightTheme=false, so the app is exempt, as it always was. A Light
+         parent opts it in, and HWUI inverts a window that renders light, which
+         this one does: the white inset under the dark icons, the invoice QR.
+         Native widgets styled from this theme (Alert dialogs, for one) follow
+         the system theme, as they always have.
 
-         The two status-bar items are the launch state, shown until the
-         <StatusBar> in App.tsx applies. Keep them in step with it, or the icons
-         flip at launch: statusBarColor paints the band on Android 7-14 (ignored
-         on 15+), and windowLightStatusBar asks for dark icons on every version.
-         __tests__/statusBar.test.tsx checks that the two agree. -->
-    <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
+         The three window items are the launch state, shown until the
+         <StatusBar> in App.tsx applies, and they hold in both system themes.
+         Keep them in step with App.tsx, or the icons flip at launch:
+         windowBackground is what sits under the icons on Android 15+, where the
+         bar is transparent (DayNight alone makes it #303030 at night);
+         statusBarColor paints the band on Android 7-14 (ignored on 15+); and
+         windowLightStatusBar asks for dark icons on every version.
+         __tests__/statusBar.test.tsx checks that they agree. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:windowBackground">@android:color/white</item>
         <item name="android:statusBarColor">@android:color/white</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>

@@ -43,8 +43,8 @@ import {toastConfig} from './src/utils/toast';
  * - Android 15+ (targetSdk 35): edge-to-edge is enforced, the bar is transparent
  *   and setBackgroundColor is a no-op. The app draws under the bar, so the root
  *   SafeAreaView's top inset shows, and the root paints it this colour
- *   (styles.container). Before JS runs it is the light launch theme's window
- *   background, #FAFAFA.
+ *   (styles.container). Before JS runs it is the launch theme's
+ *   `android:windowBackground`, also this colour, in both system themes.
  * - iOS: the bar is always transparent, so the same root inset shows.
  */
 export const STATUS_BAR_BAND = '#FFFFFF';
@@ -58,10 +58,11 @@ function App(): React.JSX.Element {
 
           The screens are all light, but the native shells behind them follow
           the system theme: under the system dark theme the iOS root view is
-          black (systemBackgroundColor), and the Android window background was
-          #303030 while AppTheme was DayNight. Where the bar is transparent that
-          shell is what shows through the unpainted inset, so the root paints the
-          band colour itself rather than trusting it.
+          black (systemBackgroundColor), and AppTheme's DayNight parent would
+          make the Android window #303030 if styles.xml did not pin it white.
+          Where the bar is transparent that shell is what shows through an
+          unpainted inset, so the root paints the band colour itself rather than
+          trusting it.
 
           Mounted outside PersistGate so it applies on the first render: inside
           the gate it waited for the store to rehydrate, with the native launch
@@ -89,8 +90,8 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     // What shows under the status bar wherever it is transparent (Android 15+,
-    // iOS). Left unpainted, that was the native root, which the system dark
-    // theme turns dark. See STATUS_BAR_BAND.
+    // iOS). Left unpainted, that is the native root view, which the system dark
+    // theme turns black on iOS. See STATUS_BAR_BAND.
     backgroundColor: STATUS_BAR_BAND,
   },
 });
