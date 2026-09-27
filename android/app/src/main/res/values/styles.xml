@@ -3,12 +3,13 @@
     <!-- Base application theme.
 
          DayNight on purpose, although every screen the app draws is light and
-         the status-bar icons are dark to match (App.tsx, ENG-613). The
-         accessibility force invert dark theme (the secure setting
-         accessibility_force_invert_color_enabled, live on the Pixel 8 Pro under
-         Android 17) only considers windows whose theme says isLightTheme=true
-         while the system dark theme is on: ViewRootImpl.determineForceDarkType.
-         At night a DayNight parent resolves to a dark theme, which says
+         the status-bar icons are dark to match (App.tsx, ENG-613). With the
+         accessibility force invert dark theme in effect (the secure setting
+         accessibility_force_invert_color_enabled under the system dark theme;
+         its flag is live on the Pixel 8 Pro under Android 17),
+         ViewRootImpl.determineForceDarkType hands a window to HWUI's inversion
+         when its theme says isLightTheme=true, barring a per-app override. At
+         night a DayNight parent resolves to a dark theme, which says
          isLightTheme=false, so the app is exempt, as it always was. A Light
          parent opts it in, and HWUI inverts a window that renders light, which
          this one does: the white inset under the dark icons, the invoice QR.

@@ -226,10 +226,11 @@ describe('the Android launch theme, shown before JS runs', () => {
   const theme = readAndroidAppTheme();
 
   it('follows the system theme, so the force invert dark theme leaves the app alone', () => {
-    // Force invert inverts a window only while its theme says
-    // isLightTheme=true (ViewRootImpl.determineForceDarkType, API 36.1). At
-    // night a DayNight parent resolves to a dark theme, which says false. A
-    // Light parent, or an isLightTheme=true item, would opt the app in.
+    // With force invert in effect, a window is inverted only if its theme says
+    // isLightTheme=true, barring a per-app override
+    // (ViewRootImpl.determineForceDarkType, API 36.1). At night a DayNight
+    // parent resolves to a dark theme, which says false. A Light parent, or an
+    // isLightTheme=true item, would opt the app in.
     expect(theme.parent).toMatch(/DayNight/);
     expect(theme.items['android:isLightTheme']).not.toBe('true');
   });
