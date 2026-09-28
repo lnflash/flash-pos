@@ -7,8 +7,10 @@
  * `StatusBar.setBackgroundColor`, so the band never paints and white icons land
  * on the white screen. This pins the tint to dark on both platforms and the
  * band to the app background, whether a platform split comes back as a
- * `Platform.OS` ternary or as `Platform.select` (see setPlatform). A split into
- * an .android.tsx file would go unseen: jest resolves modules as iOS.
+ * `Platform.OS` ternary or as `Platform.select` (see setPlatform). jest.config.js
+ * also runs this spec with modules resolved as Android, so a split evaluated
+ * when App.tsx loads (a module-scope ternary or Platform.select, or an
+ * .android.tsx file) is seen the way a device sees it.
  *
  * Dark icons are only half of it: what sits under them must be light too.
  * - Where the bar is transparent (Android 15+, iOS) the root SafeAreaView's
@@ -116,7 +118,9 @@ const readAndroidAppTheme = () => {
 
   const items: Record<string, string> = {};
   for (const [, name, value] of style[2].matchAll(
-    /<item\s+name="([^"]+)"\s*>([^<]*)<\/item>/g,
+    // Any further attribute (tools:targetApi, say) must not hide an item: the
+    // force-invert check below would pass on an item it never saw.
+    /<item\s+name="([^"]+)"[^>]*>([^<]*)<\/item>/g,
   )) {
     items[name] = value.trim();
   }
