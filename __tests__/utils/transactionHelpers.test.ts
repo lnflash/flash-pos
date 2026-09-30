@@ -6,6 +6,7 @@ import {
   getReceiptAmounts,
   validateTransactionData,
 } from '../../src/utils/transactionHelpers';
+import {SAT_CURRENCY} from '../../src/utils/satCurrency';
 
 const usd: CurrencyItem = {
   id: 'USD',
@@ -218,6 +219,38 @@ describe('formatTransactionAmount', () => {
     });
 
     expect(formatTransactionAmount(refund)).toBe('-$ 8.00');
+  });
+
+  it('renders a SAT-currency eCash sale unit-last and pluralised, never "sat 13"', () => {
+    const sale = makeSale('s1', 13, {
+      transactionType: 'ecash',
+      paymentMethod: 'card',
+      amount: {
+        satAmount: 13,
+        displayAmount: '13',
+        currency: SAT_CURRENCY,
+        isPrimaryAmountSats: false,
+      },
+    });
+    expect(formatTransactionAmount(sale)).toBe('13 sats');
+    expect(
+      formatTransactionAmount({
+        ...sale,
+        amount: {...sale.amount, satAmount: 1, displayAmount: '1'},
+      }),
+    ).toBe('1 sat');
+  });
+
+  it('renders a SAT-currency refund signed', () => {
+    const refund = makeRefund('r1', -13, {
+      amount: {
+        satAmount: -13,
+        displayAmount: '13',
+        currency: SAT_CURRENCY,
+        isPrimaryAmountSats: false,
+      },
+    });
+    expect(formatTransactionAmount(refund)).toBe('-13 sats');
   });
 });
 

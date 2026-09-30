@@ -79,7 +79,7 @@ const CashuCardDebug = () => {
     try {
       setSummary(
         await readCardOverNfc({
-          alertMessage: 'Hold the Cashu card to the phone',
+          alertMessage: 'Hold the eCash card to the phone',
         }),
       );
     } catch (err) {
@@ -109,7 +109,7 @@ const CashuCardDebug = () => {
 
   return (
     <Wrapper contentContainerStyle={contentStyle}>
-      <Title>Cashu card bring-up</Title>
+      <Title>eCash card bring-up</Title>
       <Caption>
         Read-only: SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE. No proof is
         spent.

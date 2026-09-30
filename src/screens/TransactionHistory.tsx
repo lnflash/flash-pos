@@ -136,7 +136,7 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
       case 'lightning':
         return {icon: '⚡', label: 'Lightning', color: '#007856'};
       case 'ecash':
-        return {icon: '🪙', label: 'Cashu Card', color: '#7C3AED'};
+        return {icon: '🪙', label: 'eCash', color: '#7C3AED'};
       case 'rewards-only':
         return {icon: '💳', label: 'External Payment', color: '#FF9500'};
       case 'standalone':

@@ -1,4 +1,5 @@
 import {RewardCalculation} from './rewardCalculations';
+import {formatSatAmount} from './satCurrency';
 
 /**
  * Create a Lightning transaction data object
@@ -270,6 +271,14 @@ export const formatTransactionAmount = (
 
   if (isPrimaryAmountSats) {
     return `${satAmount} points`;
+  }
+
+  if (currency.id === 'SAT') {
+    // SAT's symbol is "sat", so the fiat layout below would print "sat 13";
+    // sats are unit-last and pluralised, the same as the keypad and Success.
+    return transaction.transactionType === 'refund'
+      ? `-${formatSatAmount(displayAmount.replace(/^-/, ''))}`
+      : formatSatAmount(displayAmount);
   }
 
   if (transaction.transactionType === 'refund') {

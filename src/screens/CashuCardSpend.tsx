@@ -209,7 +209,7 @@ const CashuCardSpend = () => {
         const pubkey = toHex(await getPubkey(transceive));
         const recoverable = await recoverableForCard(pubkey);
         if (recoverable.length === 0) {
-          toastShow({message: 'Cashu: nothing to recover', type: 'success'});
+          toastShow({message: 'eCash: nothing to recover', type: 'success'});
           return;
         }
         for (const entry of recoverable) {
@@ -217,7 +217,7 @@ const CashuCardSpend = () => {
           await attachRecoveredWitness(entry.id, toHex(signature), Date.now());
         }
         toastShow({
-          message: `Cashu: recovered ${recoverable.length} settlement(s)`,
+          message: `eCash: recovered ${recoverable.length} settlement(s)`,
           type: 'success',
         });
         await refreshQueue();
@@ -238,7 +238,7 @@ const CashuCardSpend = () => {
 
   return (
     <Wrapper contentContainerStyle={contentStyle}>
-      <Title>Cashu card spend</Title>
+      <Title>eCash card spend</Title>
       <Caption>
         Burns the first unspent slot and queues the settlement. Mint:{' '}
         {FLASH_CASHU_MINT_URL}

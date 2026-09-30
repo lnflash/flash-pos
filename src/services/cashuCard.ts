@@ -101,7 +101,7 @@ export function describeStatusWord(sw: number): string {
     case 0x6d00:
       return 'unsupported command';
     case 0x6e00:
-      return 'wrong CLA — is this a Cashu card?';
+      return 'wrong CLA — is this an eCash card?';
     default:
       return 'unexpected status word';
   }

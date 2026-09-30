@@ -47,7 +47,7 @@ jest.mock('../../src/components/profile', () => {
         MockReact.createElement(
           TouchableOpacity,
           {key: 'cashu', onPress: onViewCashuCardDebug},
-          MockReact.createElement(Text, null, 'Cashu card (dev)'),
+          MockReact.createElement(Text, null, 'eCash card (dev)'),
         ),
       ),
     Security: () => MockReact.createElement(Text, null, 'Security'),
@@ -125,7 +125,7 @@ describe('Profile Cashu card debug wiring', () => {
     devGlobal.__DEV__ = true;
     const {getByText} = renderProfile();
 
-    fireEvent.press(getByText('Cashu card (dev)'));
+    fireEvent.press(getByText('eCash card (dev)'));
 
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardDebug');
   });
@@ -136,7 +136,7 @@ describe('Profile Cashu card debug wiring', () => {
     devGlobal.__DEV__ = false;
     const {getByText} = renderProfile();
 
-    fireEvent.press(getByText('Cashu card (dev)'));
+    fireEvent.press(getByText('eCash card (dev)'));
 
     expect(mockNavigate).not.toHaveBeenCalled();
   });

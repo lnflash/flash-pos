@@ -54,7 +54,7 @@ describe('Settings', () => {
   });
 });
 
-describe('Settings — Cashu card dev row', () => {
+describe('Settings — eCash card dev row', () => {
   it('renders the row and fires the handler in a dev build', () => {
     devGlobal.__DEV__ = true;
     const onViewCashuCardDebug = jest.fn();
@@ -65,7 +65,7 @@ describe('Settings — Cashu card dev row', () => {
       />,
     );
 
-    fireEvent.press(getByText('Cashu card (dev)'));
+    fireEvent.press(getByText('eCash card (dev)'));
     expect(onViewCashuCardDebug).toHaveBeenCalledTimes(1);
   });
 
@@ -81,7 +81,7 @@ describe('Settings — Cashu card dev row', () => {
       />,
     );
 
-    expect(queryByText('Cashu card (dev)')).toBeNull();
+    expect(queryByText('eCash card (dev)')).toBeNull();
     expect(queryByText('Read-only NFC bring-up harness')).toBeNull();
   });
 
@@ -89,6 +89,6 @@ describe('Settings — Cashu card dev row', () => {
     devGlobal.__DEV__ = true;
     const {queryByText} = render(<Settings onViewRewardSettings={jest.fn()} />);
 
-    expect(queryByText('Cashu card (dev)')).toBeNull();
+    expect(queryByText('eCash card (dev)')).toBeNull();
   });
 });

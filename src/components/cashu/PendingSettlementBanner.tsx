@@ -67,29 +67,29 @@ const PendingSettlementBanner = () => {
       console.log('[settle-result]', JSON.stringify(result));
       if (result.paidSat != null && result.paidSat > 0) {
         toastShow({
-          message: `Cashu: paid out ${result.paidSat} sat to your wallet`,
+          message: `eCash: paid out ${result.paidSat} sat to your wallet`,
           type: 'success',
         });
       } else if (result.payoutError) {
         toastShow({
-          message: `Cashu payout pending: ${result.payoutError}`,
+          message: `eCash payout pending: ${result.payoutError}`,
           type: 'error',
         });
       } else if (result.stillPending > 0) {
         toastShow({
-          message: 'Cashu: settlement retrying — the mint is throttling, it will clear',
+          message: 'eCash: settlement retrying — the mint is throttling, it will clear',
           type: 'info',
         });
       } else if (result.settled > 0) {
         toastShow({
-          message: `Cashu: settled ${result.settled} tapped payment(s)${result.skippedPayout ? ` — ${result.skippedPayout}` : ''}`,
+          message: `eCash: settled ${result.settled} tapped payment(s)${result.skippedPayout ? ` — ${result.skippedPayout}` : ''}`,
           type: 'info',
         });
       } else if (result.skippedPayout) {
-        toastShow({message: `Cashu: ${result.skippedPayout}`, type: 'info'});
+        toastShow({message: `eCash: ${result.skippedPayout}`, type: 'info'});
       }
     } catch {
-      toastShow({message: 'Cashu: settlement run failed — retrying automatically', type: 'error'});
+      toastShow({message: 'eCash: settlement run failed — retrying automatically', type: 'error'});
     } finally {
       setSettling(false);
       refresh();
@@ -113,12 +113,12 @@ const PendingSettlementBanner = () => {
       await pruneFailed();
       if (n > 0) {
         toastShow({
-          message: `Cashu: retired ${n} reconciled settlement(s)`,
+          message: `eCash: retired ${n} reconciled settlement(s)`,
           type: 'info',
         });
       }
     } catch {
-      toastShow({message: 'Cashu: could not retire the failed settlements', type: 'error'});
+      toastShow({message: 'eCash: could not retire the failed settlements', type: 'error'});
     } finally {
       setSettling(false);
       refresh();

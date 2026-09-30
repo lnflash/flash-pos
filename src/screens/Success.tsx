@@ -18,6 +18,9 @@ import Check from '../assets/icons/check.svg';
 import {resetAmount} from '../store/slices/amountSlice';
 import {resetInvoice} from '../store/slices/invoiceSlice';
 
+// utils
+import {formatSatAmount} from '../utils/satCurrency';
+
 type Props = StackScreenProps<RootStackType, 'Success'>;
 
 const printButtonTextStyle = {color: '#002118'};
@@ -38,7 +41,15 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   // screen rendered before or after that reset was a race (field-found
   // 2026-09-30: "J$0" on a J$1 charge). The record was written before the pop,
   // so it is stable; the slice is only a fallback for a Success without one.
-  const {displayAmount, currency} = lastTransaction?.amount ?? amountState;
+  const {displayAmount, satAmount, currency, isPrimaryAmountSats} =
+    lastTransaction?.amount ?? amountState;
+  // Sats are unit-last and pluralised ("13 sats"); the fiat layout would have
+  // printed the SAT symbol first ("sat 13" — field-found 2026-09-30).
+  const amountText = isPrimaryAmountSats
+    ? formatSatAmount(satAmount)
+    : currency.id === 'SAT'
+    ? formatSatAmount(displayAmount)
+    : `${currency.symbol} ${displayAmount || 0}`;
 
   // Track whether receipt has been printed
   const [hasBeenPrinted, setHasBeenPrinted] = React.useState(false);
@@ -102,9 +113,7 @@ const Success: React.FC<Props> = ({navigation, route}) => {
           <Icon source={Check} />
         </IconWrapper>
         <Title>{route.params?.title || 'The invoice has been paid'}</Title>
-        <PrimaryAmount>{`${currency.symbol} ${
-          displayAmount || 0
-        }`}</PrimaryAmount>
+        <PrimaryAmount>{amountText}</PrimaryAmount>
       </InnerWrapper>
       <BtnsWrapper>
         <PrimaryButton

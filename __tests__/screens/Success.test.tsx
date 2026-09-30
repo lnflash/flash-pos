@@ -8,6 +8,7 @@ import transactionHistorySlice from '../../src/store/slices/transactionHistorySl
 import amountSlice from '../../src/store/slices/amountSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import userSlice from '../../src/store/slices/userSlice';
+import {SAT_CURRENCY} from '../../src/utils/satCurrency';
 
 // The components barrel drags in QR and progress-bar packages that ship as
 // untransformed ESM; the screen only needs its two buttons, as the other
@@ -119,5 +120,51 @@ describe('Success amount', () => {
     });
 
     expect(getByText('J$ 250')).toBeTruthy();
+  });
+
+  it('renders a sat-denominated record unit-last and pluralised, like the keypad', () => {
+    // SAT's symbol is "sat", so the fiat layout printed "sat 13" (field-found
+    // 2026-09-30). The keypad shows "13 sats"; the receipt must agree.
+    const satTransaction = {
+      ...ecashTransaction,
+      id: 'cashu_2',
+      amount: {
+        satAmount: 13,
+        displayAmount: '13',
+        currency: SAT_CURRENCY,
+        isPrimaryAmountSats: false,
+      },
+    } as TransactionData;
+    const {getByText} = renderSuccess({
+      transactionHistory: {
+        transactions: [satTransaction],
+        lastTransaction: satTransaction,
+        maxTransactions: 50,
+      },
+    });
+
+    expect(getByText('13 sats')).toBeTruthy();
+  });
+
+  it('singularises a one-sat record', () => {
+    const satTransaction = {
+      ...ecashTransaction,
+      id: 'cashu_3',
+      amount: {
+        satAmount: 1,
+        displayAmount: '1',
+        currency: SAT_CURRENCY,
+        isPrimaryAmountSats: false,
+      },
+    } as TransactionData;
+    const {getByText} = renderSuccess({
+      transactionHistory: {
+        transactions: [satTransaction],
+        lastTransaction: satTransaction,
+        maxTransactions: 50,
+      },
+    });
+
+    expect(getByText('1 sat')).toBeTruthy();
   });
 });

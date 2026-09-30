@@ -51,7 +51,7 @@ const Settings: React.FC<Props> = ({
         <Container activeOpacity={0.5} onPress={onViewCashuCardDebug}>
           <Icon name={'card-outline'} type="ionicon" />
           <Column>
-            <Key>Cashu card (dev)</Key>
+            <Key>eCash card (dev)</Key>
             <Value>Read-only NFC bring-up harness</Value>
           </Column>
           <Icon name={'chevron-forward-outline'} type="ionicon" />
@@ -61,7 +61,7 @@ const Settings: React.FC<Props> = ({
         <Container activeOpacity={0.5} onPress={onViewCashuCardSpend}>
           <Icon name={'card-outline'} type="ionicon" />
           <Column>
-            <Key>Cashu card spend (dev)</Key>
+            <Key>eCash card spend (dev)</Key>
             <Value>Spend a slot into the settlement queue</Value>
           </Column>
           <Icon name={'chevron-forward-outline'} type="ionicon" />

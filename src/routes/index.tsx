@@ -145,7 +145,7 @@ const Root = () => {
           name="CashuCardDebug"
           component={CashuCardDebug}
           options={{
-            headerTitle: 'Cashu card',
+            headerTitle: 'eCash card',
             animation: 'slide_from_right',
           }}
         />
@@ -167,7 +167,7 @@ const Root = () => {
           name="CashuCardSpend"
           component={CashuCardSpend}
           options={{
-            headerTitle: 'Cashu card spend',
+            headerTitle: 'eCash card spend',
             animation: 'slide_from_right',
           }}
         />

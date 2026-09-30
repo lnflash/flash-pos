@@ -8,6 +8,23 @@ import {useAppSelector} from '../store/hooks';
 // env
 import {FLASH_LN_ADDRESS} from '@env';
 
+// utils
+import {formatSatAmount} from '../utils/satCurrency';
+
+/**
+ * The receipt's amount lines. SAT's symbol is "sat", so the fiat layout
+ * would print "sat 13" on paper (the same bug the Success screen had); a sat
+ * sale prints the shared unit-last form and skips the redundant points line.
+ */
+const receiptAmountLines = (
+  currency: {id: string; symbol: string},
+  displayAmount: string,
+  satAmount: number | string,
+): string[] =>
+  currency.id === 'SAT'
+    ? [`${formatSatAmount(displayAmount)}\n`]
+    : [`${currency.symbol} ${displayAmount}\n`, `≈ ${satAmount} points\n`];
+
 const {PrinterModule} = NativeModules;
 
 const usePrint = () => {
@@ -20,8 +37,9 @@ const usePrint = () => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
     PrinterModule.printText('Sale completed\n');
-    PrinterModule.printText(`${currency.symbol} ${displayAmount}\n`);
-    PrinterModule.printText(`≈ ${satAmount} points\n`);
+    receiptAmountLines(currency, displayAmount || '0', satAmount ?? 0).forEach(line =>
+      PrinterModule.printText(line),
+    );
     PrinterModule.setTextBold(false);
     PrinterModule.printText('========================\n');
     PrinterModule.printText(`Paid to:   ${username}\n`);
@@ -118,10 +136,11 @@ const usePrint = () => {
     PrinterModule.setAlignment(1);
     PrinterModule.setTextBold(true);
     PrinterModule.printText(`${headline}\n`);
-    PrinterModule.printText(
-      `${receiptData.currency.symbol} ${receiptData.displayAmount}\n`,
-    );
-    PrinterModule.printText(`≈ ${receiptData.satAmount} points\n`);
+    receiptAmountLines(
+      receiptData.currency,
+      receiptData.displayAmount,
+      receiptData.satAmount,
+    ).forEach(line => PrinterModule.printText(line));
     PrinterModule.setTextBold(false);
     PrinterModule.printText('========================\n');
     PrinterModule.printText(`Paid to:   ${receiptData.username}\n`);

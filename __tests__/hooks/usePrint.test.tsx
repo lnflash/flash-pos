@@ -97,6 +97,26 @@ describe('usePrint receipt headlines', () => {
     );
   });
 
+  it('printReceipt prints a SAT-currency sale unit-last with no points line', () => {
+    const {printReceipt} = usePrint();
+    printReceipt({
+      ...baseReceipt,
+      satAmount: 13,
+      displayAmount: '13',
+      currency: {id: 'SAT', symbol: 'sat', name: 'Satoshi', flag: '⚡', fractionDigits: 0},
+    });
+    expect(printerMock.printText).toHaveBeenNthCalledWith(2, '13 sats\n');
+    expect(printerMock.printText).not.toHaveBeenCalledWith('sat 13\n');
+    expect(printerMock.printText).not.toHaveBeenCalledWith('≈ 13 points\n');
+  });
+
+  it('printReceipt keeps the fiat layout for a fiat sale', () => {
+    const {printReceipt} = usePrint();
+    printReceipt(baseReceipt);
+    expect(printerMock.printText).toHaveBeenNthCalledWith(2, '$ 8.00\n');
+    expect(printerMock.printText).toHaveBeenNthCalledWith(3, '≈ 800 points\n');
+  });
+
   it('printReceiptHTML renders "Refund completed" for a refund', async () => {
     const {printReceiptHTML} = usePrint();
     await printReceiptHTML({

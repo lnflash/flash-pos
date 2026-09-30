@@ -42,12 +42,12 @@ const CashuAutoSettle = () => {
           .then(result => {
             if (result.paidSat != null && result.paidSat > 0) {
               toastShow({
-                message: `Cashu: paid out ${result.paidSat} sat to your wallet`,
+                message: `eCash: paid out ${result.paidSat} sat to your wallet`,
                 type: 'success',
               });
             } else if (result.payoutError) {
               toastShow({
-                message: `Cashu payout pending: ${result.payoutError}`,
+                message: `eCash payout pending: ${result.payoutError}`,
                 type: 'error',
               });
             }

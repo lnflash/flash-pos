@@ -6,6 +6,7 @@ import {useNavigation} from '@react-navigation/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {CurrencyPicker} from '../modals';
 import {useRealtimePrice} from '../../hooks';
+import {formatSatAmount} from '../../utils/satCurrency';
 import {useAppDispatch, useAppSelector} from '../../store/hooks';
 import {
   setDisplayAmount,
@@ -107,14 +108,9 @@ const Amount: React.FC<Props> = ({
   };
 
   // Calculate font sizes for current display
-  // SAT renders unit-first and pluralised: "0 sats", "1 sat", "21 sats".
-  const satDisplay = `${Number(displayAmount || 0)} ${
-    Number(displayAmount || 0) === 1 ? 'sat' : 'sats'
-  }`;
-
   const primaryText = !isPrimaryAmountSats
     ? currency.id === 'SAT'
-      ? satDisplay
+      ? formatSatAmount(displayAmount)
       : `${currency.symbol} ${displayAmount || 0}`
     : `${satAmount || 0} sats`;
 
@@ -139,7 +135,7 @@ const Amount: React.FC<Props> = ({
             numberOfLines={1}
             adjustsFontSizeToFit>
             {currency.id === 'SAT'
-              ? satDisplay
+              ? formatSatAmount(displayAmount)
               : `${currency.symbol} ${displayAmount || 0}`}
           </Primary>
           {!hideSecondary && currency.id !== 'SAT' && (
