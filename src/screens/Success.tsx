@@ -30,8 +30,15 @@ const Success: React.FC<Props> = ({navigation, route}) => {
   const {setNfcEnabled} = useFlashcard();
 
   const dispatch = useAppDispatch();
-  const {displayAmount, currency} = useAppSelector(state => state.amount);
+  const amountState = useAppSelector(state => state.amount);
   const {lastTransaction} = useAppSelector(state => state.transactionHistory);
+  // Show the amount of the transaction that was just recorded, not the live
+  // keypad state. The card charge pops back through the keypad on its way
+  // here, and the keypad's focus effect resets the amount slice — whether this
+  // screen rendered before or after that reset was a race (field-found
+  // 2026-09-30: "J$0" on a J$1 charge). The record was written before the pop,
+  // so it is stable; the slice is only a fallback for a Success without one.
+  const {displayAmount, currency} = lastTransaction?.amount ?? amountState;
 
   // Track whether receipt has been printed
   const [hasBeenPrinted, setHasBeenPrinted] = React.useState(false);
