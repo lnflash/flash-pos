@@ -5,7 +5,9 @@ import styled from 'styled-components/native';
 import {useAppSelector} from '../../store/hooks';
 import {
   cashuOutstanding,
+  lastAutoSettleResult,
   runAutoSettlement,
+  SWEEP_RESERVE_SAT,
   type CashuOutstanding,
 } from '../../services/cashuAutoSettle';
 import {
@@ -25,6 +27,7 @@ import {toastShow} from '../../utils/toast';
  */
 const PendingSettlementBanner = () => {
   const [outstanding, setOutstanding] = useState<CashuOutstanding | null>(null);
+  const [payoutError, setPayoutError] = useState<string | undefined>();
   const [settling, setSettling] = useState(false);
   const mountedRef = useRef(true);
   const username = useAppSelector(state => state.user.username);
@@ -34,6 +37,7 @@ const PendingSettlementBanner = () => {
       const o = await cashuOutstanding();
       if (mountedRef.current) {
         setOutstanding(o);
+        setPayoutError(lastAutoSettleResult()?.payoutError);
       }
     } catch {
       // A read failure must not flip the banner to "all clear" — the last
@@ -144,23 +148,32 @@ const PendingSettlementBanner = () => {
   if (queueSat === 0 && settledSat === 0 && failedCount === 0) {
     return null;
   }
+  // The float never sweeps, so "awaiting payout" overstated what the wallet
+  // would ever receive. Name the till and the part of it that moves.
+  const sweepableSat = Math.max(0, settledSat - SWEEP_RESERVE_SAT);
 
   return (
     <Banner>
       <BannerText>
-        ⚠ {queueSat + settledSat} sat awaiting payout
+        ⚠ {queueSat + settledSat} sat in the till
+        {sweepableSat > 0 ? ` — ${sweepableSat} sat to sweep` : ''}
       </BannerText>
       <BannerSub>
         {queueCount > 0
           ? `${queueCount} tapped payment(s) settle automatically when online. `
           : ''}
         {settledSat > 0
-          ? `${settledSat} sat settled at the mint, sweeping to your wallet.`
+          ? sweepableSat > 0
+            ? `${settledSat} sat settled at the mint; ${sweepableSat} sat sweeps to your wallet, ${Math.min(settledSat, SWEEP_RESERVE_SAT)} sat stays as float for change. `
+            : `${settledSat} sat settled at the mint, held as float for change (sweeps above ${SWEEP_RESERVE_SAT} sat). `
           : ''}
         {failedCount > 0
           ? `${failedCount} settlement(s) failed (${failedSat} sat) — Settle now retries them.`
           : ''}
       </BannerSub>
+      {payoutError ? (
+        <PayoutError>Payout blocked by the mint: {payoutError}</PayoutError>
+      ) : null}
       <BtnRow>
         <SettleBtn onPress={settleNow} disabled={settling}>
           <SettleText>{settling ? 'Settling…' : 'Settle now'}</SettleText>
@@ -197,6 +210,13 @@ const BannerSub = styled.Text`
   font-family: 'Outfit-Regular';
   color: #92400e;
   margin-top: 4px;
+`;
+
+const PayoutError = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-SemiBold';
+  color: #b91c1c;
+  margin-top: 6px;
 `;
 
 const SettleBtn = styled.TouchableOpacity`

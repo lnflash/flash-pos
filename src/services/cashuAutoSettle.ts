@@ -33,7 +33,25 @@ export interface AutoSettleResult {
   skippedPayout?: string;
 }
 
+/**
+ * The till float: small proofs held back so offline purchases can make change
+ * without the network. Everything settled above it sweeps to the wallet.
+ */
+export const SWEEP_RESERVE_SAT = 16;
+
 let inFlight: Promise<AutoSettleResult> | null = null;
+
+/**
+ * The most recent run's outcome, for the banner. The automatic drain runs on
+ * its own cadence with nobody watching the toasts; a payout the mint keeps
+ * refusing (field-found 2026-09-30: "proofs are pending" for hours) was
+ * invisible until an operator pressed Settle now.
+ */
+let lastResult: AutoSettleResult | null = null;
+
+export function lastAutoSettleResult(): AutoSettleResult | null {
+  return lastResult;
+}
 
 export function autoSettleInFlight(): boolean {
   return inFlight !== null;
@@ -69,9 +87,7 @@ export async function runAutoSettlement(
           mintUrl: FLASH_CASHU_MINT_URL,
           lightningAddress: `${username}@${FLASH_LN_ADDRESS}`,
           lnurlpUrl: FLASH_LN_ADDRESS_URL,
-          // The till float: small proofs held back so offline purchases can
-          // make change without the network. Everything above it sweeps.
-          keepReserveSat: 16,
+          keepReserveSat: SWEEP_RESERVE_SAT,
         });
         paidSat = payout.paidSat;
       } catch (error) {
@@ -81,7 +97,7 @@ export async function runAutoSettlement(
       }
     }
 
-    return {
+    lastResult = {
       ran: true,
       settled: drain.settled,
       stillPending: drain.stillPending,
@@ -89,6 +105,7 @@ export async function runAutoSettlement(
       payoutError,
       skippedPayout,
     };
+    return lastResult;
   })();
   try {
     return await inFlight;
