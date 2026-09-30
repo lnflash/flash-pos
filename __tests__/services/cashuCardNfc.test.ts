@@ -10,6 +10,7 @@ import {
   isCardReadingSupported,
   nfcTransceiver,
   readCardOverNfc,
+  setCardSessionMessage,
   withCardSession,
 } from '../../src/services/cashuCardNfc';
 import {CardError, CardProtocolError} from '../../src/services/cashuCard';
@@ -115,6 +116,68 @@ describe('withCardSession', () => {
     expect(mockNfc.requestTechnology).toHaveBeenCalledWith(NfcTech.IsoDep, {
       alertMessage: 'Tap to pay',
     });
+  });
+});
+
+describe('setCardSessionMessage', () => {
+  const onPlatform = (os: 'android' | 'ios') =>
+    jest.replaceProperty(Platform, 'OS', os);
+  const bridge = NfcManager as unknown as {setAlertMessageIOS?: jest.Mock};
+
+  afterEach(() => {
+    delete bridge.setAlertMessageIOS;
+  });
+
+  it('mirrors the phase into the CoreNFC sheet on iOS', () => {
+    const platform = onPlatform('ios');
+    bridge.setAlertMessageIOS = jest.fn(() => Promise.resolve());
+    try {
+      setCardSessionMessage('Checking the card');
+    } finally {
+      platform.restore();
+    }
+    expect(bridge.setAlertMessageIOS).toHaveBeenCalledWith('Checking the card');
+  });
+
+  it('swallows a rejected bridge call so a closed session never fails a charge', async () => {
+    const platform = onPlatform('ios');
+    const unhandled = jest.fn();
+    process.on('unhandledRejection', unhandled);
+    bridge.setAlertMessageIOS = jest.fn(() =>
+      Promise.reject(new Error('no session')),
+    );
+    try {
+      expect(() => setCardSessionMessage('Paid')).not.toThrow();
+      // Let the rejection propagate if nothing caught it.
+      await new Promise(resolve => setImmediate(resolve));
+    } finally {
+      platform.restore();
+      process.off('unhandledRejection', unhandled);
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('survives a bridge that throws synchronously', () => {
+    const platform = onPlatform('ios');
+    bridge.setAlertMessageIOS = jest.fn(() => {
+      throw new Error('bridge gone');
+    });
+    try {
+      expect(() => setCardSessionMessage('Paid')).not.toThrow();
+    } finally {
+      platform.restore();
+    }
+  });
+
+  it('never touches the bridge on Android — there is no sheet', () => {
+    const platform = onPlatform('android');
+    bridge.setAlertMessageIOS = jest.fn(() => Promise.resolve());
+    try {
+      setCardSessionMessage('Checking the card');
+    } finally {
+      platform.restore();
+    }
+    expect(bridge.setAlertMessageIOS).not.toHaveBeenCalled();
   });
 });
 

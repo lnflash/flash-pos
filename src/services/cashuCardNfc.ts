@@ -116,6 +116,26 @@ export async function cancelCardSession(): Promise<void> {
 }
 
 /**
+ * Mirrors a charge phase into the CoreNFC system sheet. On iOS that sheet
+ * covers the whole screen during the second tap, so it is the only trust
+ * surface the customer can see; on Android there is no sheet and this is a
+ * no-op. Best-effort by design — a failed message must never fail a charge.
+ */
+export function setCardSessionMessage(message: string): void {
+  if (Platform.OS !== 'ios') {
+    return;
+  }
+  try {
+    const result = NfcManager.setAlertMessageIOS?.(message);
+    if (result && typeof (result as Promise<void>).catch === 'function') {
+      (result as Promise<void>).catch(() => {});
+    }
+  } catch {
+    // The bridge is gone or the session already closed: nothing to show.
+  }
+}
+
+/**
  * Runs `fn` inside an IsoDep session, always tearing the session down.
  *
  * The technology request resolves when a card enters the field, so the promise

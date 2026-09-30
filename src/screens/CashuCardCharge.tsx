@@ -1,13 +1,10 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {Dimensions, ScrollView} from 'react-native';
 
 const width = Dimensions.get('screen').width;
 import {StackScreenProps} from '@react-navigation/stack';
 import * as Animatable from 'react-native-animatable';
 import styled from 'styled-components/native';
-
-// assets
-import Icon from 'react-native-vector-icons/FontAwesome6';
 
 // components
 // Leaf imports, not the barrel — this screen ships in release builds and must
@@ -20,6 +17,7 @@ import {
   describeCardFailure,
   isUserCancel,
   isCardReadingSupported,
+  setCardSessionMessage,
   withCardSession,
 } from '../services/cashuCardNfc';
 import {
@@ -32,7 +30,19 @@ import {
   PIN_MAX_LENGTH,
   PIN_MIN_LENGTH,
 } from '../components/cashu/PinPad';
+import SparkStage, {ProgressRail} from '../components/cashu/charge/SparkStage';
+import {
+  INITIAL_STAGE,
+  STATION_COUNT,
+  friendlyLabel,
+  mapPhase,
+  type StageState,
+} from '../components/cashu/charge/phaseToStation';
+import {useStallTimer} from '../components/cashu/charge/useStallTimer';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
+
+// utils
+import {formatSatAmount} from '../utils/satCurrency';
 
 // store
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -43,8 +53,23 @@ import {resetInvoice} from '../store/slices/invoiceSlice';
 import {FLASH_CASHU_MINT_URL} from '@env';
 
 const contentStyle = {padding: 20};
+const STAGE_WIDTH = width - 40;
+/** The pad's exit animation; the stage only expands once it is gone. */
+const PAD_EXIT_MS = 260;
+/**
+ * The "lift the card" frame is held at least this long after the charge
+ * resolves so the arrival is seen even when settlement is instant.
+ */
+const LIFT_HOLD_MS = 900;
 
 type Props = StackScreenProps<RootStackType, 'CashuCardCharge'>;
+
+type Planned = {
+  plan: PurchasePlan;
+  unspent: unknown[];
+  cardPubkey: string;
+  pinRequired: boolean;
+};
 
 /**
  * Production charge screen: the merchant arrived here from the invoice screen
@@ -55,6 +80,10 @@ type Props = StackScreenProps<RootStackType, 'CashuCardCharge'>;
  *
  * Works offline: PIN verify, burns, and change are on-card plus the local
  * till — the network only appears in the settle/sweep after the tap.
+ *
+ * The Spark Run stage is decoration on top of the phase text: every hop is
+ * pinned to a real phase, and the verbatim string stays on screen as the
+ * trust surface.
  */
 const CashuCardCharge = ({navigation, route}: Props) => {
   // The keypad stores the amount as a string; a non-numeric entry is treated
@@ -71,20 +100,26 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   const dispatch = useAppDispatch();
   const [supported, setSupported] = useState<boolean | null>(null);
   const [charging, setCharging] = useState(false);
-  const [phase, setPhase] = useState<string | null>(null);
+  const [stage, setStage] = useState<StageState>(INITIAL_STAGE);
   // Two-phase flow: 'tap' → (plan read; PIN pad if the card has one) → done.
   const [flow, setFlow] = useState<'tap' | 'pin' | 'done'>('tap');
-  const [plan, setPlan] = useState<{
-    plan: PurchasePlan;
-    unspent: unknown[];
-    cardPubkey: string;
-    pinRequired: boolean;
-  } | null>(null);
+  const [plan, setPlan] = useState<Planned | null>(null);
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The money moved: tell the customer to lift the card before settlement.
+  const [complete, setComplete] = useState(false);
+  const [settlingLate, setSettlingLate] = useState(false);
+  const [padGone, setPadGone] = useState(false);
 
   const chargingRef = useRef(false);
   const cancelledRef = useRef(false);
+  // Distinct from cancelledRef: a Cancel press that lands after the last APDU
+  // must NOT suppress a completed charge's Success screen, but a hardware
+  // Back during the held "lift the card" frame must not pop two screens off
+  // whatever stack the merchant is now on.
+  const unmountedRef = useRef(false);
+  const seqRef = useRef(0);
+  const stageRef = useRef<StageState>(INITIAL_STAGE);
 
   useEffect(() => {
     isCardReadingSupported().then(setSupported);
@@ -95,13 +130,36 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   useEffect(
     () => () => {
       cancelledRef.current = true;
+      unmountedRef.current = true;
       cancelCardSession();
     },
     [],
   );
 
+  /**
+   * Every phase is stamped with a sequence number before it reaches the
+   * mapper: 'writing change to card' fires once per change proof and
+   * 'reading card' fires 5+ times per read, so keying on the string would
+   * collapse the repeats and the per-proof coin drop would fire once.
+   */
+  const onPhase = useCallback((text: string) => {
+    const seq = (seqRef.current += 1);
+    const next = mapPhase(stageRef.current, {text, seq});
+    stageRef.current = next;
+    setStage(next);
+    setCardSessionMessage(friendlyLabel(next).title);
+  }, []);
+
+  /** Per session: a second customer's bolt must start on station 1. */
+  const armStage = useCallback(() => {
+    stageRef.current = INITIAL_STAGE;
+    setStage(INITIAL_STAGE);
+    setComplete(false);
+    setSettlingLate(false);
+  }, []);
+
   const finish = useCallback(
-    async (planned: {plan: PurchasePlan; unspent: unknown[]; cardPubkey: string; pinRequired: boolean}, customerPin?: string) => {
+    async (planned: Planned, customerPin?: string) => {
       await withCardSession(
         transceive =>
           executeCharge({
@@ -113,15 +171,35 @@ const CashuCardCharge = ({navigation, route}: Props) => {
             pin: customerPin,
             pinRequired: planned.pinRequired,
             mintUrl: FLASH_CASHU_MINT_URL,
-            onPhase: setPhase,
+            onPhase,
           }),
         {
           alertMessage: 'Finishing the charge — hold the card',
         },
       );
-      if (username) {
-        await runAutoSettlement(username).catch(() => {});
-      }
+      // The card is done the moment the session resolves: say so now, and
+      // let settlement (network) run behind the held frame.
+      setComplete(true);
+      // The flag flips on the settlement promise itself, so an instant
+      // (offline) settlement never flashes "Settling with the mint…" for a
+      // frame when the hold timer fires.
+      let settled = false;
+      const settlement = (
+        username
+          ? runAutoSettlement(username).catch(() => {})
+          : Promise.resolve()
+      ).then(() => {
+        settled = true;
+      });
+      const burstDone = new Promise<void>(resolve =>
+        setTimeout(() => {
+          if (!settled) {
+            setSettlingLate(true);
+          }
+          resolve();
+        }, LIFT_HOLD_MS),
+      );
+      await Promise.all([burstDone, settlement]);
       // Same bookkeeping the lightning path does on payment: history entry,
       // cleared invoice (the QR screen must not resurrect a paid bill), and a
       // stack that lands Back past the invoice.
@@ -144,9 +222,14 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         }),
       );
       dispatch(resetInvoice());
+      // The record above must survive either way; only the navigation is
+      // conditional on this screen still being mounted.
+      if (unmountedRef.current) {
+        return;
+      }
       navigation.pop(2);
       navigation.navigate('Success', {
-        title: `Charged ${satAmount} sat — paid by Cashu card`,
+        title: `Charged ${formatSatAmount(satAmount)} — paid by eCash card`,
       });
     },
     [
@@ -158,6 +241,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       currency,
       isPrimaryAmountSats,
       memo,
+      onPhase,
     ],
   );
 
@@ -172,11 +256,20 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     setCharging(true);
     setError(null);
     setFlow('tap');
+    armStage();
+    // A retry with a different card must not seat the previous card's proofs
+    // on the disc or show its change note before the new plan arrives.
+    setPlan(null);
     try {
       const planned = await withCardSession(
-        transceive => readAndPlan({transceive, amountSat: satAmount, onPhase: setPhase}),
-        {alertMessage: `Charge ${satAmount} sat — hold the customer's card`},
+        transceive => readAndPlan({transceive, amountSat: satAmount, onPhase}),
+        {
+          alertMessage: `Charge ${formatSatAmount(
+            satAmount,
+          )} — hold the customer's card`,
+        },
       );
+      setPlan(planned);
       if (!planned.pinRequired) {
         setFlow('done');
         await finish(planned);
@@ -184,7 +277,6 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       }
       // The session closes so the pad can take input; the customer taps
       // again for session 2.
-      setPlan(planned);
       setFlow('pin');
     } catch (err) {
       if (!cancelledRef.current && !isUserCancel(err)) {
@@ -193,9 +285,8 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     } finally {
       chargingRef.current = false;
       setCharging(false);
-      setPhase(null);
     }
-  }, [satAmount, finish]);
+  }, [satAmount, finish, onPhase, armStage]);
 
   // The payment router read and planned the card in its own NFC session and
   // handed the result over: skip session 1 entirely. A PIN card lands straight
@@ -212,8 +303,8 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       cardPubkey: preRead.cardPubkey,
       pinRequired: preRead.pinRequired,
     };
+    setPlan(planned);
     if (planned.pinRequired) {
-      setPlan(planned);
       setFlow('pin');
       return;
     }
@@ -222,6 +313,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     setCharging(true);
     setError(null);
     setFlow('done');
+    armStage();
     finish(planned)
       .catch((err: unknown) => {
         setFlow('tap');
@@ -232,9 +324,8 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       .finally(() => {
         chargingRef.current = false;
         setCharging(false);
-        setPhase(null);
       });
-  }, [preRead, finish, navigation]);
+  }, [preRead, finish, navigation, armStage]);
 
   const onPinConfirm = useCallback(async () => {
     console.log(
@@ -251,6 +342,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     cancelledRef.current = false;
     setCharging(true);
     setError(null);
+    armStage();
     try {
       await finish(plan, pin);
       setFlow('done');
@@ -263,9 +355,8 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     } finally {
       chargingRef.current = false;
       setCharging(false);
-      setPhase(null);
     }
-  }, [plan, pin, finish]);
+  }, [plan, pin, finish, armStage]);
 
   // Auto-commit: pilot cards carry 4-digit PINs, so a full 4-digit entry with
   // a short settle pauses opens session 2 on its own. Typing past four digits
@@ -280,16 +371,52 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     return () => clearTimeout(timer);
   }, [flow, pin, onPinConfirm]);
 
+  // Old-arch sequencing: the pad slides out first and only THEN does the
+  // stage expand and arm — a JS-driven layout change in the same tick as a
+  // native-driven timing start drops the first frame on RN 0.77 Android.
+  const padExiting = flow === 'pin' && charging;
+  useEffect(() => {
+    if (!padExiting) {
+      setPadGone(false);
+      return;
+    }
+    const timer = setTimeout(() => setPadGone(true), PAD_EXIT_MS);
+    return () => clearTimeout(timer);
+  }, [padExiting]);
+
   const onCancel = useCallback(() => {
     cancelledRef.current = true;
     cancelCardSession();
   }, []);
 
+  const mode = error ? 'error' : complete ? 'complete' : charging ? 'running' : 'idle';
+  const docked = flow === 'pin' && !padGone;
+  const stalled = useStallTimer(
+    stage.seq,
+    mode === 'running' && stage.station > 0 && stage.station !== 4,
+  );
+  const label = friendlyLabel(stage);
+  // Memoised on the plan: the stage seats coins whenever this array changes,
+  // and a fresh array per phase render would reset them mid-flight.
+  const burnCoins = useMemo(
+    () =>
+      plan
+        ? plan.plan.slots.map(
+            s =>
+              (plan.unspent as {slot: number; amount: number}[]).find(
+                p => p.slot === s,
+              )?.amount ?? 0,
+          )
+        : [],
+    [plan],
+  );
+  const progress = complete ? 1 : stage.station / STATION_COUNT;
+
   return (
     <Wrapper contentContainerStyle={contentStyle}>
       <Animatable.View animation="fadeInDown" duration={500} useNativeDriver>
-        <Title>Charge by Cashu card</Title>
-        <HeroAmount>{satAmount > 0 ? `${satAmount} sats` : '—'}</HeroAmount>
+        <Title>Charge by eCash card</Title>
+        <HeroAmount>{satAmount > 0 ? formatSatAmount(satAmount) : '—'}</HeroAmount>
         <Caption>
           {satAmount > 0
             ? 'Customer pays by tapping their card.'
@@ -297,28 +424,53 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         </Caption>
       </Animatable.View>
 
-      <Animatable.View animation="fadeInUp" duration={500} delay={120} useNativeDriver>
-        <Row>
-          <Label>NFC available</Label>
-          <Value>
-            {supported === null ? 'checking…' : supported ? 'yes' : 'no'}
-          </Value>
-        </Row>
+      <SparkStage
+        state={stage}
+        mode={mode}
+        docked={docked}
+        stalled={stalled}
+        burnCoins={burnCoins}
+        changeSat={plan?.plan.changeSat ?? 0}
+        width={STAGE_WIDTH}
+      />
 
-        {charging && phase && (
-          <Results>
-            <Label>Step</Label>
-            {/* The key re-mounts on every phase change: each step animates
-                in, so the merchant SEES the payment progressing. */}
-            <Animatable.View key={phase} animation="fadeInUp" duration={300} useNativeDriver>
-              <Value>{phase}</Value>
-            </Animatable.View>
-          </Results>
-        )}
-      </Animatable.View>
+      {mode === 'complete' ? (
+        <Animatable.View animation="fadeInUp" duration={300} useNativeDriver>
+          <PhaseTitle paid testID="phase-title">
+            Paid — you can lift the card
+          </PhaseTitle>
+          {settlingLate && <PhaseDetail>Settling with the mint…</PhaseDetail>}
+        </Animatable.View>
+      ) : mode === 'running' && stage.phase ? (
+        // Keyed on seq, not text: a repeated phase still re-enters, so the
+        // merchant SEES each change proof land.
+        <Animatable.View key={stage.seq} animation="fadeInUp" duration={300} useNativeDriver>
+          <PhaseTitle testID="phase-title">{label.title}</PhaseTitle>
+          <PhaseRaw testID="phase-raw">{stage.phase}</PhaseRaw>
+          {!!label.detail && <PhaseDetail testID="phase-detail">{label.detail}</PhaseDetail>}
+        </Animatable.View>
+      ) : mode === 'running' ? (
+        <PhaseDetail>Hold the card against the top of the phone</PhaseDetail>
+      ) : mode === 'idle' && flow !== 'pin' ? (
+        <PhaseDetail>Hold the card against the top of the phone</PhaseDetail>
+      ) : null}
 
-      {flow === 'pin' ? (
-        <Animatable.View animation="fadeInUp" duration={400} useNativeDriver>
+      {mode !== 'idle' && flow !== 'pin' && (
+        <ProgressRail progress={progress} width={STAGE_WIDTH} />
+      )}
+
+      <Row>
+        <Label>NFC available</Label>
+        <Value>
+          {supported === null ? 'checking…' : supported ? 'yes' : 'no'}
+        </Value>
+      </Row>
+
+      {flow === 'pin' && !padGone ? (
+        <Animatable.View
+          animation={padExiting ? 'fadeOutDown' : 'fadeInUp'}
+          duration={padExiting ? PAD_EXIT_MS : 400}
+          useNativeDriver>
           <Results>
             <PadTitle>Enter card PIN</PadTitle>
             <Dots>
@@ -361,18 +513,12 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       ) : (
         <Animatable.View animation="fadeInUp" duration={400} useNativeDriver>
           {charging ? (
-            <PulseRing>
-              <Animatable.View animation="pulse" iterationCount="infinite" useNativeDriver>
-                <Icon name="wifi" size={Math.round(width / 4)} color="#1f2328" />
-              </Animatable.View>
-              <StepText>{phase || 'Waiting for tap…'}</StepText>
-              <TextButton
-                icon="xmark"
-                title="Cancel read"
-                btnStyle={buttonStyle}
-                onPress={onCancel}
-              />
-            </PulseRing>
+            <TextButton
+              icon="xmark"
+              title="Cancel read"
+              btnStyle={buttonStyle}
+              onPress={onCancel}
+            />
           ) : (
             <TextButton
               icon="wifi"
@@ -416,7 +562,7 @@ const Caption = styled.Text`
   font-family: 'Outfit-Regular';
   color: #7a7a8c;
   margin-top: 6px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 `;
 
 const Row = styled.View`
@@ -450,16 +596,27 @@ const HeroAmount = styled.Text`
   margin-top: 8px;
 `;
 
-const PulseRing = styled.View`
-  align-items: center;
-  padding-vertical: 16px;
+const PhaseTitle = styled.Text<{paid?: boolean}>`
+  font-size: 18px;
+  font-family: 'Outfit-SemiBold';
+  color: ${p => (p.paid ? '#007856' : '#1f2328')};
+  margin-top: 4px;
+  text-align: center;
 `;
 
-const StepText = styled.Text`
-  font-size: 15px;
+const PhaseRaw = styled.Text`
+  font-size: 13px;
+  font-family: 'Outfit-Regular';
+  color: #7a7a8c;
+  margin-top: 2px;
+  text-align: center;
+`;
+
+const PhaseDetail = styled.Text`
+  font-size: 13px;
   font-family: 'Outfit-Medium';
   color: #1f2328;
-  margin-top: 10px;
+  margin-top: 4px;
   text-align: center;
 `;
 
