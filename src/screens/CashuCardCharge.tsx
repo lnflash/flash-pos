@@ -108,7 +108,6 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   const [error, setError] = useState<string | null>(null);
   // The money moved: tell the customer to lift the card before settlement.
   const [complete, setComplete] = useState(false);
-  const [settlingLate, setSettlingLate] = useState(false);
   const [padGone, setPadGone] = useState(false);
 
   const chargingRef = useRef(false);
@@ -155,7 +154,6 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     stageRef.current = INITIAL_STAGE;
     setStage(INITIAL_STAGE);
     setComplete(false);
-    setSettlingLate(false);
   }, []);
 
   const finish = useCallback(
@@ -177,29 +175,18 @@ const CashuCardCharge = ({navigation, route}: Props) => {
           alertMessage: 'Finishing the charge — hold the card',
         },
       );
-      // The card is done the moment the session resolves: say so now, and
-      // let settlement (network) run behind the held frame.
+      // The card is done the moment the session resolves: say so now.
       setComplete(true);
-      // The flag flips on the settlement promise itself, so an instant
-      // (offline) settlement never flashes "Settling with the mint…" for a
-      // frame when the hold timer fires.
-      let settled = false;
-      const settlement = (
-        username
-          ? runAutoSettlement(username).catch(() => {})
-          : Promise.resolve()
-      ).then(() => {
-        settled = true;
-      });
-      const burstDone = new Promise<void>(resolve =>
-        setTimeout(() => {
-          if (!settled) {
-            setSettlingLate(true);
-          }
-          resolve();
-        }, LIFT_HOLD_MS),
-      );
-      await Promise.all([burstDone, settlement]);
+      // Settlement is the merchant's business, not the customer's wait: the
+      // drain retries on its own cadence and the banner reports it. Kick it
+      // off and hand over after the paid frame has been on screen long
+      // enough to read. Awaiting it here held the customer on "Settling with
+      // the mint…" for the entire payout melt (field-found 2026-09-30: ~8 s
+      // after the card could already be lifted).
+      if (username) {
+        runAutoSettlement(username).catch(() => {});
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, LIFT_HOLD_MS));
       // Same bookkeeping the lightning path does on payment: history entry,
       // cleared invoice (the QR screen must not resurrect a paid bill), and a
       // stack that lands Back past the invoice.
@@ -439,7 +426,6 @@ const CashuCardCharge = ({navigation, route}: Props) => {
           <PhaseTitle paid testID="phase-title">
             Paid — you can lift the card
           </PhaseTitle>
-          {settlingLate && <PhaseDetail>Settling with the mint…</PhaseDetail>}
         </Animatable.View>
       ) : mode === 'running' && stage.phase ? (
         // Keyed on seq, not text: a repeated phase still re-enters, so the
