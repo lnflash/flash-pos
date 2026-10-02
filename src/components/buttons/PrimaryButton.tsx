@@ -9,10 +9,12 @@ type Props = {
   iconColor?: string;
   textStyle?: TextStyle;
   btnStyle?: ViewStyle;
+  disabled?: boolean;
   onPress: () => void;
 };
 
 const iconStyle = {marginRight: 5};
+const disabledStyle = {opacity: 0.4};
 
 const PrimaryButton: React.FC<Props> = ({
   icon,
@@ -20,9 +22,15 @@ const PrimaryButton: React.FC<Props> = ({
   iconColor = '#fff',
   textStyle,
   btnStyle,
+  disabled = false,
   onPress,
 }) => (
-  <Wrapper style={btnStyle} onPress={onPress} activeOpacity={0.5}>
+  <Wrapper
+    style={disabled ? [btnStyle, disabledStyle] : btnStyle}
+    onPress={onPress}
+    disabled={disabled}
+    accessibilityState={disabled ? {disabled} : undefined}
+    activeOpacity={0.5}>
     {icon && (
       <Icon name={icon} size={20} solid color={iconColor} style={iconStyle} />
     )}

@@ -179,6 +179,14 @@ const Profile = () => {
     navigation.navigate('CashuCardSpend');
   };
 
+  // Registered only under __DEV__ (src/routes/index.tsx) — same gate.
+  const onViewChargePreview = () => {
+    if (!__DEV__) {
+      return;
+    }
+    navigation.navigate('ChargeAnimationPreview');
+  };
+
   return (
     <ScrollWrapper showsVerticalScrollIndicator={false}>
       <PendingSettlementBanner />
@@ -189,6 +197,7 @@ const Profile = () => {
         onViewEventSettings={onViewEventSettings}
         onViewCashuCardDebug={onViewCashuCardDebug}
         onViewCashuCardSpend={onViewCashuCardSpend}
+        onViewChargePreview={onViewChargePreview}
       />
 
       <Security hasPin={hasPin} handlePinActions={handlePinActions} />

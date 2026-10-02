@@ -21,7 +21,7 @@ function run(phases: string[], from: StageState = INITIAL_STAGE): StageState[] {
 }
 
 // These are the exact strings src/services/cashuCharge.ts emits. A wording
-// change there must fail HERE, loudly, rather than silently freezing the bolt.
+// change there must fail HERE, loudly, rather than silently freezing the stage.
 const SESSION = [
   'reading card',
   'verifying PIN',
@@ -63,8 +63,14 @@ describe('mapPhase', () => {
     expect(states.every(s => !s.pinSkipped)).toBe(true);
   });
 
-  it('is monotonic: repeated "reading card" never sends the bolt backwards', () => {
-    const states = run(['reading card', 'reading card', 'reading card', 'verifying PIN', 'reading card']);
+  it('is monotonic: repeated "reading card" never sends the stage backwards', () => {
+    const states = run([
+      'reading card',
+      'reading card',
+      'reading card',
+      'verifying PIN',
+      'reading card',
+    ]);
     expect(states.map(s => s.station)).toEqual([1, 1, 1, 2, 2]);
     expect(states[1].event).toBe('thump');
     expect(states[4].event).toBe('thump');
@@ -91,7 +97,11 @@ describe('mapPhase', () => {
   });
 
   it('treats witness recovery as tidying, never a station', () => {
-    const states = run([...SESSION.slice(0, 7), 're-signing recovered 8 sat', 'reading card']);
+    const states = run([
+      ...SESSION.slice(0, 7),
+      're-signing recovered 8 sat',
+      'reading card',
+    ]);
     const spin = states[7];
     expect(spin.station).toBe(5);
     expect(spin.event).toBe('spin');
@@ -105,7 +115,7 @@ describe('mapPhase', () => {
     expect(unknown.station).toBe(1);
     expect(unknown.event).toBe('thump');
     expect(unknown.phase).toBe('polishing the brass');
-    expect(friendlyLabel(unknown)).toEqual({title: 'polishing the brass', detail: 'step 1 of 5'});
+    expect(friendlyLabel(unknown)).toEqual({title: 'polishing the brass'});
   });
 
   it('keeps every seq even when the string repeats', () => {
@@ -116,19 +126,43 @@ describe('mapPhase', () => {
 });
 
 describe('friendlyLabel', () => {
-  it('puts plain words above the verbatim phase with a step counter', () => {
+  it('puts plain words above the verbatim phase, with no step counter', () => {
     const states = run(SESSION);
-    expect(friendlyLabel(states[0])).toEqual({title: 'Reading the card', detail: 'step 1 of 5'});
-    expect(friendlyLabel(states[1])).toEqual({title: 'Checking the PIN', detail: 'step 2 of 5'});
-    expect(friendlyLabel(states[2])).toEqual({
-      title: 'Paying 16 sat',
-      detail: 'step 3 of 5 · 16 sat · 1 of 2',
+    expect(friendlyLabel(INITIAL_STAGE)).toEqual({
+      title: 'Waiting for the card',
     });
-    expect(friendlyLabel(states[4])).toEqual({title: 'Making your change', detail: 'step 4 of 5'});
-    expect(friendlyLabel(states[6])).toEqual({
-      title: 'Putting change on the card',
-      detail: 'step 5 of 5 · 2 back',
+    expect(friendlyLabel(states[0])).toEqual({title: 'Reading the card'});
+    expect(friendlyLabel(states[1])).toEqual({title: 'Checking the PIN'});
+    expect(friendlyLabel(states[2])).toEqual({
+      title: 'Taking 16 sats off the card',
+    });
+    expect(friendlyLabel(states[3])).toEqual({
+      title: 'Taking another 8 sats off the card',
+    });
+    expect(friendlyLabel(states[4])).toEqual({title: 'Settling with the mint'});
+    expect(friendlyLabel(states[5], {changeSat: 8})).toEqual({
+      title: 'Putting 8 sats on the card',
     });
     expect(friendlyLabel(states[7]).title).toBe('Checking the card');
+  });
+
+  it('never mixes "sat" and "sats" in friendly copy', () => {
+    const [, one] = run(['reading card', 'burning 1 sat (proof 1/1)']);
+    expect(friendlyLabel(one).title).toBe('Taking 1 sat off the card');
+    const [change] = run(['writing change to card']);
+    expect(friendlyLabel(change, {changeSat: 1}).title).toBe(
+      'Putting 1 sat on the card',
+    );
+    // The title is the same for every change proof, so it never swaps
+    // between writes.
+    const writes = run(['writing change to card', 'writing change to card']);
+    expect(friendlyLabel(writes[0], {changeSat: 6})).toEqual(
+      friendlyLabel(writes[1], {changeSat: 6}),
+    );
+  });
+
+  it('falls back to generic change copy before the plan is known', () => {
+    const [change] = run(['writing change to card']);
+    expect(friendlyLabel(change).title).toBe('Putting your change on the card');
   });
 });

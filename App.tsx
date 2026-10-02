@@ -28,6 +28,8 @@ import {FlashcardProvider} from './src/contexts/Flashcard';
 
 // cashu auto-settle
 import CashuAutoSettle from './src/components/cashu/CashuAutoSettle';
+// the card charge's edge-to-edge green (status and gesture bar insets)
+import EdgeTint from './src/components/EdgeTint';
 
 // utils
 import {toastConfig} from './src/utils/toast';
@@ -35,6 +37,7 @@ import {toastConfig} from './src/utils/toast';
 function App(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.container}>
+      <EdgeTint />
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
           <StatusBar
@@ -59,6 +62,10 @@ function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    // The status- and gesture-bar insets show this (Android 15+ draws
+    // edge to edge): white, like the screens, instead of the theme's
+    // #fafafa band — the card charge's green strips sit on top of it.
+    backgroundColor: '#fff',
   },
 });
 

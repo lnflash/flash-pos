@@ -92,3 +92,43 @@ describe('Settings — eCash card dev row', () => {
     expect(queryByText('eCash card (dev)')).toBeNull();
   });
 });
+
+// The charge-animation preview is registered only under __DEV__ (like the
+// card harness), so its row carries the same gate.
+describe('Settings — charge animation preview row', () => {
+  it('renders under __DEV__ and fires its handler', () => {
+    devGlobal.__DEV__ = true;
+    const onViewChargePreview = jest.fn();
+    const {getByText} = render(
+      <Settings
+        onViewRewardSettings={jest.fn()}
+        onViewChargePreview={onViewChargePreview}
+      />,
+    );
+
+    expect(getByText('Replays the card charge without a card')).toBeTruthy();
+    expect(getByText('play-circle-outline')).toBeTruthy();
+    fireEvent.press(getByText('Preview charge animation'));
+    expect(onViewChargePreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('is absent in a release build even when the handler is passed', () => {
+    devGlobal.__DEV__ = false;
+    const {queryByText} = render(
+      <Settings
+        onViewRewardSettings={jest.fn()}
+        onViewChargePreview={jest.fn()}
+      />,
+    );
+
+    expect(queryByText('Preview charge animation')).toBeNull();
+    expect(queryByText('Replays the card charge without a card')).toBeNull();
+  });
+
+  it('is absent when no handler is wired', () => {
+    devGlobal.__DEV__ = true;
+    const {queryByText} = render(<Settings onViewRewardSettings={jest.fn()} />);
+
+    expect(queryByText('Preview charge animation')).toBeNull();
+  });
+});

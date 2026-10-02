@@ -15,6 +15,7 @@ import SupportChat from './SupportChat';
 import CashuCardCharge from './CashuCardCharge';
 import CashuCardDebug from './CashuCardDebug';
 import CashuCardSpend from './CashuCardSpend';
+import ChargeAnimationPreview from './ChargeAnimationPreview';
 
 export {
   Auth,
@@ -34,4 +35,5 @@ export {
   CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
+  ChargeAnimationPreview,
 };

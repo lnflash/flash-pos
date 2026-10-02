@@ -1,10 +1,12 @@
+import {formatSatAmount} from '../../../utils/satCurrency';
+
 /**
  * The phase strings `executeCharge` emits are an informal API: this mapper
- * turns each one into a station on the Spark Run track so the bolt hops on
- * REAL events (never a fake progress bar that could finish before the card
- * write does and tempt the customer to lift the card). Unknown strings map
- * to "no hop, show verbatim" — the animation decorates the phase text, it
- * never replaces it.
+ * turns each one into a station of the charge so the stage moves on REAL
+ * events (never a fake progress bar that could finish before the card write
+ * does and tempt the customer to lift the card). Unknown strings map to "no
+ * gesture, show verbatim" — the animation decorates the phase text, it never
+ * replaces it.
  */
 
 /** 1 card · 2 PIN · 3 pay · 4 mint · 5 change. 0 = nothing sighted yet. */
@@ -38,14 +40,14 @@ export interface StageState {
   phase: string | null;
   station: Station;
   event: StageEvent;
-  /** The card had no PIN: station 2 is flown over and struck through. */
+  /** The card had no PIN: the PIN station never lights. */
   pinSkipped: boolean;
   burn: {amount: number; index: number; total: number} | null;
   burnsDone: number;
   changeWritten: number;
-  /** The trailing balance read — the bolt is already home. */
+  /** The trailing balance read — the money has already moved. */
   finishing: boolean;
-  /** Exact bill: no change is written, station 5 shows a stamp, not rain. */
+  /** Exact bill: no change is written onto the card. */
   exact: boolean;
   /** Witness recovery after the customer's critical path — never an error. */
   tidying: boolean;
@@ -137,45 +139,57 @@ export function mapPhase(prev: StageState, ev: PhaseEvent): StageState {
 }
 
 export interface FriendlyLabel {
-  /** 18 px, the child's line: what is happening in plain words. */
+  /** The status title: what is happening, in plain words. */
   title: string;
-  /** 13 px: "step 3 of 5 · 16 sat · 1 of 2" or the tidying/finishing note. */
-  detail: string;
+}
+
+export interface LabelContext {
+  /** From the plan: the change the card is about to receive. */
+  changeSat?: number;
 }
 
 /**
  * The plain-words layer above the verbatim phase. The raw string stays on
  * screen underneath: it is the trust surface and the number of record.
+ * Sat amounts go through formatSatAmount so friendly copy never mixes
+ * "sat" and "sats".
  */
-export function friendlyLabel(state: StageState): FriendlyLabel {
-  const step = state.station > 0 ? `step ${state.station} of ${STATION_COUNT}` : '';
-  const phase = state.phase ?? '';
+export function friendlyLabel(
+  state: StageState,
+  ctx: LabelContext = {},
+): FriendlyLabel {
+  const phase = state.phase;
+  if (phase === null) {
+    return {title: 'Waiting for the card'};
+  }
   if (state.tidying) {
-    return {title: 'Tidying up', detail: 'tidying up'};
+    return {title: 'Tidying up'};
   }
   if (phase === PHASE_READING) {
-    return state.finishing
-      ? {title: 'Checking the card', detail: step}
-      : {title: 'Reading the card', detail: step};
+    return {title: state.finishing ? 'Checking the card' : 'Reading the card'};
   }
   if (phase === PHASE_PIN) {
-    return {title: 'Checking the PIN', detail: step};
+    return {title: 'Checking the PIN'};
   }
   if (state.event === 'burn' && state.burn) {
-    const {amount, index, total} = state.burn;
+    const {amount, index} = state.burn;
     return {
-      title: `Paying ${amount} sat`,
-      detail: `${step} · ${amount} sat · ${index} of ${total}`,
+      title:
+        index > 1
+          ? `Taking another ${formatSatAmount(amount)} off the card`
+          : `Taking ${formatSatAmount(amount)} off the card`,
     };
   }
   if (phase === PHASE_SETTLING) {
-    return {title: 'Making your change', detail: step};
+    return {title: 'Settling with the mint'};
   }
   if (phase === PHASE_CHANGE) {
     return {
-      title: 'Putting change on the card',
-      detail: `${step} · ${state.changeWritten} back`,
+      title:
+        ctx.changeSat && ctx.changeSat > 0
+          ? `Putting ${formatSatAmount(ctx.changeSat)} on the card`
+          : 'Putting your change on the card',
     };
   }
-  return {title: phase, detail: step};
+  return {title: phase};
 }

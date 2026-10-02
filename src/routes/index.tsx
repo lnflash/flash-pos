@@ -19,6 +19,7 @@ import {
   CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
+  ChargeAnimationPreview,
 } from '../screens';
 
 // hooks
@@ -78,10 +79,15 @@ const Root = () => {
           options={{headerShown: false}}
         />
       )}
+      {/* The card charge hands over on a frame identical to this screen's
+          first one, so that swap must not animate. */}
       <Stack.Screen
         name="Success"
         component={Success}
-        options={{headerShown: false}}
+        options={({route}) => ({
+          headerShown: false,
+          animation: route.params?.handoff ? 'none' : 'default',
+        })}
       />
       {rewardsFeatureEnabled && (
         <Stack.Screen
@@ -156,10 +162,24 @@ const Root = () => {
         name="CashuCardCharge"
         component={CashuCardCharge}
         options={{
-          headerTitle: 'Charge by card',
+          // The screen draws its own header so the finale's green can flood
+          // over it.
+          headerShown: false,
           animation: 'slide_from_right',
         }}
       />
+      {/* DEV ONLY: replays the charge choreography without a card. Same
+          __DEV__ pairing as the Settings row that reaches it. */}
+      {__DEV__ && (
+        <Stack.Screen
+          name="ChargeAnimationPreview"
+          component={ChargeAnimationPreview}
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+          }}
+        />
+      )}
       {/* Cashu card spend harness. Moves money and belongs in dev builds
           only — same __DEV__ pairing as the row that reaches it. */}
       {__DEV__ && (

@@ -32,9 +32,11 @@ jest.mock('../../src/components/profile', () => {
     Settings: ({
       onViewRewardSettings,
       onViewCashuCardDebug,
+      onViewChargePreview,
     }: {
       onViewRewardSettings: () => void;
       onViewCashuCardDebug?: () => void;
+      onViewChargePreview?: () => void;
     }) =>
       MockReact.createElement(
         MockReact.Fragment,
@@ -48,6 +50,11 @@ jest.mock('../../src/components/profile', () => {
           TouchableOpacity,
           {key: 'cashu', onPress: onViewCashuCardDebug},
           MockReact.createElement(Text, null, 'eCash card (dev)'),
+        ),
+        MockReact.createElement(
+          TouchableOpacity,
+          {key: 'preview', onPress: onViewChargePreview},
+          MockReact.createElement(Text, null, 'Preview charge animation'),
         ),
       ),
     Security: () => MockReact.createElement(Text, null, 'Security'),
@@ -137,6 +144,40 @@ describe('Profile Cashu card debug wiring', () => {
     const {getByText} = renderProfile();
 
     fireEvent.press(getByText('eCash card (dev)'));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+// Same three gates for the charge-animation preview: the Settings row, this
+// navigate call, and the __DEV__-only route registration.
+describe('Profile charge preview wiring', () => {
+  const devGlobal = global as unknown as {__DEV__: boolean};
+  const originalDev = devGlobal.__DEV__;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsRewardsEnabled.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    devGlobal.__DEV__ = originalDev;
+  });
+
+  it('navigates to the preview in a dev build', () => {
+    devGlobal.__DEV__ = true;
+    const {getByText} = renderProfile();
+
+    fireEvent.press(getByText('Preview charge animation'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ChargeAnimationPreview');
+  });
+
+  it('does not navigate in a release build', () => {
+    devGlobal.__DEV__ = false;
+    const {getByText} = renderProfile();
+
+    fireEvent.press(getByText('Preview charge animation'));
 
     expect(mockNavigate).not.toHaveBeenCalled();
   });

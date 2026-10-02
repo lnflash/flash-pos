@@ -50,6 +50,7 @@ import {
   type SettlementEntry,
 } from './cashuSettlement';
 import {getSecureStrict, removeSecure, setSecure} from './secureStorage';
+import {splitPow2} from '../utils/denominations';
 
 /** NUT-XX: the mint holds this exact proof already. */
 const TOKEN_ALREADY_SPENT = 11001;
@@ -742,22 +743,6 @@ async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Greedy power-of-two decomposition (4 → [4]; 6 → [4,2]; 7 → [4,2,1]). */
-function splitPow2(amountSat: number): number[] {
-  const pieces: number[] = [];
-  let remaining = amountSat;
-  let denom = 1;
-  while (denom * 2 <= remaining) {denom *= 2;}
-  while (remaining > 0) {
-    if (denom <= remaining) {
-      pieces.push(denom);
-      remaining -= denom;
-    } else {
-      denom = Math.floor(denom / 2);
-    }
-  }
-  return pieces;
-}
 
 /**
  * Mint `changeSat` of change from the till, P2PK-locked to `p2pkPubkey` —

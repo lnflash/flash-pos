@@ -7,7 +7,16 @@ type RootStackType = {
   Paycode: undefined;
   Profile: undefined;
   Invoice: undefined;
-  Success?: {title?: string};
+  // handoff: arrived from the card charge's flood (no animation, badge in
+  // place). amountText: the DEV preview's hand-off proof only — it records
+  // no transaction, so it names the amount itself.
+  Success?: {
+    title?: string;
+    handoff?: boolean;
+    amountText?: string;
+    /** DEV preview's hand-off proof: no NFC, store or printing on Success. */
+    preview?: boolean;
+  };
   RewardsSuccess: RewardsSuccessParams;
   FlashcardBalance: undefined;
   TransactionHistory: undefined;
@@ -31,6 +40,10 @@ type RootStackType = {
   };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
+  // Dev-only route — registered under `__DEV__` in src/routes/index.tsx and
+  // reached only from the `__DEV__` Settings row; guard every call site with
+  // `__DEV__`, since a release build has no such screen.
+  ChargeAnimationPreview: undefined;
 };
 
 // Rewards screen parameters - all optional for backward compatibility

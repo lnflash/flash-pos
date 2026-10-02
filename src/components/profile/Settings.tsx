@@ -12,6 +12,8 @@ type Props = {
   onViewCashuCardDebug?: () => void;
   /** Dev builds only — see the `__DEV__` row below. */
   onViewCashuCardSpend?: () => void;
+  /** Dev builds only — see the `__DEV__` row below. */
+  onViewChargePreview?: () => void;
 };
 
 const Settings: React.FC<Props> = ({
@@ -20,6 +22,7 @@ const Settings: React.FC<Props> = ({
   onViewEventSettings,
   onViewCashuCardDebug,
   onViewCashuCardSpend,
+  onViewChargePreview,
 }) => {
   return (
     <Wrapper>
@@ -63,6 +66,18 @@ const Settings: React.FC<Props> = ({
           <Column>
             <Key>eCash card spend (dev)</Key>
             <Value>Spend a slot into the settlement queue</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+      )}
+      {/* Replays the card-charge choreography with no card (the screen is
+          registered only under __DEV__, like the rows above). */}
+      {__DEV__ && onViewChargePreview && (
+        <Container activeOpacity={0.5} onPress={onViewChargePreview}>
+          <Icon name={'play-circle-outline'} type="ionicon" />
+          <Column>
+            <Key>Preview charge animation</Key>
+            <Value>Replays the card charge without a card</Value>
           </Column>
           <Icon name={'chevron-forward-outline'} type="ionicon" />
         </Container>
