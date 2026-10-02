@@ -176,7 +176,7 @@ export function friendlyLabel(
     return {
       title:
         index > 1
-          ? `Taking another ${formatSatAmount(amount)} off the card`
+          ? `Taking ${formatSatAmount(amount)} more off the card`
           : `Taking ${formatSatAmount(amount)} off the card`,
     };
   }

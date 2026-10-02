@@ -137,7 +137,7 @@ describe('friendlyLabel', () => {
       title: 'Taking 16 sats off the card',
     });
     expect(friendlyLabel(states[3])).toEqual({
-      title: 'Taking another 8 sats off the card',
+      title: 'Taking 8 sats more off the card',
     });
     expect(friendlyLabel(states[4])).toEqual({title: 'Settling with the mint'});
     expect(friendlyLabel(states[5], {changeSat: 8})).toEqual({
