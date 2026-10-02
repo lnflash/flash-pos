@@ -32,13 +32,14 @@ jest.mock('../../../src/components/cashu/charge/ChargeStage', () => {
 });
 
 import ChargeAnimationPreview from '../../../src/screens/ChargeAnimationPreview';
+import {CARD_ART} from '../../../src/components/cashu/charge/cardArtV2';
 import {
   DEFAULT_SCENARIO,
   SCENARIOS,
 } from '../../../src/components/cashu/charge/previewScript';
 
 const svg = require('../../../__mocks__/svgStub');
-const CARD_ART = '0 59 320 202';
+const CARD_VIEWBOX = CARD_ART.viewBox;
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -78,7 +79,7 @@ describe('render budget', () => {
     // One loop of the whole script, finale and reset included: the card
     // hero and its vector art were drawn exactly once.
     expect(mockCounts.card).toBe(1);
-    expect(svg.__svgRenders[CARD_ART]).toBe(1);
+    expect(svg.__svgRenders[CARD_VIEWBOX]).toBe(1);
     unmount();
   });
 
@@ -104,7 +105,7 @@ describe('render budget', () => {
       act(() => {
         jest.advanceTimersByTime(scenario.durationMs + 200);
       });
-      expect([scenario.id, svg.__svgRenders[CARD_ART]]).toEqual([
+      expect([scenario.id, svg.__svgRenders[CARD_VIEWBOX]]).toEqual([
         scenario.id,
         1,
       ]);

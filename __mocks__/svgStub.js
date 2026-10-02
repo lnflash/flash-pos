@@ -4,7 +4,7 @@
  * suites: jest.mock('react-native-svg', () => require('<root>/__mocks__/svgStub')).
  * Every element renders as a host element carrying its props, and each <Svg>
  * render is counted by viewBox so a test can prove the card art (viewBox
- * "0 59 320 202") is drawn once per mount.
+ * "0 0 320 202") is drawn once per mount.
  */
 const React = require('react');
 
@@ -33,11 +33,13 @@ const stub = {
   G: host('RNSVGGroup'),
   Line: host('RNSVGLine'),
   LinearGradient: host('RNSVGLinearGradient'),
+  Mask: host('RNSVGMask'),
   Path: host('RNSVGPath'),
   RadialGradient: host('RNSVGRadialGradient'),
   Rect: host('RNSVGRect'),
   Stop: host('RNSVGStop'),
   Text: host('RNSVGText'),
+  Use: host('RNSVGUse'),
   __svgRenders: renders,
   __resetSvgRenders: () => {
     Object.keys(renders).forEach(key => delete renders[key]);

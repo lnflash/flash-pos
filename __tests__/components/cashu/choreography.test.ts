@@ -838,16 +838,101 @@ describe('the conductor', () => {
     range(0, 160, 1).forEach(ms => {
       t(ms);
       expect(at(n.sheet.translateY)).toBeLessThanOrEqual(24 + 1e-6);
-      expect(at(n.sheet.opacity) + at(n.card.brand)).toBeGreaterThan(0.99);
+      expect(at(n.sheet.opacity) + at(n.status.opacity)).toBeGreaterThan(0.99);
     });
     t(160);
     expect(at(n.sheet.opacity)).toBe(0);
-    expect(at(n.card.brand)).toBe(1);
+    expect(at(n.status.opacity)).toBe(1);
     // The card and ledger grow back as one group over the whole 360 ms.
     t(360);
     expect(at(n.card.scale)).toBe(1);
     expect(at(n.card.translateY)).toBe(0);
     expect(at(n.ledger.translateY)).toBe(0);
+
+    // The hold pill rides the FULL card's top edge: with its copy fully in
+    // (w0), it shows only once the card is nearly full size — never
+    // printed across the small card's chip, ring and arcs.
+    v.holdW0.setValue(1);
+    let shown = false;
+    range(0, 360, 1).forEach(ms => {
+      t(ms);
+      const pill = Math.max(at(n.hold.w0), at(n.hold.surface));
+      if (at(n.card.scale) < 0.95) {
+        expect([ms, pill]).toEqual([ms, 0]);
+      }
+      if (pill > 0) {
+        shown = true;
+        // Its band is where the card's top edge is: within 2 dp.
+        const top =
+          L.card.y +
+          at(n.card.translateY) +
+          (L.card.h / 2) * (1 - at(n.card.scale));
+        expect(Math.abs(top - L.card.y)).toBeLessThan(2);
+      }
+    });
+    expect(shown).toBe(true);
+    t(360);
+    expect(at(n.hold.w0)).toBe(1);
+    expect(at(n.hold.surface)).toBe(1);
+  });
+
+  it('never shows the masked id while the card docks into the PIN pose, and brings it back only once the card is nearly full size', () => {
+    // The tap flow: running with no plan yet; the plan lands WITH the PIN
+    // pose, and the ledger snaps in with it.
+    const v = createValues({mode: 'running', pose: 'run', planKnown: false});
+    const conductor = new Conductor(v, L);
+    conductor.configure(L, false, 1);
+    const base: Snapshot = {
+      mode: 'running',
+      pose: 'run',
+      stage: INITIAL_STAGE,
+      stalled: false,
+      shape: null,
+      planKey: null,
+      pinError: false,
+      pinLength: 0,
+      resetKey: 0,
+      iosSession: false,
+    };
+    conductor.sync(base);
+    const pin: Snapshot = {
+      ...base,
+      mode: 'idle',
+      pose: 'pin',
+      shape: PLAN,
+      planKey: 'p',
+    };
+    conductor.sync(pin);
+    const n = buildNodes(v, L, false);
+    expect(at(v.ledgerIn)).toBe(1);
+    const t = (ms: number) => v.toRun.setValue(ms / DUR.dock);
+    // The dock plays PIN→running time backwards, from 360 down to 0: the
+    // id is gone from its first frame (the dock alone kept it on at full
+    // strength for 200 ms, then faded it).
+    range(0, 360, 1)
+      .reverse()
+      .forEach(ms => {
+        t(ms);
+        expect([ms, at(n.card.last4)]).toEqual([ms, 0]);
+      });
+    // The PIN is accepted: back to running in one commit.
+    conductor.sync({...pin, mode: 'running', pose: 'run'});
+    conductor.dispose();
+    let first = -1;
+    range(0, 360, 1).forEach(ms => {
+      t(ms);
+      const id = at(n.card.last4);
+      if (at(n.card.scale) < 0.9) {
+        expect([ms, id]).toEqual([ms, 0]);
+      }
+      if (id > 0 && first < 0) {
+        first = ms;
+      }
+    });
+    // It comes in over the last third of the move and rests at full.
+    expect(first).toBeGreaterThanOrEqual(240);
+    t(360);
+    expect(at(n.card.last4)).toBe(1);
   });
 
   it('clears the idle copy and buttons in the finale, whatever pose it starts from', () => {

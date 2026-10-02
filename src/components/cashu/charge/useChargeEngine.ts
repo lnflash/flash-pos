@@ -49,6 +49,12 @@ export const SPLIT_ROLL = 120;
 export const GHOST_A = {land: 540, cut: 600};
 /** B's cut (and its one-frame step) must fall inside the split's clock. */
 export const GHOST_B = {land: 576, cut: 636};
+/**
+ * The card's contactless arcs rest at this opacity and pulse 0.35–1 while
+ * the reader waits; the card art scales its arcs so the rest reads as the
+ * printed card's.
+ */
+export const ARC_REST = 0.7;
 /** Half the cap height of a 20 sp chip number: where a falling note touches it. */
 const GLYPH_HALF = 7;
 /** The flood starts as a 60 dp disc hidden under the 64 dp resting badge. */
@@ -147,6 +153,12 @@ export interface Values {
   /** Each hold-pill variant's natural width (dp), measured once at mount. */
   holdWidths: V[];
   idleHelper: V;
+  /**
+   * The masked id belongs to the running card: cut to 0 the moment the pose
+   * turns to PIN, back to 1 when it turns to running (where the dock then
+   * fades it in over the last third of the move).
+   */
+  idOn: V;
   lockIn: V;
   claims: V;
   errOn: V;
@@ -216,6 +228,7 @@ export function createValues(init: InitialState): Values {
     holdStall: v(),
     holdWidths: HOLD_WIDTHS.map(w => v(w)),
     idleHelper: v(idle ? 1 : 0),
+    idOn: v(init.pose === 'pin' ? 0 : 1),
     lockIn: v(),
     claims: v(1),
     errOn: v(),
@@ -317,7 +330,6 @@ export interface Nodes {
     sheenOpacity: Num;
     dim: Num;
     glow: Num;
-    brand: Num;
     last4: Num;
   };
   ornaments: {translateX: Num; translateY: Num; opacity: Num};
@@ -497,7 +509,7 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
       );
   const arcs = [0, 1, 2].map(k => {
     if (rm) {
-      return constant(0.7);
+      return constant(ARC_REST);
     }
     const s = 0.12 * k * A;
     const keys: Key[] = [{t: 0, v: 0.35}];
@@ -507,7 +519,7 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
     keys.push({t: s + 0.12 * A, v: 1, ease: 'OUT'});
     keys.push({t: (0.36 + 0.12 * k) * A, v: 0.35, ease: 'STD'});
     const pulse = kf(v.ambient, keys, A);
-    return add(mul(v.arcsLive, add(pulse, -0.7)), 0.7);
+    return add(mul(v.arcsLive, add(pulse, -ARC_REST)), ARC_REST);
   });
 
   // --- dock (PIN ↔ running) -----------------------------------------------
@@ -525,6 +537,18 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
   // The idle and error buttons sit under the sheet: they show once it is
   // gone. (The running Cancel is above the sheet and ignores this.)
   const actVis = runVis;
+  // What rides the full card — the masked id on its face, the hold pill on
+  // its top edge — comes back only at the end of the move, once the card is
+  // nearly full size (≥ 0.97 at 280, ≥ 0.9 at 240): never printed across
+  // the small card's chip. The id's own presence (idOn) is cut the moment
+  // the pose turns to PIN, so the reverse never flashes it either.
+  const lateKeys = (from: number): Key[] => [
+    {t: 0, v: 0},
+    {t: from, v: 0},
+    {t: 360, v: 1, ease: 'STD'},
+  ];
+  const idVis = mul(v.idOn, dock(lateKeys(240)));
+  const holdDock = dock(lateKeys(280));
   const readVis = dock([
     {t: 0, v: 1},
     {t: 120, v: 0, ease: 'STD'},
@@ -1192,7 +1216,7 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
   // The copy swaps by fade-through (never two pills overprinting); nothing
   // on it moves — the ↑ is static, a stall changes the words only. Its live
   // dot breathes for as long as the card must stay on the phone.
-  const holdFade = mul(fHold, xOut160, runVis);
+  const holdFade = mul(fHold, xOut160, holdDock);
   // A slow settle (DUR.settleHelpLead into it, natively — no timer) moves
   // the pill itself to "Keep holding — almost done": ONE hold instruction on
   // screen, never a second line saying the same. The next phase moves it
@@ -1459,7 +1483,6 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
         F,
       ),
       glow: map(glowSum, [0, 0.9], [0, 0.9]),
-      brand: runVis,
       last4: mul(
         kf(
           v.ledgerIn,
@@ -1469,7 +1492,7 @@ export function buildNodes(v: Values, L: ChargeLayout, rm: boolean): Nodes {
           ],
           DUR.ledgerIn,
         ),
-        runVis,
+        idVis,
       ),
     },
     ornaments: {translateX: shake, translateY: iosY, opacity: rmDockFade},
@@ -1975,6 +1998,9 @@ export class Conductor {
   private onPose(pose: Pose, snap: Snapshot): void {
     if (pose === 'pin') {
       this.dockTo(0);
+      // A cut, not a fade: a plan that lands with the PIN pose snaps the
+      // ledger in, and the id must not show on the card while it docks.
+      snapTo(this.v.idOn, 0);
       this.pres(this.v.holdW0, 0, 160);
       this.pres(this.v.holdKeep, 0, 160);
       this.pres(this.v.holdStall, 0, 160);
@@ -1991,6 +2017,7 @@ export class Conductor {
       }
     } else {
       this.dockTo(1);
+      snapTo(this.v.idOn, 1);
       this.startAmbient();
     }
   }
@@ -2485,6 +2512,7 @@ export class Conductor {
     snapTo(v.dotsGreen, 0);
     [...v.fill, ...v.active, ...v.failed].forEach(value => snapTo(value, 0));
     snapTo(v.toRun, snap.pose === 'pin' ? 0 : 1);
+    snapTo(v.idOn, snap.pose === 'pin' ? 0 : 1);
     this.dock = {
       from: snap.pose === 'pin' ? 0 : 1,
       to: snap.pose === 'pin' ? 0 : 1,

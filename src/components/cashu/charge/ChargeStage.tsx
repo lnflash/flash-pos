@@ -3,6 +3,7 @@ import {Animated, StyleSheet, View} from 'react-native';
 
 import SealCheck from '../../icons/SealCheck';
 import Badges from './Badges';
+import {CARD_ART} from './cardArtV2';
 import EcashCard from './EcashCard';
 import {AMOUNT_H, FINALE_BADGE, type ChargeLayout} from './geometry';
 import HoldPill, {type HoldVariant} from './HoldPill';
@@ -12,7 +13,7 @@ import {failureBody, parseFailure} from './money';
 import {friendlyLabel, type StageState} from './phaseToStation';
 import StatusBlock, {type StatusShown, type StatusTexts} from './StatusBlock';
 import Stepper from './Stepper';
-import {COLOR, DUR, ELEVATION, MAX_FONT_SCALE, RADIUS, TYPE} from './tokens';
+import {CARD, COLOR, DUR, ELEVATION, MAX_FONT_SCALE, TYPE} from './tokens';
 import {
   useChargeEngine,
   type Mode,
@@ -298,6 +299,9 @@ function ChargeStage(props: ChargeStageProps) {
               top: L.card.y,
               width: L.card.w,
               height: L.card.h,
+              // The art's own ISO corner at this size: a fixed radius
+              // would crop the slash's corner or show the base around it.
+              borderRadius: CARD_ART.radius * L.card.k,
               opacity: n.card.opacity,
               transform: [
                 {translateX: n.card.translateX},
@@ -428,9 +432,9 @@ const styles = StyleSheet.create({
   amount: {position: 'absolute', height: AMOUNT_H, textAlign: 'center'},
   card: {
     position: 'absolute',
-    borderRadius: RADIUS.card,
     overflow: 'hidden',
-    backgroundColor: COLOR.ink,
+    // The art's base: anti-aliased corners never fringe another colour.
+    backgroundColor: CARD.base,
     ...ELEVATION.card,
   },
   ornaments: {elevation: 13, zIndex: 13},

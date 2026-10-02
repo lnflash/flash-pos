@@ -1,169 +1,48 @@
 import React from 'react';
-import {Animated, StyleSheet} from 'react-native';
+import {Animated, StyleSheet, Text, type TextStyle} from 'react-native';
 import Svg, {
   Defs,
   G,
   LinearGradient,
+  Mask,
   Path,
-  RadialGradient,
   Rect,
   Stop,
 } from 'react-native-svg';
 
-import {ART_H, ART_W, type ChargeLayout} from './geometry';
-import {COLOR, MAX_FONT_SCALE, TYPE} from './tokens';
-import type {Nodes} from './useChargeEngine';
-
-/**
- * The Flash bolt, as vector: the brand's own on-dark artwork (Flashy's
- * flash-bolt-on-dark.svg, viewBox 0 0 236.5 366) with only its green offset
- * and yellow face. logo.png carries a black offset layer that reads as a
- * black sticker keyline on the dark card, and the on-dark file's white back
- * layer reads as a white one; the green offset alone is the mark on dark.
- * Vector, so it is drawn inside the card's one <Svg>: crisp at any density
- * and never a late-decoding Image.
- */
-const BOLT_GREEN =
-  'M103,355c-11.8-3.1-21.4-11.1-26.8-22-5.1-10.1-6-22.6-1.5-33.1l15.3-33,17.8-37.6c.3-.7-.1-1.6-.4-2.1s-1-.9-1.9-.9h-40.8c-9,0-17.4-2.6-24.7-7.9-5-3.6-9.1-8.1-12.3-13.4-5.6-9.4-7.3-21.3-4.3-31.8l4.3-14.8L59.7,46.4c4.3-20.8,21.7-34.8,42.9-34.2,14.7.4,28.3,8.2,35.6,21,5.7,10,6.7,21.9,3.5,32.9l-6.6,22.7-15.4,51.9c-.2.8-.3,1.5.2,2.1s1,1.1,1.9,1.1h53.6c5.7,0,11,1.7,16,4,13.5,6.2,22.4,19.3,23.8,34,.8,8.4-.9,16.3-4.6,23.7l-8.2,17.8-50.5,108.9c-8.4,18.2-29.3,27.9-48.8,22.7Z';
-const BOLT_YELLOW =
-  'M124.1,342.8c-11.8-3.1-21.4-11.1-26.8-22-5.1-10.1-6-22.6-1.5-33.1l15.3-33,17.8-37.6c.3-.7-.1-1.6-.4-2.1s-1-.9-1.9-.9h-40.8c-9,0-17.4-2.6-24.7-7.9-5-3.6-9.1-8.1-12.3-13.4-5.6-9.4-7.3-21.3-4.3-31.8l4.3-14.8,32.1-112C85.2,13.5,102.6-.5,123.8,0c14.7.4,28.3,8.2,35.6,21,5.7,10,6.7,21.9,3.5,32.9l-6.6,22.7-15.4,51.9c-.2.8-.3,1.5.2,2.1s1,1.1,1.9,1.1h53.6c5.7,0,11,1.7,16,4,13.5,6.2,22.4,19.3,23.8,34,.8,8.4-.9,16.3-4.6,23.7l-8.2,17.8-50.5,108.9c-8.4,18.2-29.3,27.9-48.8,22.7Z';
-/** Ink of the two layers in bolt units (measured): x 21.9–236.5, y 0–356.4. */
-const BOLT_INK = {x: 21.9, w: 214.6, h: 356.4};
-/** The mark's ink: 32 artboard units tall, its left edge on the card's x = 20. */
-const BOLT_SCALE = 32 / BOLT_INK.h;
-export const BOLT_INK_W = BOLT_INK.w * BOLT_SCALE;
-const BOLT_X = 20 - BOLT_INK.x * BOLT_SCALE;
-/** Artboard y of the logo row's top: 20 units under the card's top edge (59). */
-const BOLT_Y = 79;
+import {CARD_ART, CardArtV2} from './cardArtV2';
+import type {ChargeLayout} from './geometry';
+import {CARD, COLOR, TYPE} from './tokens';
+import {ARC_REST, type Nodes} from './useChargeEngine';
 
 /**
  * The customer's eCash card — the visual twin of the one held behind the
- * top of the phone. One <Svg> for the art (never a nested <Svg x y>: Android
- * ignores the offset), React Native children for the logo and text, and
- * three overlays inside the card's clip: the sheen, the change glow and the
- * finale dim. Mounted once; nothing in here re-renders during a charge.
+ * top of the phone: Flash Card v2 "Bearer", drawn by the shared card art
+ * (one <Svg>, drawn once). On top of it, inside the card's clip, only what
+ * the charge animates: the chip-side contactless arcs, the masked id, the
+ * sheen, the change glow and the finale dim. Mounted once; nothing in here
+ * re-renders during a charge.
  */
 
-/** Etched streamlines: something for the sheen to rake, at zero runtime. */
-const STREAMLINES = Array.from({length: 8}, (_, k) => {
-  const o = 20 * k;
-  return `M -10 ${153 + o} C 60 ${103 + o}, 120 ${203 + o}, 190 ${
-    133 + o
-  } C 260 ${63 + o}, 290 ${63 + o}, 332 ${113 + o}`;
-}).join(' ');
+const ARC = CARD_ART.chipArcs;
+const ARC_BOX = `${ARC.box.x} ${ARC.box.y} ${ARC.box.w} ${ARC.box.h}`;
+/**
+ * Each arc node rests at ARC_REST and pulses up to 1: this peak makes the
+ * resting arc read exactly the printed card's 60 %.
+ */
+const ARC_PEAK = ARC.restOpacity / ARC_REST;
 
-export const CardArt = React.memo(
-  ({width, height}: {width: number; height: number}) => (
-    <Svg width={width} height={height} viewBox={`0 59 ${ART_W} ${ART_H}`}>
-      <Defs>
-        <LinearGradient
-          id="cardBase"
-          gradientUnits="userSpaceOnUse"
-          x1="0"
-          y1="59"
-          x2="320"
-          y2="261">
-          <Stop offset="0" stopColor={COLOR.cardTop} />
-          <Stop offset="1" stopColor={COLOR.cardBottom} />
-        </LinearGradient>
-        <RadialGradient
-          id="cardHi"
-          gradientUnits="userSpaceOnUse"
-          cx="56"
-          cy="67"
-          fx="56"
-          fy="67"
-          r="250">
-          <Stop offset="0" stopColor="#ffffff" stopOpacity={0.1} />
-          <Stop offset="0.55" stopColor="#ffffff" stopOpacity={0.03} />
-          <Stop offset="1" stopColor="#ffffff" stopOpacity={0} />
-        </RadialGradient>
-        <LinearGradient
-          id="cardGold"
-          gradientUnits="userSpaceOnUse"
-          x1="20"
-          y1="131.5"
-          x2="61"
-          y2="162.5">
-          <Stop offset="0" stopColor={COLOR.chipGoldA} />
-          <Stop offset="1" stopColor={COLOR.chipGoldB} />
-        </LinearGradient>
-      </Defs>
-      <Rect
-        x="0"
-        y="59"
-        width="320"
-        height="202"
-        rx="16.25"
-        fill="url(#cardBase)"
-      />
-      <Path
-        d={STREAMLINES}
-        stroke="#ffffff"
-        strokeOpacity={0.05}
-        strokeWidth={0.8}
-        fill="none"
-      />
-      <Rect
-        x="0"
-        y="59"
-        width="320"
-        height="202"
-        rx="16.25"
-        fill="url(#cardHi)"
-      />
-      <Rect
-        x="0.5"
-        y="59.5"
-        width="319"
-        height="201"
-        rx="15.75"
-        fill="none"
-        stroke="#ffffff"
-        strokeOpacity={0.08}
-        strokeWidth={1}
-      />
-      <G>
-        <Rect
-          x="20"
-          y="131.5"
-          width="41"
-          height="31"
-          rx="6"
-          fill="url(#cardGold)"
-          stroke={COLOR.chipEdge}
-          strokeOpacity={0.35}
-          strokeWidth={0.75}
-        />
-        <Path
-          d="M33.67 131.5V162.5 M47.33 131.5V162.5 M20 141.83H33.67 M47.33 141.83H61 M20 152.17H33.67 M47.33 152.17H61"
-          stroke={COLOR.chipLine}
-          strokeOpacity={0.55}
-          strokeWidth={0.9}
-          fill="none"
-        />
-      </G>
-      <G
-        transform={`translate(${BOLT_X} ${BOLT_Y}) scale(${BOLT_SCALE})`}>
-        <Path d={BOLT_GREEN} fill={COLOR.boltGreen} />
-        <Path d={BOLT_YELLOW} fill={COLOR.boltYellow} />
-      </G>
-    </Svg>
-  ),
-);
-
-const ARC_PATHS = [
-  'M282.95 90.05A7 7 0 0 1 282.95 99.95',
-  'M287.19 85.81A13 13 0 0 1 287.19 104.19',
-  'M291.43 81.57A19 19 0 0 1 291.43 108.43',
-];
-
-const Arc = React.memo(({d, w, h}: {d: string; w: number; h: number}) => (
-  <Svg width={w} height={h} viewBox="276 75 24 40">
+/**
+ * Every <Svg> here fills a sized parent: react-native-svg truncates a
+ * numeric width or height to whole dp, which shrank the arcs by up to 6 %.
+ */
+const Arc = React.memo(({d}: {d: string}) => (
+  <Svg width="100%" height="100%" viewBox={ARC_BOX}>
     <Path
       d={d}
-      stroke="#ffffff"
-      strokeWidth={2}
+      stroke={CARD.orange}
+      strokeWidth={ARC.width}
+      strokeOpacity={ARC_PEAK}
       strokeLinecap="round"
       fill="none"
     />
@@ -172,53 +51,78 @@ const Arc = React.memo(({d, w, h}: {d: string; w: number; h: number}) => (
 
 const SHEEN_W = 70;
 const GLOW_H = 14;
+/** The glow fades in over this many dp from the slash's tip. */
+const GLOW_FADE = 16;
 
-const SheenArt = React.memo(({height}: {height: number}) => (
-  <Svg width={SHEEN_W} height={height}>
+/** A soft raking light: the card is matte, so never a gloss streak. */
+const SheenArt = React.memo(() => (
+  <Svg width="100%" height="100%">
     <Defs>
       <LinearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
         <Stop offset="0" stopColor="#ffffff" stopOpacity={0} />
-        <Stop offset="0.5" stopColor="#ffffff" stopOpacity={0.16} />
+        <Stop offset="0.5" stopColor="#ffffff" stopOpacity={0.08} />
         <Stop offset="1" stopColor="#ffffff" stopOpacity={0} />
       </LinearGradient>
     </Defs>
-    <Rect x="0" y="0" width={SHEEN_W} height={height} fill="url(#sheen)" />
+    <Rect x="0" y="0" width="100%" height="100%" fill="url(#sheen)" />
   </Svg>
 ));
 
-const GlowArt = React.memo(({width}: {width: number}) => (
-  <Svg width={width} height={GLOW_H}>
+/**
+ * The change slip's light: an app signal, so app green, never card art. It
+ * starts at the slash's tip and fades in over GLOW_FADE, so the green never
+ * mixes with the card's orange (over the slash it read olive). The fade is a
+ * mask, drawn once into the glow's bitmap with the rest of it.
+ */
+const GlowArt = React.memo(() => (
+  <Svg width="100%" height="100%">
     <Defs>
       <LinearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
         <Stop offset="0" stopColor={COLOR.green} stopOpacity={0} />
         <Stop offset="1" stopColor={COLOR.green} stopOpacity={0.35} />
       </LinearGradient>
+      <LinearGradient
+        id="glowIn"
+        gradientUnits="userSpaceOnUse"
+        x1={0}
+        y1={0}
+        x2={GLOW_FADE}
+        y2={0}>
+        <Stop offset="0" stopColor="#ffffff" stopOpacity={0} />
+        <Stop offset="1" stopColor="#ffffff" stopOpacity={1} />
+      </LinearGradient>
+      <Mask id="glowMask">
+        <Rect x="0" y="0" width="100%" height="100%" fill="url(#glowIn)" />
+      </Mask>
     </Defs>
-    <Rect x="0" y="0" width={width} height="12" fill="url(#glow)" />
-    <Rect x="0" y="12" width={width} height="2" fill={COLOR.green} />
+    <G mask="url(#glowMask)">
+      <Rect x="0" y="0" width="100%" height="12" fill="url(#glow)" />
+      <Rect x="0" y="12" width="100%" height="2" fill={COLOR.green} />
+    </G>
   </Svg>
 ));
 
-const Last4 = React.memo(
-  ({
-    text,
-    opacity,
-    left,
-    top,
-  }: {
-    text: string;
-    opacity: Animated.AnimatedInterpolation<number> | Animated.Value;
-    left: number;
-    top: number;
-  }) => (
-    <Animated.Text
-      style={[TYPE.cardLast4, styles.abs, {left, top, opacity}]}
-      maxFontSizeMultiplier={MAX_FONT_SCALE}
-      numberOfLines={1}>
-      {text}
-    </Animated.Text>
-  ),
-);
+/**
+ * The masked id sits in the physical card's empty top-right slot as part of
+ * the card: it scales with it (TYPE.cardId is its size at k = 1) and never
+ * with the font scale, so at every size it stays quieter than FLASH (its cap
+ * is ~0.78 of FLASH's) instead of reading as a printed card number. Its ink
+ * ends on FLASH's right edge (Android sets no trailing letter-space) and its
+ * row is centred on the chip's mid-line. The card's accessibilityLabel
+ * carries the id for screen readers.
+ */
+const CHIP_MID = CARD_ART.plate.y + CARD_ART.plate.h / 2;
+const ID_ROW = 28;
+
+export function cardIdStyle(k: number): TextStyle {
+  const {fontSize = 12, lineHeight = 16, letterSpacing = 0} = TYPE.cardId;
+  return {
+    ...TYPE.cardId,
+    fontSize: fontSize * k,
+    lineHeight: lineHeight * k,
+    letterSpacing: letterSpacing * k,
+  };
+}
 
 export interface EcashCardProps {
   layout: ChargeLayout;
@@ -228,48 +132,46 @@ export interface EcashCardProps {
 
 function EcashCard({layout, n, last4}: EcashCardProps) {
   const {w, h, k} = layout.card;
-  const edge = 20 * k;
-  // The wordmark sits 10 dp right of the bolt's ink, centred on its row.
-  const brandLeft = (20 + BOLT_INK_W) * k + 10;
-  const rowMid = (BOLT_Y - 59 + 16) * k;
-  const arcW = 24 * k;
-  const arcH = 40 * k;
+  const box = {
+    left: ARC.box.x * k,
+    top: ARC.box.y * k,
+    width: ARC.box.w * k,
+    height: ARC.box.h * k,
+  };
+  const idStyle = React.useMemo(() => cardIdStyle(k), [k]);
+  const glowLeft = CARD_ART.slash.tipX * k;
   return (
     <>
-      <CardArt width={w} height={h} />
-      <Animated.Text
-        style={[
-          TYPE.cardBrand,
-          styles.abs,
-          {left: brandLeft, top: rowMid - 10, opacity: n.brand},
-        ]}
-        maxFontSizeMultiplier={MAX_FONT_SCALE}
-        numberOfLines={1}>
-        eCash
-      </Animated.Text>
-      <Last4
-        text={last4 ? `•••• ${last4}` : ''}
-        opacity={n.last4}
-        left={edge}
-        top={h - 18 * k - 18}
-      />
-      {ARC_PATHS.map((d, i) => (
+      <CardArtV2 staticArcs={false} />
+      {ARC.d.map((d, i) => (
         <Animated.View
           key={d}
           testID={`card-arc-${i}`}
-          style={[
-            styles.abs,
-            {
-              left: 276 * k,
-              top: 16 * k,
-              width: arcW,
-              height: arcH,
-              opacity: n.arcs[i],
-            },
-          ]}>
-          <Arc d={d} w={arcW} h={arcH} />
+          style={[styles.abs, box, {opacity: n.arcs[i]}]}>
+          <Arc d={d} />
         </Animated.View>
       ))}
+      <Animated.View
+        testID="card-id-row"
+        pointerEvents="none"
+        style={[
+          styles.abs,
+          styles.idRow,
+          {
+            right: (CARD_ART.width - CARD_ART.flash.inkRight) * k,
+            top: (CHIP_MID - ID_ROW / 2) * k,
+            height: ID_ROW * k,
+            opacity: n.last4,
+          },
+        ]}>
+        <Text
+          testID="card-id"
+          style={idStyle}
+          maxFontSizeMultiplier={1}
+          numberOfLines={1}>
+          {last4 ? `•••• ${last4}` : ''}
+        </Text>
+      </Animated.View>
       <Animated.View
         pointerEvents="none"
         style={[
@@ -282,12 +184,17 @@ function EcashCard({layout, n, last4}: EcashCardProps) {
             transform: [{translateX: n.sheenX}, {rotate: '18deg'}],
           },
         ]}>
-        <SheenArt height={2 * h} />
+        <SheenArt />
       </Animated.View>
       <Animated.View
+        testID="card-glow"
         pointerEvents="none"
-        style={[styles.abs, styles.glow, {width: w, opacity: n.glow}]}>
-        <GlowArt width={w} />
+        style={[
+          styles.abs,
+          styles.glow,
+          {left: glowLeft, width: w - glowLeft, opacity: n.glow},
+        ]}>
+        <GlowArt />
       </Animated.View>
       <Animated.View
         pointerEvents="none"
@@ -301,8 +208,9 @@ const styles = StyleSheet.create({
   abs: {position: 'absolute'},
   /** 70 dp band, centred on x = 0 before its translateX. */
   sheen: {left: -SHEEN_W / 2, width: SHEEN_W},
-  glow: {left: 0, bottom: 0, height: GLOW_H},
-  dim: {backgroundColor: COLOR.ink},
+  glow: {bottom: 0, height: GLOW_H},
+  idRow: {justifyContent: 'center'},
+  dim: {backgroundColor: CARD.dim},
 });
 
 export default React.memo(EcashCard);

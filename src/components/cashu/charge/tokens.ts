@@ -1,12 +1,12 @@
 import {Platform, type TextStyle, type ViewStyle} from 'react-native';
 
 /**
- * The charge screen's visual system. One accent (brand green), one ink, one
- * gold (the EMV chip only) and red for errors only — the screen reads as a
- * receipt being written, not a game.
+ * The charge screen's visual system. One accent (brand green), one ink and
+ * red for errors only — the screen reads as a receipt being written, not a
+ * game. The customer's card is the one object in its own colours (CARD).
  */
 export const COLOR = {
-  /** All primary text, the amount, the card base, the FROM-filled chip. */
+  /** All primary text, the amount, the FROM-filled chip. */
   ink: '#002118',
   /** The ONLY positive colour: progress, paid, the check, the flood. */
   green: '#007856',
@@ -32,18 +32,34 @@ export const COLOR = {
    */
   red: '#db254e',
   noteBorder: '#dfe3e8',
-  cardTop: '#0a3d2e',
-  cardBottom: '#002118',
-  chipGoldA: '#e9d8a6',
-  chipGoldB: '#b89a5c',
-  chipLine: '#8d7340',
-  chipEdge: '#7a6334',
-  /** The Flash bolt on the card (the brand artwork's own two fills). */
-  boltGreen: '#3ab54a',
-  boltYellow: '#fff204',
   white: '#ffffff',
-  white72: 'rgba(255,255,255,0.72)',
   slipBorder: 'rgba(0,120,86,0.24)',
+} as const;
+
+/**
+ * The eCash card: Flash Card v2 "Bearer" — matte near-black, one Bitcoin
+ * orange accent, a satin-gold chip, and no green (Flash green is the app's).
+ * The face itself is drawn by cardArtV2.tsx, which is shared byte-for-byte
+ * with flash-mobile and owns these values (a test pins this copy to it);
+ * the stage uses them for the card's container, overlays and finale dim.
+ */
+export const CARD = {
+  base: '#080a0d',
+  orange: '#f97316',
+  goldShadow: '#805711',
+  goldLow: '#a88232',
+  goldLight: '#bc933a',
+  goldMid: '#b6862f',
+  goldDark: '#a5761c',
+  chipLine: '#8a6524',
+  lift: '#d8b8ff',
+  watermark: '#f5c96b',
+  nfcGrey: '#8b8f96',
+  /** The masked id: 60 % white, visibly quieter than the FLASH wordmark. */
+  id: 'rgba(255,255,255,0.6)',
+  /** The finale dim recedes to black, never to teal. */
+  dim: '#000000',
+  shadow: '#000000',
 } as const;
 
 /** Every Text on the stage: no font padding, centred, capped scaling. */
@@ -126,20 +142,15 @@ export const TYPE = {
     lineHeight: 18,
     color: COLOR.ink,
   },
-  cardBrand: {
-    ...base,
-    fontFamily: 'Outfit-SemiBold',
-    fontSize: 17,
-    lineHeight: 20,
-    color: COLOR.white,
-  },
-  cardLast4: {
+  /** The masked id on the card face, "•••• 0C67": never a printed number. */
+  cardId: {
     ...base,
     fontFamily: 'Outfit-Medium',
-    fontSize: 14,
-    lineHeight: 18,
-    letterSpacing: 2,
-    color: COLOR.white72,
+    fontSize: 12,
+    lineHeight: 16,
+    letterSpacing: 1.5,
+    color: CARD.id,
+    textAlign: 'right' as const,
   },
   header: {
     ...base,
@@ -189,7 +200,6 @@ export const SPACE = {
 } as const;
 
 export const RADIUS = {
-  card: 16,
   chip: 14,
   note: 7,
   sheet: 24,
@@ -200,11 +210,12 @@ export const RADIUS = {
 function elevation(
   android: number,
   ios: {opacity: number; radius: number; y: number},
+  shadowColor: string = COLOR.ink,
 ): ViewStyle {
   return Platform.OS === 'android'
-    ? {elevation: android, shadowColor: COLOR.ink}
+    ? {elevation: android, shadowColor}
     : {
-        shadowColor: COLOR.ink,
+        shadowColor,
         shadowOpacity: ios.opacity,
         shadowRadius: ios.radius,
         shadowOffset: {width: 0, height: ios.y},
@@ -212,7 +223,8 @@ function elevation(
 }
 
 export const ELEVATION = {
-  card: elevation(12, {opacity: 0.22, radius: 18, y: 12}),
+  /** A neutral shadow under the near-black card (ink's is teal-tinted). */
+  card: elevation(12, {opacity: 0.22, radius: 18, y: 12}, CARD.shadow),
   sheet: elevation(16, {opacity: 0.12, radius: 16, y: -4}),
   badge: elevation(6, {opacity: 0.16, radius: 8, y: 3}),
   hold: elevation(3, {opacity: 0.1, radius: 6, y: 2}),
