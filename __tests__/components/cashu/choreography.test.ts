@@ -790,6 +790,66 @@ describe('the conductor', () => {
     conductor.dispose();
   });
 
+  it('re-enters running from the PIN pose with Cancel on the first frame and every motion overlapping — the sheet, the group and the copy never queue', () => {
+    const v = createValues({mode: 'idle', pose: 'pin', planKnown: true});
+    const conductor = new Conductor(v, L);
+    conductor.configure(L, false, 1);
+    const base: Snapshot = {
+      mode: 'idle',
+      pose: 'pin',
+      stage: INITIAL_STAGE,
+      stalled: false,
+      shape: PLAN,
+      planKey: 'p',
+      pinError: false,
+      pinLength: 4,
+      resetKey: 0,
+      iosSession: false,
+    };
+    conductor.sync(base);
+    // The PIN is accepted: pose and mode change in one commit.
+    conductor.sync({...base, mode: 'running', pose: 'run'});
+    const n = buildNodes(v, L, false);
+    // Cancel ignores the sheet-gated actions fader: it is drawn above the
+    // sheet and is full on the first running frame, with toRun still at 0.
+    expect(at(v.toRun)).toBe(0);
+    expect(at(n.actions.run)).toBe(1);
+    conductor.dispose();
+
+    // The dock, swept in PIN→running time (toRun × 360 ms).
+    const t = (ms: number) => v.toRun.setValue(ms / DUR.dock);
+    t(0);
+    const pinScale = at(n.card.scale);
+    const pinCardY = at(n.card.translateY);
+    const pinLedgerY = at(n.ledger.translateY);
+    expect(pinScale).toBeLessThan(1);
+    // Everything starts on the first frame of the move: nothing waits for
+    // the sheet to be gone.
+    t(20);
+    expect(at(n.sheet.opacity)).toBeLessThan(1);
+    expect(at(n.card.scale)).toBeGreaterThan(pinScale);
+    expect(Math.abs(at(n.card.translateY))).toBeLessThan(Math.abs(pinCardY));
+    expect(Math.abs(at(n.ledger.translateY))).toBeLessThan(
+      Math.abs(pinLedgerY),
+    );
+    // The sheet fades out where it is (≤ 24 dp drop) by 160 ms while the
+    // running copy comes in on the same curve: the two cross, they never
+    // leave a gap between them.
+    range(0, 160, 1).forEach(ms => {
+      t(ms);
+      expect(at(n.sheet.translateY)).toBeLessThanOrEqual(24 + 1e-6);
+      expect(at(n.sheet.opacity) + at(n.card.brand)).toBeGreaterThan(0.99);
+    });
+    t(160);
+    expect(at(n.sheet.opacity)).toBe(0);
+    expect(at(n.card.brand)).toBe(1);
+    // The card and ledger grow back as one group over the whole 360 ms.
+    t(360);
+    expect(at(n.card.scale)).toBe(1);
+    expect(at(n.card.translateY)).toBe(0);
+    expect(at(n.ledger.translateY)).toBe(0);
+  });
+
   it('clears the idle copy and buttons in the finale, whatever pose it starts from', () => {
     const v = createValues({mode: 'idle', pose: 'run', planKnown: true});
     const conductor = new Conductor(v, L);
