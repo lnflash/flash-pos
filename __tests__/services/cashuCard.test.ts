@@ -203,7 +203,13 @@ describe('describeStatusWord', () => {
   it.each([
     [0x9000, 'OK'],
     [0x6982, 'PIN required'],
-    [0x6983, 'card locked'],
+    [0x6983, 'PIN blocked'],
+    [0x6984, 'no PIN set'],
+    // VERIFY's 63Cx: the low nibble is the tries left (field-found 2026-10-02
+    // as a bare "unexpected status word (0x63C2)" on the PIN sheet).
+    [0x63c2, 'wrong PIN — 2 tries left'],
+    [0x63c1, 'wrong PIN — 1 try left'],
+    [0x63c0, 'wrong PIN — no tries left'],
     [0x6a82, 'applet not found'],
     [0x6e00, 'wrong CLA'],
     // The status words the money-moving commands actually return.

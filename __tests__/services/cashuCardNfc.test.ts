@@ -303,7 +303,7 @@ describe('isCardReadingSupported', () => {
 describe('describeCardFailure', () => {
   it('surfaces the card status word', () => {
     expect(describeCardFailure(new CardError(0x6983, 'SPEND_PROOF'))).toContain(
-      'card locked',
+      'PIN blocked',
     );
   });
 

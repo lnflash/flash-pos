@@ -77,13 +77,26 @@ const hex16 = (n: number) => n.toString(16).toUpperCase().padStart(4, '0');
  * is close to useless in a merchant-facing log — name the ones we can.
  */
 export function describeStatusWord(sw: number): string {
+  // ISO 7816 VERIFY: 63Cx carries the tries remaining in the low nibble.
+  // A merchant reading "unexpected status word (0x63C2)" over the customer's
+  // shoulder learned nothing (field-found 2026-10-02); the applet has no PUK
+  // yet, so the count is the one thing worth saying.
+  if ((sw & 0xfff0) === 0x63c0) {
+    const tries = sw & 0x000f;
+    if (tries === 0) {
+      return 'wrong PIN — no tries left';
+    }
+    return `wrong PIN — ${tries} ${tries === 1 ? 'try' : 'tries'} left`;
+  }
   switch (sw) {
     case 0x9000:
       return 'OK';
     case 0x6982:
       return 'PIN required';
     case 0x6983:
-      return 'card locked';
+      return 'PIN blocked';
+    case 0x6984:
+      return 'no PIN set';
     case 0x6a82:
       return 'applet not found';
     case 0x6985:

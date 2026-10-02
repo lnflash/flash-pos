@@ -298,7 +298,7 @@ describe('CashuCardDebug results', () => {
     const {getByText, queryByText} = await renderScreen();
     fireEvent.press(getByText('Read card'));
 
-    await waitFor(() => expect(getByText(/card locked/)).toBeTruthy());
+    await waitFor(() => expect(getByText(/PIN blocked/)).toBeTruthy());
     expect(queryByText('Waiting for tap…')).toBeNull();
     expect(getByText('Read card')).toBeTruthy();
   });

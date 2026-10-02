@@ -81,3 +81,24 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
 
 /** Phases from which money may have left the card. */
 const MONEY_PHASE = /^(burning|settling|writing|re-signing)/i;
+
+/**
+ * The PIN sheet's error line. The raw failure is
+ * "VERIFY_PIN failed: wrong PIN — 2 tries left": the APDU name is noise to
+ * the customer and the line has room for one sentence, so keep the part
+ * that tells them what to do. Anything that is not a PIN verdict passes
+ * through unchanged.
+ */
+export function pinFailureText(detail: string): string {
+  const tries = /wrong PIN — (\d+) (try|tries) left/i.exec(detail);
+  if (tries) {
+    return `Wrong PIN — ${tries[1]} ${tries[2]} left. Try again.`;
+  }
+  if (/wrong PIN — no tries left|PIN blocked/i.test(detail)) {
+    return 'PIN blocked — this card can no longer be charged.';
+  }
+  if (/no PIN set/i.test(detail)) {
+    return 'This card has no PIN. Tap again without one.';
+  }
+  return detail.replace(/^VERIFY_PIN failed: /, '');
+}

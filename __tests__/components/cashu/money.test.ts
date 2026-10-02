@@ -2,6 +2,7 @@ import {
   changePieces,
   last4FromPubkey,
   parseFailure,
+  pinFailureText,
   runningTotals,
 } from '../../../src/components/cashu/charge/money';
 import {splitPow2} from '../../../src/utils/denominations';
@@ -113,5 +114,26 @@ describe('parseFailure', () => {
       tagLost: true,
     });
     expect(parseFailure(null).tagLost).toBe(true);
+  });
+});
+
+describe('pinFailureText', () => {
+  it('turns the card\'s tries-left verdict into one instruction', () => {
+    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — 2 tries left')).toBe(
+      'Wrong PIN — 2 tries left. Try again.',
+    );
+    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — 1 try left')).toBe(
+      'Wrong PIN — 1 try left. Try again.',
+    );
+  });
+
+  it('says plainly when the PIN is blocked', () => {
+    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — no tries left')).toMatch(/PIN blocked/);
+    expect(pinFailureText('VERIFY_PIN failed: PIN blocked')).toMatch(/PIN blocked/);
+  });
+
+  it('drops the APDU name and leaves anything else alone', () => {
+    expect(pinFailureText('VERIFY_PIN failed: wrong length')).toBe('wrong length');
+    expect(pinFailureText('Tag was lost.')).toBe('Tag was lost.');
   });
 });

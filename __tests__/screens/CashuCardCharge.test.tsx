@@ -487,7 +487,7 @@ describe('CashuCardCharge', () => {
     await act(async () => {
       jest.advanceTimersByTime(700);
     });
-    expect(getByText('wrong PIN — 2 tries left', visible)).toBeTruthy();
+    expect(getByText('Wrong PIN — 2 tries left. Try again.', visible)).toBeTruthy();
     expect(getByText('Enter the card PIN', visible)).toBeTruthy();
     await act(async () => {
       jest.advanceTimersByTime(5000);

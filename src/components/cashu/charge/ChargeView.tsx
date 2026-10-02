@@ -24,7 +24,7 @@ import PrimaryButton from '../../buttons/PrimaryButton';
 import ChargeStage from './ChargeStage';
 import {chargeLayout, HEADER_H, type Frame} from './geometry';
 import {BackArrow} from './icons';
-import {changePieces, parseFailure, runningTotals} from './money';
+import {changePieces, parseFailure, pinFailureText, runningTotals} from './money';
 import type {StageState} from './phaseToStation';
 import PinSheet from './PinSheet';
 import {COLOR, DUR, MAX_FONT_SCALE, TYPE} from './tokens';
@@ -330,7 +330,7 @@ const ChargeView = (props: ChargeViewProps) => {
   );
 
   const pinErrorText = pinError
-    ? parseFailure(error).detail || 'The card stopped responding.'
+    ? pinFailureText(parseFailure(error).detail) || 'The card stopped responding.'
     : null;
   const renderSheet = useCallback(
     (sheet: Nodes['sheet'], dots: Nodes['dots']) =>

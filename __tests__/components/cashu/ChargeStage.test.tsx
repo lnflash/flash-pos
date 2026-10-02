@@ -370,6 +370,6 @@ describe('the PIN pose', () => {
   it('shows a failed attempt in the sheet in the error colour', () => {
     const {getByText, update} = setup({flow: 'pin'});
     update({mode: 'error', error: '[verifying PIN] wrong PIN — 2 tries left'});
-    expect(getByText('wrong PIN — 2 tries left')).toBeTruthy();
+    expect(getByText('Wrong PIN — 2 tries left. Try again.')).toBeTruthy();
   });
 });

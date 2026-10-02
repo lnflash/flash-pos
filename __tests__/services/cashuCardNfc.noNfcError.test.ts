@@ -36,7 +36,7 @@ describe('with NfcError absent from the package', () => {
 
   it('still reports card status words, which do not depend on NfcError', () => {
     expect(describeCardFailure(new CardError(0x6983, 'SPEND_PROOF'))).toContain(
-      'card locked',
+      'PIN blocked',
     );
   });
 
