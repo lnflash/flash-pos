@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import {Platform, StatusBar, StyleSheet} from 'react-native';
+import {StatusBar, StyleSheet} from 'react-native';
 import {Provider} from 'react-redux';
 import {ApolloProvider} from '@apollo/client';
 import Toast from 'react-native-toast-message';
@@ -34,16 +34,51 @@ import EdgeTint from './src/components/EdgeTint';
 // utils
 import {toastConfig} from './src/utils/toast';
 
+/**
+ * The colour under the status-bar icons, on every platform, OS version and
+ * system theme. The icons are dark, so it must stay light (ENG-613).
+ *
+ * What sits under the icons depends on where the app runs:
+ * - Android 7–14 (minSdk 24): an opaque band drawn by the window. Before JS runs
+ *   it is `android:statusBarColor` in android/app/src/main/res/values/styles.xml,
+ *   then the <StatusBar> backgroundColor below. Both are this colour.
+ * - Android 15+ (targetSdk 35): edge-to-edge is enforced, the bar is transparent
+ *   and setBackgroundColor is a no-op. The app draws under the bar, so the root
+ *   SafeAreaView's top inset shows, and the root paints it this colour
+ *   (styles.container). Before JS runs it is the launch theme's
+ *   `android:windowBackground`, also this colour, in both system themes.
+ * - iOS: the bar is always transparent, so the same root inset shows.
+ *
+ * The card charge's green flood is the one exception, and it is deliberate:
+ * <EdgeTint/> paints the insets green for the finale and the Success screen,
+ * and those screens push their own light-content StatusBar entry for the
+ * duration, then pop it.
+ */
+export const STATUS_BAR_BAND = '#FFFFFF';
+
 function App(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.container}>
       <EdgeTint />
+      {/* Dark icons on both platforms (ENG-613). Android used to get white
+          icons over a black band, but Android 15+ never paints the band, so the
+          white icons landed on the white screens.
+
+          The screens are all light, but the native shells behind them follow
+          the system theme: under the system dark theme the iOS root view is
+          black (systemBackgroundColor), and AppTheme's DayNight parent would
+          make the Android window #303030 if styles.xml did not pin it white.
+          Where the bar is transparent that shell is what shows through an
+          unpainted inset, so the root paints the band colour itself rather than
+          trusting it.
+
+          Mounted outside PersistGate so it applies on the first render: inside
+          the gate it waited for the store to rehydrate, with the native launch
+          state still on screen. It reads nothing from the store. The launch
+          state in styles.xml matches it, so nothing flips when JS takes over. */}
+      <StatusBar barStyle="dark-content" backgroundColor={STATUS_BAR_BAND} />
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
-          <StatusBar
-            barStyle={Platform.OS === 'ios' ? 'dark-content' : 'light-content'}
-            backgroundColor={'#000'}
-          />
           <ApolloProvider client={client}>
             <ActivityIndicatorProvider>
               <FlashcardProvider>
@@ -62,10 +97,11 @@ function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    // The status- and gesture-bar insets show this (Android 15+ draws
-    // edge to edge): white, like the screens, instead of the theme's
-    // #fafafa band — the card charge's green strips sit on top of it.
-    backgroundColor: '#fff',
+    // What shows under the status bar wherever it is transparent (Android 15+,
+    // iOS). Left unpainted, that is the native root view, which the system dark
+    // theme turns black on iOS. See STATUS_BAR_BAND. The card charge's green
+    // strips (EdgeTint) sit on top of it for the flood and the Success screen.
+    backgroundColor: STATUS_BAR_BAND,
   },
 });
 
