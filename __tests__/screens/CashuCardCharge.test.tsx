@@ -149,6 +149,15 @@ beforeEach(() => {
   );
 });
 
+/**
+ * Leave the microtask machinery real. Faking queueMicrotask / nextTick /
+ * setImmediate stalls React's act() under Node 22 (the CI runtime): every
+ * test after the first fake-timer one hung for 5 s, while Node 24 passed.
+ */
+const FAKE_TIMERS: Parameters<typeof jest.useFakeTimers>[0] = {
+  doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+};
+
 afterEach(() => {
   jest.useRealTimers();
 });
@@ -174,7 +183,7 @@ describe('CashuCardCharge', () => {
   });
 
   it('feeds every phase to the stage and hands off to Success in ONE reset', async () => {
-    jest.useFakeTimers();
+    jest.useFakeTimers(FAKE_TIMERS);
     let release!: () => void;
     const gate = new Promise<void>(resolve => {
       release = resolve;
@@ -329,7 +338,7 @@ describe('CashuCardCharge', () => {
         };
       });
 
-    jest.useFakeTimers();
+    jest.useFakeTimers(FAKE_TIMERS);
     const {getByText, getByTestId, navigation} = await renderScreen();
     await act(async () => {
       fireEvent.press(getByText('Tap card to charge'));
@@ -374,7 +383,7 @@ describe('CashuCardCharge', () => {
   });
 
   it('records the charge but never navigates when the screen unmounts during the held frame', async () => {
-    jest.useFakeTimers();
+    jest.useFakeTimers(FAKE_TIMERS);
     mockReadAndPlan.mockResolvedValue(PLAN);
     mockExecuteCharge.mockResolvedValue({
       amountSat: 16,
@@ -432,7 +441,7 @@ describe('CashuCardCharge', () => {
   });
 
   it('opens straight on the PIN sheet when the router pre-read a PIN card, and auto-commits at four digits', async () => {
-    jest.useFakeTimers();
+    jest.useFakeTimers(FAKE_TIMERS);
     mockExecuteCharge.mockImplementation(
       async ({onPhase}: {onPhase: (p: string) => void}) => {
         onPhase('reading card');
@@ -474,7 +483,7 @@ describe('CashuCardCharge', () => {
   });
 
   it('keeps the PIN pose on a failed attempt: reason in the sheet, PIN cleared, no auto-retry', async () => {
-    jest.useFakeTimers();
+    jest.useFakeTimers(FAKE_TIMERS);
     mockExecuteCharge.mockRejectedValue(
       new Error('[verifying PIN] wrong PIN — 2 tries left'),
     );
