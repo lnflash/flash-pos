@@ -1,4 +1,6 @@
 import {createHash} from 'crypto';
+import {readFileSync} from 'fs';
+import {join} from 'path';
 import React from 'react';
 import {Animated, StyleSheet} from 'react-native';
 import {render} from '@testing-library/react-native';
@@ -24,13 +26,30 @@ import {CARD} from '../../../src/components/cashu/charge/tokens';
 import type {Nodes} from '../../../src/components/cashu/charge/useChargeEngine';
 
 /**
- * cardArtV2.tsx is shared byte-for-byte with flash-mobile. Both repos pin
- * the same digest of CARD_ART — every coordinate, colour, opacity, gradient,
- * outlined glyph, the grain and the z-order — so a change in one app without
- * the other fails here. Change both copies and both digests together.
+ * cardArtV2.tsx is shared byte-for-byte with flash-mobile
+ * (app/components/flashcard-v2-art/cardArtV2.tsx). Neither repo's tests read
+ * the other's file: each pins its own copy to the same digests, so an edit to
+ * either copy fails that repo's suite until its digests are bumped, which is
+ * the cue to copy the file across and bump the other's. Change both copies
+ * and all their digests together.
+ *
+ * - ART_FILE_SHA256: the file itself, with LF line endings: comments, types
+ *   and formatting included, which the other digests do not see.
+ * - PARITY_DIGEST: CARD_ART — every coordinate, colour, opacity, gradient,
+ *   outlined glyph, the grain and the z-order.
+ * - RENDER_DIGESTS: the whole drawn tree, every element in order with every
+ *   prop, under the svg stub (flash-mobile's stub uses the same host names).
+ *   Static is flash-mobile's still card, chip-side arcs drawn in; animated is
+ *   the charge card, which draws those arcs as its own overlays.
  */
+const ART_FILE_SHA256 =
+  '355472b69813ca55b2965c50a31dc11430d0c92dfc3dfd896816edb45d901927';
 const PARITY_DIGEST =
   '88c4f9c1ca91a921cab0d09362c42d12647a155d0a6c847f5a935283cbd77e02';
+const RENDER_DIGESTS = {
+  static: '9bab0b61f17e0580e5cebcb21a8d730792a2e20f91de9b13f2229a71d294d88c',
+  animated: '270a9876f3e6b61e7b5c70c5e3b5e4d8dbdea7e167786bf7adb1f91f734e6a7d',
+};
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
@@ -49,8 +68,22 @@ function nodes(root: Node | Node[] | null): Node[] {
   return out;
 }
 
-const draw = (props: {staticArcs?: boolean} = {}) =>
-  nodes(render(<CardArtV2 {...props} />).toJSON() as Node);
+const tree = (props: {staticArcs?: boolean} = {}) =>
+  render(<CardArtV2 {...props} />).toJSON() as Node;
+
+const draw = (props: {staticArcs?: boolean} = {}) => nodes(tree(props));
+
+/** Each element as [type, props sorted by name, children]: what both repos hash. */
+const canonical = (n: Node | string): unknown =>
+  typeof n === 'string'
+    ? n
+    : [
+        n.type,
+        Object.keys(n.props)
+          .sort()
+          .map(key => [key, n.props[key]]),
+        (n.children ?? []).map(canonical),
+      ];
 
 /** Every #rrggbb string in a value, recursively. */
 function colours(value: unknown, out: string[] = []): string[] {
@@ -70,8 +103,26 @@ const rgb = (hex: string) =>
   [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
 
 describe('card art v2 — parity with flash-mobile', () => {
-  it('matches the shared digest', () => {
+  it('pins the file’s bytes, comments and formatting included', () => {
+    const file = readFileSync(
+      join(__dirname, '../../../src/components/cashu/charge/cardArtV2.tsx'),
+      'utf8',
+    );
+    // A Windows checkout may hand the file over with CRLF line endings.
+    expect(sha256(file.replace(/\r\n/g, '\n'))).toBe(ART_FILE_SHA256);
+  });
+
+  it('pins the art’s values (CARD_ART)', () => {
     expect(sha256(JSON.stringify(CARD_ART))).toBe(PARITY_DIGEST);
+  });
+
+  it('pins the drawn tree, element for element', () => {
+    expect(sha256(JSON.stringify(canonical(tree())))).toBe(
+      RENDER_DIGESTS.static,
+    );
+    expect(sha256(JSON.stringify(canonical(tree({staticArcs: false}))))).toBe(
+      RENDER_DIGESTS.animated,
+    );
   });
 
   it('builds the grain exactly as the reference generator does (balanced Latin square, mulberry32, seed 0x0C67F1A5)', () => {
