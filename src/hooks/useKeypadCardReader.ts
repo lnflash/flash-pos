@@ -8,7 +8,7 @@ import NfcManager, {Ndef, NfcTech, type TagEvent} from 'react-native-nfc-manager
 import {useFlashcard} from './useFlashcard';
 
 // services
-import {readCard} from '../services/cashuCard';
+import {CardError, readCard} from '../services/cashuCard';
 import {
   cancelCardSession,
   describeCardFailure,
@@ -37,6 +37,18 @@ export const IOS_BALANCE_SHEET_MESSAGE = 'Hold the card to check its balance';
  * toast, re-arm, reject, toast, ... as fast as the bridge answers.
  */
 export const REARM_AFTER_ERROR_MS = 750;
+
+/**
+ * An ISO-DEP tag that does not host the Flash applet (SW 0x6A82 on SELECT):
+ * a bank card, a transit card, an old BoltCard without NDEF. Not a failure of
+ * anything — say so quietly instead of raising an error.
+ */
+function isNotAFlashCard(error: unknown): boolean {
+  if (error instanceof CardError && error.sw === 0x6a82) {
+    return true;
+  }
+  return /applet not found/i.test(error instanceof Error ? error.message : '');
+}
 
 // TODO(ENG-614): swap for `hasLnurlwRecord` from `utils/nfcTag` once PR #75
 // merges; this is the same decode `contexts/Flashcard.tsx` does.
@@ -135,6 +147,10 @@ export function useKeypadCardReader() {
         // the operator's doing, not a failure.
         if (isUserCancel(error)) {
           return 'cancelled';
+        }
+        if (isNotAFlashCard(error)) {
+          toastShow({message: 'Not a Flash card', type: 'info'});
+          return 'failed';
         }
         toastShow({message: describeCardFailure(error), type: 'error'});
         return 'failed';

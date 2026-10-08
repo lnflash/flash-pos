@@ -315,7 +315,7 @@ describe('useKeypadCardReader on Android', () => {
     );
   });
 
-  it('toasts a card that refuses the applet and re-arms', async () => {
+  it('says quietly that a card without the applet is not a Flash card, and re-arms', async () => {
     mockReadCard.mockRejectedValue(new CardError(0x6a82, 'SELECT'));
     renderHook(() => useKeypadCardReader());
     focus();
@@ -325,8 +325,8 @@ describe('useKeypadCardReader on Android', () => {
 
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockToastShow).toHaveBeenCalledWith({
-      message: expect.stringContaining('SELECT failed'),
-      type: 'error',
+      message: 'Not a Flash card',
+      type: 'info',
     });
     await waitFor(
       () => expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2),
