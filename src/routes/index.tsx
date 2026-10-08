@@ -16,6 +16,7 @@ import {
   TransactionHistory,
   RegisteredRewardCards,
   EventSettings,
+  CashuCardBalance,
   CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
@@ -102,6 +103,17 @@ const Root = () => {
         options={{
           headerShown: true,
           headerTitle: 'Flashcard Balance',
+          animation: 'fade_from_bottom',
+        }}
+      />
+      {/* A Flashcard v2 tapped on the keypad: the balance the card itself
+          reports (ENG-628). The v1 BoltCard tap lands on FlashcardBalance. */}
+      <Stack.Screen
+        name="CashuCardBalance"
+        component={CashuCardBalance}
+        options={{
+          headerShown: true,
+          headerTitle: 'Card Balance',
           animation: 'fade_from_bottom',
         }}
       />
