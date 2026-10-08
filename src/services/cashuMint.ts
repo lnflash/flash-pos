@@ -203,19 +203,12 @@ export function createSettlementAdapter(): SettlementAdapter {
       // A 429 mid-burst is the routine throttle, not a verdict — retrying
       // inside the adapter keeps it from surfacing as a permanent settlement
       // failure (the drain used to park entries on exactly that). Mint
-      // operation errors are deliberately NOT retried here: codes like
-      // 11002 are the mint's answer, and mapSwapError owns them.
-      const attempt = () => wallet.completeSwap(preview);
-      let swapped;
-      try {
-        swapped = await attempt();
-      } catch (error) {
-        if (!isRateLimited(error)) {
-          throw error;
-        }
-        await sleep((error as {retryAfterMs?: number}).retryAfterMs ?? 2500);
-        swapped = await attempt();
-      }
+      // operation errors are deliberately NOT retried (withRateLimitRetry
+      // only retries a throttle): codes like 11002 are the mint's answer,
+      // and mapSwapError owns them.
+      const swapped = await withRateLimitRetry(() =>
+        wallet.completeSwap(preview),
+      );
       // The keep/send split is PAYMENT-flow semantics — send is what a payer
       // hands to a recipient. In a settlement the terminal is the recipient
       // of the entire swap: every output the mint signs is merchant money.

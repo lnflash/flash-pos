@@ -33,28 +33,38 @@ const CashuAutoSettle = () => {
     // this effect only owns the timer.
     let delay = AUTO_SETTLE_BASELINE_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const attempt = () => {
+    let cancelled = false;
+    // Resolves once the run has settled (immediately when there is nothing
+    // to run) so the ticker can read the delay the run just decided.
+    const attempt = (): Promise<void> => {
       // One run per tick; a tap can also start one, and runAutoSettlement
       // collapses concurrent calls into the first.
-      if (!autoSettleInFlight() && usernameRef.current) {
-        runAutoSettlement(usernameRef.current)
-          .then(result => {
-            // Both policies live in the service: what to tell the merchant
-            // (payoutToast) and when to run next (nextAutoSettleDelay).
-            const toast = payoutToast(result);
-            if (toast) {
-              toastShow(toast);
-            }
-            delay = nextAutoSettleDelay(delay, result);
-          })
-          .catch(() => {
-            delay = nextAutoSettleDelay(delay, null);
-          });
+      if (autoSettleInFlight() || !usernameRef.current) {
+        return Promise.resolve();
       }
+      return runAutoSettlement(usernameRef.current)
+        .then(result => {
+          // Both policies live in the service: what to tell the merchant
+          // (payoutToast) and when to run next (nextAutoSettleDelay).
+          const toast = payoutToast(result);
+          if (toast) {
+            toastShow(toast);
+          }
+          delay = nextAutoSettleDelay(delay, result);
+        })
+        .catch(() => {
+          delay = nextAutoSettleDelay(delay, null);
+        });
     };
+    // The next tick is armed only after the run settles: arming it up front
+    // scheduled every tick on the PREVIOUS run's verdict, so a 429 took one
+    // more full-cadence hit before the backoff applied (20, 20, 40, ...).
     const run = () => {
-      attempt();
-      timer = setTimeout(run, delay);
+      attempt().finally(() => {
+        if (!cancelled) {
+          timer = setTimeout(run, delay);
+        }
+      });
     };
     const appState = AppState.addEventListener('change', state => {
       if (state === 'active') {
@@ -63,6 +73,7 @@ const CashuAutoSettle = () => {
     });
     run();
     return () => {
+      cancelled = true;
       appState.remove();
       if (timer) {
         clearTimeout(timer);

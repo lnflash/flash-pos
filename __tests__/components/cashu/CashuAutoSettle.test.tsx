@@ -106,4 +106,71 @@ describe('CashuAutoSettle', () => {
     expect(mockRunAutoSettlement).not.toHaveBeenCalled();
     unmount();
   });
+
+  describe('the timer', () => {
+    // Leave the microtask machinery real: faking it stalls promise chains
+    // under Node 22 (the CI runtime).
+    const FAKE_TIMERS: Parameters<typeof jest.useFakeTimers>[0] = {
+      doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+    };
+    const advance = (ms: number) =>
+      act(async () => {
+        await jest.advanceTimersByTimeAsync(ms);
+      });
+
+    beforeEach(() => {
+      jest.useFakeTimers(FAKE_TIMERS);
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('arms the next tick on the verdict of the run that just finished (ENG-626)', async () => {
+      // A throttled first run must push the second tick out to 40 s. Arming
+      // the timer before the run settled scheduled it on the previous
+      // delay, so forge took one more 20 s hit before the backoff applied.
+      mockRunAutoSettlement
+        .mockResolvedValueOnce(
+          result({payoutError: RATE_LIMITED_PAYOUT, rateLimited: true}),
+        )
+        .mockResolvedValue(result({}));
+      const {unmount} = renderWithUser('merchant');
+      await flush();
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(1);
+
+      await advance(20_000);
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(1);
+      await advance(19_999);
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(1);
+      await advance(1);
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(2);
+
+      // The clean second run snaps the cadence back to the baseline at once,
+      // not one tick later.
+      await advance(20_000);
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(3);
+      unmount();
+    });
+
+    it('a run that settles after unmount does not re-arm the timer', async () => {
+      let finish: (value: AutoSettleResult) => void = () => {};
+      mockRunAutoSettlement.mockImplementationOnce(
+        () =>
+          new Promise<AutoSettleResult>(resolve => {
+            finish = resolve;
+          }),
+      );
+      const {unmount} = renderWithUser('merchant');
+      await flush();
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(1);
+
+      unmount();
+      await act(async () => {
+        finish(result({}));
+      });
+      await advance(60_000);
+      expect(mockRunAutoSettlement).toHaveBeenCalledTimes(1);
+    });
+  });
 });

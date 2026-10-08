@@ -157,6 +157,12 @@ const SETTLED = [
   },
 ];
 
+// Leave the microtask machinery real: faking it stalls promise chains
+// under Node 22 (the CI runtime).
+const FAKE_TIMERS: Parameters<typeof jest.useFakeTimers>[0] = {
+  doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
   __resetWalletCache();
@@ -198,6 +204,10 @@ describe('makeCanonicalCardOutput', () => {
 });
 
 describe('swap', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('settles: verifies the witness, persists the preview before the call, then the proofs', async () => {
     const adapter = createSettlementAdapter();
     let pendingDuringCall: string | null = null;
@@ -264,6 +274,32 @@ describe('swap', () => {
     await expect(adapter.swap(entryWith())).rejects.not.toBeInstanceOf(
       ProofAlreadySpentError,
     );
+  });
+
+  it('retries the swap once after retryAfterMs when the mint answers 429', async () => {
+    // The settlement path shares withRateLimitRetry with the rebalance: a
+    // throttle mid-burst is re-sent after the mint's own retryAfterMs, not
+    // parked as a permanent failure.
+    jest.useFakeTimers(FAKE_TIMERS);
+    const adapter = createSettlementAdapter();
+    walletMocks.completeSwap
+      .mockRejectedValueOnce(
+        new cashu.RateLimitError('429 Too Many Requests', 2500),
+      )
+      .mockResolvedValueOnce({keep: [], send: SETTLED});
+
+    const pending = adapter.swap(entryWith());
+    await jest.advanceTimersByTimeAsync(2499);
+    expect(walletMocks.completeSwap).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+
+    await expect(pending).resolves.toBeUndefined();
+    expect(walletMocks.completeSwap).toHaveBeenCalledTimes(2);
+    // The settled proofs landed and the pending preview was cleared.
+    expect(
+      mockStore['@cashu_settlement_swap:' + entryWith().id],
+    ).toBeUndefined();
+    await expect(listSettledProofs()).resolves.toEqual(SETTLED);
   });
 
   it('passes a 5xx through unchanged — the outcome is unknown, not failed', async () => {
@@ -813,11 +849,6 @@ describe('reconcileTill', () => {
 });
 
 describe('rebalanceTill — the rate-limit retry', () => {
-  // Leave the microtask machinery real: faking it stalls promise chains
-  // under Node 22 (the CI runtime).
-  const FAKE_TIMERS: Parameters<typeof jest.useFakeTimers>[0] = {
-    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
-  };
   const tillProof = (amount: number, secret: string) => ({
     id: KEYSET_ID,
     amount,
