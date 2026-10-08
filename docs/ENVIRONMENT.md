@@ -15,7 +15,7 @@ cp .env.example .env
 | Variable | Purpose |
 | --- | --- |
 | `FLASH_GRAPHQL_URI` | HTTPS GraphQL endpoint used by Apollo Client. |
-| `FLASH_GRAPHQL_WS_URI` | WebSocket GraphQL endpoint used for subscriptions. |
+| `FLASH_GRAPHQL_WS_URI` | WebSocket GraphQL endpoint used for subscriptions. Use the `ws.` host (`wss://ws.flashapp.me/graphql`); `api.` refuses the websocket handshake and invoice-paid events never arrive. |
 | `FLASH_LN_ADDRESS_URL` | Lightning address service base URL. |
 | `FLASH_LN_ADDRESS` | Lightning address domain displayed or embedded by the app. |
 | `BTC_PAY_SERVER` | BTCPay Server base URL for reward-related flows. |
