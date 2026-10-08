@@ -156,11 +156,37 @@ export interface ChargeResult {
 }
 
 /**
- * Session 1: read the card and rank the covers — NO PIN yet. The customer's
- * card is only on the antenna for the silent read; a PIN-required card gets
- * the pad afterwards (tap → PIN → tap, D13's session flag is satisfied by the
- * fresh verify inside session 2).
+ * A failure inside one phase of a charge. The message carries the phase for
+ * the merchant-facing log ("[reading card] SELECT failed: ..."); `cause` keeps
+ * the original error — a `CardError` with its status word, for one — so
+ * callers branch on the class, not on the wording.
+ *
+ * Declared as a field rather than passed as `new Error(message, {cause})`:
+ * Hermes supports `cause`, but the React Native tsconfig's `lib` stops short
+ * of `es2022.error`, which is where that overload and `Error.cause` are typed.
  */
+export class PhaseError extends Error {
+  readonly cause: unknown;
+
+  constructor(phase: string, cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(`[${phase}] ${message}`);
+    this.name = 'PhaseError';
+    this.cause = cause;
+  }
+}
+
+const makeStep =
+  (onPhase: (phase: string) => void) =>
+  async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    onPhase(phase);
+    try {
+      return await fn();
+    } catch (error) {
+      throw new PhaseError(phase, error);
+    }
+  };
+
 /**
  * Session 1: read the card and rank the covers — NO PIN yet. The customer's
  * card is only on the antenna for the silent read; a PIN-required card gets
@@ -183,15 +209,7 @@ export async function readAndPlan({
   amountSat: number;
   onPhase?: (phase: string) => void;
 }): Promise<PreReadCharge> {
-  const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
-    onPhase(phase);
-    try {
-      return await fn();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`[${phase}] ${message}`);
-    }
-  };
+  const step = makeStep(onPhase);
 
   await step('reading card', () => selectApplet(transceive));
   const info = await step('reading card', () => getInfo(transceive));
@@ -294,15 +312,7 @@ export async function executeCharge({
   now = Date.now(),
   onPhase = () => {},
 }: ExecuteChargeArgs): Promise<ChargeResult> {
-  const step = async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
-    onPhase(phase);
-    try {
-      return await fn();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`[${phase}] ${message}`);
-    }
-  };
+  const step = makeStep(onPhase);
 
   // Session 2 opens a FRESH IsoDep channel: the card's active applet resets
   // to the default, so the applet SELECT must run again before any gated

@@ -4,7 +4,10 @@ import {AppState} from 'react-native';
 import {useAppSelector} from '../../store/hooks';
 import {toastShow} from '../../utils/toast';
 import {
+  AUTO_SETTLE_BASELINE_MS,
   autoSettleInFlight,
+  nextAutoSettleDelay,
+  payoutToast,
   runAutoSettlement,
 } from '../../services/cashuAutoSettle';
 
@@ -26,45 +29,42 @@ const CashuAutoSettle = () => {
   }, [username]);
 
   useEffect(() => {
-    // Forge's limiter sustains its block under steady pressure: a fixed
-    // cadence re-arms it every tick and a throttled settlement never clears.
-    // The retry loop therefore backs off while runs come back incomplete and
-    // snaps back to the fast baseline once a run lands clean.
-    const BASELINE_MS = 20000;
-    const MAX_MS = 240000;
-    let delay = BASELINE_MS;
+    // The cadence policy (baseline, backoff, cap) is nextAutoSettleDelay;
+    // this effect only owns the timer.
+    let delay = AUTO_SETTLE_BASELINE_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const attempt = () => {
+    let cancelled = false;
+    // Resolves once the run has settled (immediately when there is nothing
+    // to run) so the ticker can read the delay the run just decided.
+    const attempt = (): Promise<void> => {
       // One run per tick; a tap can also start one, and runAutoSettlement
       // collapses concurrent calls into the first.
-      if (!autoSettleInFlight() && usernameRef.current) {
-        runAutoSettlement(usernameRef.current)
-          .then(result => {
-            if (result.paidSat != null && result.paidSat > 0) {
-              toastShow({
-                message: `eCash: paid out ${result.paidSat} sat to your wallet`,
-                type: 'success',
-              });
-            } else if (result.payoutError) {
-              toastShow({
-                message: `eCash payout pending: ${result.payoutError}`,
-                type: 'error',
-              });
-            }
-            if (result.stillPending > 0 || result.payoutError) {
-              delay = Math.min(delay * 2, MAX_MS);
-            } else {
-              delay = BASELINE_MS;
-            }
-          })
-          .catch(() => {
-            delay = Math.min(delay * 2, MAX_MS);
-          });
+      if (autoSettleInFlight() || !usernameRef.current) {
+        return Promise.resolve();
       }
+      return runAutoSettlement(usernameRef.current)
+        .then(result => {
+          // Both policies live in the service: what to tell the merchant
+          // (payoutToast) and when to run next (nextAutoSettleDelay).
+          const toast = payoutToast(result);
+          if (toast) {
+            toastShow(toast);
+          }
+          delay = nextAutoSettleDelay(delay, result);
+        })
+        .catch(() => {
+          delay = nextAutoSettleDelay(delay, null);
+        });
     };
+    // The next tick is armed only after the run settles: arming it up front
+    // scheduled every tick on the PREVIOUS run's verdict, so a 429 took one
+    // more full-cadence hit before the backoff applied (20, 20, 40, ...).
     const run = () => {
-      attempt();
-      timer = setTimeout(run, delay);
+      attempt().finally(() => {
+        if (!cancelled) {
+          timer = setTimeout(run, delay);
+        }
+      });
     };
     const appState = AppState.addEventListener('change', state => {
       if (state === 'active') {
@@ -73,6 +73,7 @@ const CashuAutoSettle = () => {
     });
     run();
     return () => {
+      cancelled = true;
       appState.remove();
       if (timer) {
         clearTimeout(timer);
