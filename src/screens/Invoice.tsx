@@ -53,6 +53,12 @@ type Props = StackScreenProps<RootStackType, 'Invoice'>;
 const invoiceUnavailableMessage =
   'Please try again. Either the invoice has expired or it has not been paid.';
 
+// After the Flashcard withdraw callback answers OK, the paid state is polled
+// from the status query so it shows even when the payment-status websocket
+// is down (ENG-627). About once a second, for about 20 s.
+const PAID_POLL_INTERVAL_MS = 1000;
+const PAID_POLL_MAX_ATTEMPTS = 20;
+
 const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {paymentRequest, paymentHash, paymentSecret} = useAppSelector(
@@ -69,6 +75,12 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
   const completedPaymentHashRef = useRef<string | null>(null);
+  // The k1 of the one Flashcard withdraw callback this screen has sent. A
+  // BoltCard k1 is single-use: BTCPay charges the card on the first request
+  // and answers "Replayed or expired query" to any repeat (ENG-627).
+  const consumedK1Ref = useRef<string>();
+  const paidPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unmountedRef = useRef(false);
 
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
@@ -79,6 +91,17 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   useEffect(
     () => () => {
       cancelCardSession();
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      unmountedRef.current = true;
+      if (paidPollTimerRef.current) {
+        clearTimeout(paidPollTimerRef.current);
+        paidPollTimerRef.current = null;
+      }
     },
     [],
   );
@@ -334,10 +357,71 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     };
   }, [data, error, confirmInvoiceIsPaid, handleSuccessfulPayment]);
 
+  // The poll outlives any one render, so it reads the latest confirm and
+  // success handlers through a ref rather than closing over one version.
+  const paymentHandlersRef = useRef({
+    confirmInvoiceIsPaid,
+    handleSuccessfulPayment,
+  });
+  useEffect(() => {
+    paymentHandlersRef.current = {
+      confirmInvoiceIsPaid,
+      handleSuccessfulPayment,
+    };
+  }, [confirmInvoiceIsPaid, handleSuccessfulPayment]);
+
+  // Success without the LnInvoicePaymentStatus subscription: once the
+  // withdraw callback has accepted the invoice, ask the status query until it
+  // says PAID. handleSuccessfulPayment is idempotent, so the subscription
+  // path may still land first (or later) without a second transaction.
+  const pollUntilPaid = useCallback(() => {
+    if (paidPollTimerRef.current) {
+      clearTimeout(paidPollTimerRef.current);
+      paidPollTimerRef.current = null;
+    }
+
+    let attempts = 0;
+    const tick = async () => {
+      paidPollTimerRef.current = null;
+      if (unmountedRef.current || completedPaymentHashRef.current) {
+        return;
+      }
+
+      attempts += 1;
+      const paid = await paymentHandlersRef.current.confirmInvoiceIsPaid();
+      if (unmountedRef.current || completedPaymentHashRef.current) {
+        return;
+      }
+
+      if (paid) {
+        setPaymentLoading(false);
+        paymentHandlersRef.current.handleSuccessfulPayment();
+        return;
+      }
+
+      if (attempts >= PAID_POLL_MAX_ATTEMPTS) {
+        // Give the screen back; the subscription keeps listening.
+        setPaymentLoading(false);
+        return;
+      }
+
+      paidPollTimerRef.current = setTimeout(tick, PAID_POLL_INTERVAL_MS);
+    };
+
+    tick();
+  }, []);
+
   const payUsingFlashcard = useCallback(async () => {
     if (!k1 || !callback) {
       return;
     }
+    // One callback per k1, decided before any network: the focus effect
+    // below re-runs whenever this function's identity changes, which can
+    // happen while the first request is still in flight.
+    if (consumedK1Ref.current === k1) {
+      return;
+    }
+    consumedK1Ref.current = k1;
 
     try {
       setPaymentLoading(true);
@@ -354,12 +438,14 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       if (lnurlResponse.status === 'ERROR') {
         setPaymentLoading(false);
         toastShow({message: lnurlResponse.reason, type: 'error'});
+      } else if (lnurlResponse.status === 'OK') {
+        pollUntilPaid();
       }
     } catch (err) {
       setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
     }
-  }, [k1, callback, paymentRequest, resetFlashcard]);
+  }, [k1, callback, paymentRequest, resetFlashcard, pollUntilPaid]);
 
   useFocusEffect(
     useCallback(() => {
