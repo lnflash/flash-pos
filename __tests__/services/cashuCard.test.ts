@@ -12,6 +12,7 @@ import {
   getProof,
   getPubkey,
   getSlotStatuses,
+  isAppletNotFound,
   parseResponse,
   readCard,
   selectApplet,
@@ -226,6 +227,29 @@ describe('describeStatusWord', () => {
 
   it('falls back for unknown codes instead of throwing', () => {
     expect(describeStatusWord(0x1234)).toBe('unexpected status word');
+  });
+});
+
+describe('isAppletNotFound', () => {
+  it('matches the raw SELECT CardError', () => {
+    expect(isAppletNotFound(new CardError(0x6a82, 'SELECT'))).toBe(true);
+    expect(isAppletNotFound(new CardError(0x6983, 'VERIFY'))).toBe(false);
+  });
+
+  it('matches the per-phase wrapper readAndPlan rethrows (the class is lost there)', () => {
+    expect(
+      isAppletNotFound(
+        new Error('[reading card] SELECT failed: applet not found (0x6A82)'),
+      ),
+    ).toBe(true);
+    expect(
+      isAppletNotFound(new Error('[reading card] card left the field')),
+    ).toBe(false);
+  });
+
+  it('ignores non-errors', () => {
+    expect(isAppletNotFound('applet not found')).toBe(false);
+    expect(isAppletNotFound(undefined)).toBe(false);
   });
 });
 

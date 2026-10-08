@@ -2,13 +2,14 @@ import {useCallback, useState} from 'react';
 import {Alert} from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import {StackNavigationProp} from '@react-navigation/stack';
-import NfcManager, {NfcTech} from 'react-native-nfc-manager';
+import NfcManager, {NfcTech, TagEvent} from 'react-native-nfc-manager';
 
 // hooks
 import {useAppSelector} from '../store/hooks';
 import {useFlashcard} from './useFlashcard';
 
 // services
+import {isAppletNotFound} from '../services/cashuCard';
 import {readAndPlan} from '../services/cashuCharge';
 import {
   describeCardFailure,
@@ -18,20 +19,55 @@ import {
 } from '../services/cashuCardNfc';
 
 // utils
-import {isIsoDepTag} from '../utils/nfcTag';
+import {hasLnurlwRecord, isIsoDepTag, mayCarryNdef} from '../utils/nfcTag';
 
 // RootStackParamList is ambient (src/types/routes.d.ts).
 type InvoiceNav = StackNavigationProp<RootStackType, 'Invoice'>;
 
 /**
- * One NFC entry point for the invoice screen's card payments. Opens a
- * multi-tech session ([IsoDep, Ndef]) and routes by the tapped tag:
+ * Reads the NDEF surface of the tag connected to the open session and, when
+ * it carries an lnurlw record, returns the tag with that message attached.
  *
- *   - an IsoDep javacard (a Cashu/Flashcard v2) is read and planned IN THIS
- *     session, then the charge screen opens straight on its PIN pad with the
- *     plan handed over — the customer's first tap is never wasted;
- *   - an NDEF BoltCard → the lnurlw withdraw, handled in place by the
- *     Flashcard context.
+ * iOS hands `requestTechnology([IsoDep, Ndef])` callers an ISO7816 tag whose
+ * `getTag()` NDEF read is best effort — a Flashcard v1 (BoltCard on an NTAG
+ * 424 DNA) can arrive with no `ndefMessage` at all. `ndefHandler.getNdefMessage`
+ * reads the same tag again inside the same session. Android attaches the
+ * NDEF message to the dispatch intent, so this is rarely needed there, and
+ * on a tag without an NDEF surface the bridge rejects — which is an answer,
+ * not an error (ENG-614).
+ */
+async function readLnurlwTagInSession(
+  tag: TagEvent,
+): Promise<TagEvent | undefined> {
+  try {
+    const read = await NfcManager.ndefHandler.getNdefMessage();
+    const ndefMessage = read?.ndefMessage;
+    if (!ndefMessage?.length) {
+      return undefined;
+    }
+    const withNdef: TagEvent = {...tag, ndefMessage};
+    return hasLnurlwRecord(withNdef) ? withNdef : undefined;
+  } catch (error) {
+    console.log('[card-router] no NDEF surface on this tag', String(error));
+    return undefined;
+  }
+}
+
+/**
+ * One NFC entry point for the invoice screen's card payments. Opens a
+ * multi-tech session ([IsoDep, Ndef]) and routes by what the tapped tag
+ * carries, not by what it can speak:
+ *
+ *   - a tag with an lnurlw NDEF record (a BoltCard; a Flashcard v1 is one on
+ *     an ISO-DEP capable NTAG 424 DNA) → the lnurlw withdraw, handled in
+ *     place by the Flashcard context, without ever SELECTing the Cashu
+ *     applet;
+ *   - an IsoDep javacard without such a record (a Cashu/Flashcard v2) is read
+ *     and planned IN THIS session, then the charge screen opens straight on
+ *     its PIN pad with the plan handed over — the customer's first tap is
+ *     never wasted. If that SELECT answers "applet not found", the NDEF
+ *     surface is read once more before giving up: an NTAG whose NDEF did not
+ *     come through before the SELECT still lands on the BoltCard path.
  *
  * The session marks the Flashcard context busy so its Android
  * DiscoverTag listener (which sees the same reader-mode broadcast)
@@ -75,7 +111,21 @@ export function useCardPaymentRouter() {
       }
       setIsScanning(false);
 
+      // Evidence first: an lnurlw record makes this a BoltCard whatever
+      // else the chip can do.
+      if (hasLnurlwRecord(tag)) {
+        handleTag(tag);
+        return false;
+      }
+
       if (isIsoDepTag(tag)) {
+        if (!tag.ndefMessage && mayCarryNdef(tag)) {
+          const lnurlwTag = await readLnurlwTagInSession(tag);
+          if (lnurlwTag) {
+            handleTag(lnurlwTag);
+            return false;
+          }
+        }
         try {
           await extendCardTimeout();
           const preRead = await readAndPlan({
@@ -88,6 +138,13 @@ export function useCardPaymentRouter() {
           navigation.navigate('CashuCardCharge', {preRead});
           return true;
         } catch (readError) {
+          if (isAppletNotFound(readError)) {
+            const lnurlwTag = await readLnurlwTagInSession(tag);
+            if (lnurlwTag) {
+              handleTag(lnurlwTag);
+              return false;
+            }
+          }
           if (!isUserCancel(readError)) {
             Alert.alert(describeCardFailure(readError));
           }
