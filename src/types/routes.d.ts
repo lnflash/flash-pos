@@ -38,6 +38,11 @@ type RootStackType = {
       pinRequired: boolean;
     };
   };
+  // A Flashcard v2 tapped on the keypad (hooks/useKeypadCardReader.ts): the
+  // read-only summary the card reported in that session.
+  CashuCardBalance: {
+    summary: import('../services/cashuCard').CardSummary;
+  };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
   // Dev-only route — registered under `__DEV__` in src/routes/index.tsx and

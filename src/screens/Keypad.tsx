@@ -2,7 +2,7 @@ import React, {useCallback, useEffect} from 'react';
 import styled from 'styled-components/native';
 import {StackNavigationProp} from '@react-navigation/stack';
 import {useFocusEffect} from '@react-navigation/native';
-import {Dimensions} from 'react-native';
+import {Dimensions, Platform} from 'react-native';
 
 // components
 import {
@@ -11,11 +11,17 @@ import {
   NumPad,
   PrimaryButton,
   SecondaryButton,
+  TextButton,
 } from '../components';
 
 // hooks
 import {useAppDispatch, useAppSelector} from '../store/hooks';
-import {useActivityIndicator, useSatPrice, useRealtimePrice} from '../hooks';
+import {
+  useActivityIndicator,
+  useKeypadCardReader,
+  useSatPrice,
+  useRealtimePrice,
+} from '../hooks';
 import {useNavigation} from '@react-navigation/native';
 import {useMutation} from '@apollo/client';
 
@@ -66,6 +72,11 @@ const Keypad = () => {
   const {toggleLoading} = useActivityIndicator();
   const {satsToUsd, refetchPrice} = useSatPrice();
   const {currencyToSats} = useRealtimePrice();
+  // Tap a Flashcard (v1 or v2) here to see its balance. Android arms itself
+  // while this screen is focused; iOS reads on demand from the control below
+  // (a passive request would show the system sheet).
+  const {readOnce: readCardBalance, reading: readingCard} =
+    useKeypadCardReader();
 
   const dispatch = useAppDispatch();
   const {walletId} = useAppSelector(state => state.user);
@@ -272,6 +283,16 @@ const Keypad = () => {
           hideCurrency={false}
           hideSecondary={true}
         />
+        {Platform.OS === 'ios' && (
+          <CardBalanceRow>
+            <TextButton
+              icon="credit-card"
+              title="Card balance"
+              disabled={readingCard}
+              onPress={readCardBalance}
+            />
+          </CardBalanceRow>
+        )}
         <Note />
         <NumPad />
       </BodyWrapper>
@@ -317,6 +338,14 @@ const Wrapper = styled.View`
 
 const BodyWrapper = styled.View`
   flex: 1;
+`;
+
+/** Sits under the amount's top-right history icon; iOS only. */
+const CardBalanceRow = styled.View`
+  align-items: flex-end;
+  padding: 0 20px;
+  margin-top: -12px;
+  margin-bottom: 8px;
 `;
 
 const EventMessageWrapper = styled.View`

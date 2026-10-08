@@ -5,8 +5,10 @@ import useSatPrice from './useSatPrice';
 import usePrint from './usePrint';
 import useNfc from './useNfc';
 import {useFlashcard} from './useFlashcard';
+import {useKeypadCardReader} from './useKeypadCardReader';
 
 export {
+  useKeypadCardReader,
   useActivityIndicator,
   useDisplayCurrency,
   useRealtimePrice,
