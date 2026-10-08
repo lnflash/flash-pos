@@ -12,6 +12,7 @@ import {
   getProof,
   getPubkey,
   getSlotStatuses,
+  isAppletNotFound,
   parseResponse,
   readCard,
   selectApplet,
@@ -226,6 +227,45 @@ describe('describeStatusWord', () => {
 
   it('falls back for unknown codes instead of throwing', () => {
     expect(describeStatusWord(0x1234)).toBe('unexpected status word');
+  });
+});
+
+describe('isAppletNotFound', () => {
+  it('matches the raw SELECT CardError', () => {
+    expect(isAppletNotFound(new CardError(0x6a82, 'SELECT'))).toBe(true);
+    expect(isAppletNotFound(new CardError(0x6983, 'VERIFY'))).toBe(false);
+  });
+
+  it('matches the per-phase wrapper readAndPlan rethrows through its cause', () => {
+    const wrapped = (cause: unknown) =>
+      Object.assign(new Error('[reading card] wrapped'), {cause});
+    expect(isAppletNotFound(wrapped(new CardError(0x6a82, 'SELECT')))).toBe(
+      true,
+    );
+    expect(isAppletNotFound(wrapped(new CardError(0x6983, 'VERIFY')))).toBe(
+      false,
+    );
+    expect(isAppletNotFound(wrapped(new Error('card left the field')))).toBe(
+      false,
+    );
+  });
+
+  it('decides on the class and status word, never on the message text', () => {
+    // A rewording of describeStatusWord or the phase prefix must not change
+    // the routing decision, and a message alone is not evidence of a card.
+    expect(
+      isAppletNotFound(
+        new Error('[reading card] SELECT failed: applet not found (0x6A82)'),
+      ),
+    ).toBe(false);
+    expect(
+      isAppletNotFound(new Error('[reading card] card left the field')),
+    ).toBe(false);
+  });
+
+  it('ignores non-errors', () => {
+    expect(isAppletNotFound('applet not found')).toBe(false);
+    expect(isAppletNotFound(undefined)).toBe(false);
   });
 });
 

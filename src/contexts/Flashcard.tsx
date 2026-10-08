@@ -5,13 +5,13 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import NfcManager, {Ndef, NfcEvents, TagEvent} from 'react-native-nfc-manager';
+import NfcManager, {NfcEvents, TagEvent} from 'react-native-nfc-manager';
 import {Platform} from 'react-native';
 import {getParams} from 'js-lnurl';
 import axios from 'axios';
 import {ActivityIndicator} from './ActivityIndicator';
 import {toastShow} from '../utils/toast';
-import {isIsoDepTag} from '../utils/nfcTag';
+import {getLnurlwPayload, isIsoDepTag} from '../utils/nfcTag';
 import {navigationRef} from '../routes';
 import {isRewardsEnabled} from '../utils/featureFlags';
 import {
@@ -118,8 +118,7 @@ export const FlashcardProvider = ({children}: Props) => {
     const currentScreen = navigationRef.getCurrentRoute()?.name;
 
     if (scannedTag?.id) {
-      const ndefRecord = scannedTag?.ndefMessage?.[0];
-      if (!ndefRecord) {
+      if (!scannedTag.ndefMessage?.length) {
         // A Flashcard v2 (Cashu javacard) has no NDEF surface; it is
         // routed by the card payment router, not this lnurlw flow.
         if (isIsoDepTag(scannedTag)) {
@@ -128,11 +127,12 @@ export const FlashcardProvider = ({children}: Props) => {
         toastShow({message: 'NDEF message not found.', type: 'error'});
       } else {
         setLoading(true);
-        const payload = Ndef.text.decodePayload(
-          new Uint8Array(ndefRecord.payload),
-        );
+        // One decoder, one definition of "is a BoltCard": the same scan the
+        // card payment router makes before handing the tag here, so a tag
+        // it routed as lnurlw is never read differently on arrival.
+        const payload = getLnurlwPayload(scannedTag);
 
-        if (payload.startsWith('lnurlw')) {
+        if (payload) {
           setTag(scannedTag);
           if (currentScreen === 'Invoice') {
             await getPayDetails(payload, scannedTag);
