@@ -73,6 +73,14 @@ jest.mock('@react-native-clipboard/clipboard', () => ({
   setString: jest.fn(),
 }));
 
+const mockAxiosPost = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({data: {}}),
+);
+jest.mock('axios', () => ({
+  __esModule: true,
+  default: {post: (...args: unknown[]) => mockAxiosPost(...args)},
+}));
+
 const paidSubscriptionData = {
   lnInvoicePaymentStatus: {
     status: 'PAID',
@@ -153,10 +161,16 @@ const deferredStatusWithErrors = () => {
   };
 };
 
-const renderInvoice = () => {
+type RenderOptions = {
+  /** Reward slice state to preload (rewards are off unless given). */
+  reward?: Record<string, unknown>;
+};
+
+const renderInvoice = ({reward}: RenderOptions = {}) => {
   const store = configureStore({
     reducer: rootReducer,
     preloadedState: {
+      ...(reward ? {reward} : {}),
       amount: {
         satAmount: '1000',
         displayAmount: '10.00',
@@ -451,6 +465,191 @@ describe('Invoice screen Flashcard withdraw callback', () => {
     expect(confirmStatus).toHaveBeenCalledTimes(20);
     expect(navigation.replace).not.toHaveBeenCalled();
     expect(getByText('InvoiceQRCode')).toBeTruthy();
+    // BTCPay already answered OK, so the card is debited: say so, or the
+    // bare QR screen reads as "not paid" and invites a second tap.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'info',
+        text1: 'Card charged. Waiting for payment confirmation.',
+      }),
+    );
+  });
+
+  it('stops polling as soon as the status query says the invoice expired', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    const confirmStatus = jest
+      .fn()
+      .mockResolvedValueOnce(statusResult('PENDING'))
+      .mockResolvedValue(statusResult('EXPIRED'));
+    mockUseLazyQuery.mockReturnValue([confirmStatus]);
+    fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
+
+    const {getByText, navigation} = renderInvoice();
+
+    await flush();
+    expect(confirmStatus).toHaveBeenCalledTimes(1);
+
+    for (let second = 0; second < 25; second += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+      await flush();
+    }
+
+    // One PENDING, one EXPIRED, then nothing: no remaining attempts burned.
+    expect(confirmStatus).toHaveBeenCalledTimes(2);
+    expect(getByText(invoiceUnavailableMessage)).toBeTruthy();
+    expect(navigation.replace).not.toHaveBeenCalled();
+    // The expired message is already on screen; no "card charged" toast.
+    expect(toastShow).not.toHaveBeenCalled();
+  });
+
+  it('stops polling when the screen unmounts mid-poll', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    const confirmStatus = jest.fn(() =>
+      Promise.resolve(statusResult('PENDING')),
+    );
+    mockUseLazyQuery.mockReturnValue([confirmStatus]);
+    fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    try {
+      const {unmount} = renderInvoice();
+
+      await flush();
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+      await flush();
+      expect(confirmStatus).toHaveBeenCalledTimes(2);
+
+      unmount();
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      await flush();
+
+      expect(confirmStatus).toHaveBeenCalledTimes(2);
+      // No setState on an unmounted component, no act() warning.
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  describe('card state after the callback', () => {
+    const cardOnContext = () => ({
+      ...tappedFlashcard(),
+      tag: {id: 'tag-1'},
+      lnurl: 'lnurl1cardreward',
+      resetFlashcard: mockResetFlashcard,
+    });
+    const rewardsOn = {
+      rewardRate: 0.02,
+      minimumReward: 1,
+      maximumReward: 1000,
+      defaultReward: 21,
+      merchantRewardId: 'pull-payment-1',
+      isEnabled: true,
+      showStandaloneRewards: false,
+      loading: false,
+      error: '',
+      eventModeEnabled: false,
+      eventActive: false,
+      eventCustomerRewardCount: {},
+    };
+
+    const originalRewardsEnabled = process.env.REWARDS_ENABLED;
+
+    beforeEach(() => {
+      process.env.REWARDS_ENABLED = 'true';
+      mockUseFlashcard.mockImplementation(cardOnContext);
+    });
+
+    afterEach(() => {
+      if (originalRewardsEnabled === undefined) {
+        delete process.env.REWARDS_ENABLED;
+      } else {
+        process.env.REWARDS_ENABLED = originalRewardsEnabled;
+      }
+    });
+
+    it('keeps the card on the context after OK so the reward reaches it, and resets once the sale is recorded', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      const confirmStatus = jest
+        .fn()
+        .mockResolvedValueOnce(statusResult('PENDING'))
+        .mockResolvedValue(statusResult('PAID'));
+      mockUseLazyQuery.mockReturnValue([confirmStatus]);
+      fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
+
+      const {store, navigation} = renderInvoice({reward: rewardsOn});
+
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // OK is not the end of the payment: tag and lnurl must survive until
+      // handleSuccessfulPayment has used them.
+      expect(mockResetFlashcard).not.toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+      await flush();
+      await flush();
+
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        expect.stringContaining('/pull-payments/pull-payment-1/payouts'),
+        expect.objectContaining({destination: 'lnurl1cardreward'}),
+      );
+      const [transaction] = store.getState().transactionHistory.transactions;
+      expect(transaction.reward).toEqual(
+        expect.objectContaining({
+          sentToCard: true,
+          cardLnurl: 'lnurl1cardreward',
+        }),
+      );
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      expect(navigation.replace).toHaveBeenCalledWith('Success');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('resets the card when the callback answers ERROR', async () => {
+      fetchMock.mockResolvedValue(
+        lnurlResponse({status: 'ERROR', reason: 'nope'}),
+      );
+
+      const {getByText} = renderInvoice();
+
+      await waitFor(() => expect(toastShow).toHaveBeenCalledTimes(1));
+      await flush();
+
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      expect(getByText('InvoiceQRCode')).toBeTruthy();
+    });
+
+    it('resets the card when the callback request fails', async () => {
+      fetchMock.mockRejectedValue(new Error('network down'));
+
+      const {getByText} = renderInvoice();
+
+      await waitFor(() => expect(toastShow).toHaveBeenCalledTimes(1));
+      await flush();
+
+      expect(toastShow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          text1: 'Payment failed. Please try again.',
+        }),
+      );
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      expect(getByText('InvoiceQRCode')).toBeTruthy();
+    });
   });
 
   it('shows the callback error once and never resends the same k1', async () => {

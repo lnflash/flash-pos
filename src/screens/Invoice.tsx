@@ -81,6 +81,10 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const consumedK1Ref = useRef<string>();
   const paidPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmountedRef = useRef(false);
+  // Set once the status query reports EXPIRED; the paid poll stops there
+  // instead of spending its remaining attempts on an invoice that cannot
+  // become PAID.
+  const invoiceExpiredRef = useRef(false);
 
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
@@ -95,16 +99,19 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     [],
   );
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Reset on every mount, not only the first: StrictMode and Fast Refresh
+    // run this cleanup and then the effect again on the same instance, and
+    // a poll started after that must not think the screen is gone.
+    unmountedRef.current = false;
+    return () => {
       unmountedRef.current = true;
       if (paidPollTimerRef.current) {
         clearTimeout(paidPollTimerRef.current);
         paidPollTimerRef.current = null;
       }
-    },
-    [],
-  );
+    };
+  }, []);
 
   const {data, error} = useSubscription(LnInvoicePaymentStatus, {
     variables: {
@@ -314,6 +321,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     }
 
     if (statusPayload?.status === 'EXPIRED') {
+      invoiceExpiredRef.current = true;
       setErrMessage(invoiceUnavailableMessage);
     }
 
@@ -399,8 +407,21 @@ const Invoice: React.FC<Props> = ({navigation}) => {
         return;
       }
 
+      if (invoiceExpiredRef.current) {
+        // confirmInvoiceIsPaid has already put the expired message on the
+        // QR screen; nothing further can turn this invoice PAID.
+        setPaymentLoading(false);
+        return;
+      }
+
       if (attempts >= PAID_POLL_MAX_ATTEMPTS) {
-        // Give the screen back; the subscription keeps listening.
+        // The card has been debited (BTCPay answered OK), so say so before
+        // the QR screen comes back; a silent return reads as "not paid"
+        // and invites a second tap. The subscription keeps listening.
+        toastShow({
+          message: 'Card charged. Waiting for payment confirmation.',
+          type: 'info',
+        });
         setPaymentLoading(false);
         return;
       }
@@ -434,14 +455,19 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       const lnurlResponse = await result.json();
       // LNURL response processed
 
-      resetFlashcard();
       if (lnurlResponse.status === 'ERROR') {
+        resetFlashcard();
         setPaymentLoading(false);
         toastShow({message: lnurlResponse.reason, type: 'error'});
       } else if (lnurlResponse.status === 'OK') {
+        // Leave the card on the context: handleSuccessfulPayment reads
+        // `lnurl` / `tag` to send the reward to the card and resets the
+        // context itself once the sale is recorded. consumedK1Ref keeps the
+        // lingering k1 from being sent again.
         pollUntilPaid();
       }
     } catch (err) {
+      resetFlashcard();
       setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
     }
