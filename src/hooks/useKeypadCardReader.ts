@@ -2,7 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {Platform} from 'react-native';
 import {useFocusEffect, useNavigation} from '@react-navigation/native';
 import type {StackNavigationProp} from '@react-navigation/stack';
-import NfcManager, {Ndef, NfcTech, type TagEvent} from 'react-native-nfc-manager';
+import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 
 // hooks
 import {useFlashcard} from './useFlashcard';
@@ -19,7 +19,7 @@ import {
 } from '../services/cashuCardNfc';
 
 // utils
-import {isIsoDepTag} from '../utils/nfcTag';
+import {hasLnurlwRecord, isIsoDepTag} from '../utils/nfcTag';
 import {toastShow} from '../utils/toast';
 
 // RootStackParamList is ambient (src/types/routes.d.ts).
@@ -50,19 +50,6 @@ function isNotAFlashCard(error: unknown): boolean {
   return /applet not found/i.test(error instanceof Error ? error.message : '');
 }
 
-// TODO(ENG-614): swap for `hasLnurlwRecord` from `utils/nfcTag` once PR #75
-// merges; this is the same decode `contexts/Flashcard.tsx` does.
-function hasLnurlwRecord(tag: TagEvent): boolean {
-  return (tag.ndefMessage ?? []).some(record => {
-    try {
-      return Ndef.text
-        .decodePayload(new Uint8Array(record.payload))
-        .startsWith('lnurlw');
-    } catch {
-      return false;
-    }
-  });
-}
 
 type SessionOutcome = 'routed' | 'cancelled' | 'failed' | 'busy';
 
