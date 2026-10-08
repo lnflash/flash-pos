@@ -236,12 +236,28 @@ describe('isAppletNotFound', () => {
     expect(isAppletNotFound(new CardError(0x6983, 'VERIFY'))).toBe(false);
   });
 
-  it('matches the per-phase wrapper readAndPlan rethrows (the class is lost there)', () => {
+  it('matches the per-phase wrapper readAndPlan rethrows through its cause', () => {
+    const wrapped = (cause: unknown) =>
+      Object.assign(new Error('[reading card] wrapped'), {cause});
+    expect(isAppletNotFound(wrapped(new CardError(0x6a82, 'SELECT')))).toBe(
+      true,
+    );
+    expect(isAppletNotFound(wrapped(new CardError(0x6983, 'VERIFY')))).toBe(
+      false,
+    );
+    expect(isAppletNotFound(wrapped(new Error('card left the field')))).toBe(
+      false,
+    );
+  });
+
+  it('decides on the class and status word, never on the message text', () => {
+    // A rewording of describeStatusWord or the phase prefix must not change
+    // the routing decision, and a message alone is not evidence of a card.
     expect(
       isAppletNotFound(
         new Error('[reading card] SELECT failed: applet not found (0x6A82)'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isAppletNotFound(new Error('[reading card] card left the field')),
     ).toBe(false);

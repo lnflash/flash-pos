@@ -125,9 +125,12 @@ const PLAN = {
 
 const appletNotFound = () => new CardError(0x6a82, 'SELECT');
 
-/** How `readAndPlan` actually surfaces it: re-wrapped per phase, class lost. */
+/** How `readAndPlan` actually surfaces it: re-wrapped per phase, the CardError kept as `cause`. */
 const wrappedAppletNotFound = () =>
-  new Error('[reading card] SELECT failed: applet not found (0x6A82)');
+  Object.assign(
+    new Error('[reading card] SELECT failed: applet not found (0x6A82)'),
+    {cause: appletNotFound()},
+  );
 
 let alertSpy: jest.SpyInstance;
 
@@ -277,7 +280,7 @@ describe('useCardPaymentRouter — routing by evidence (ENG-614)', () => {
     expect(alertSpy).not.toHaveBeenCalled();
   });
 
-  it('"applet not found" as readAndPlan really throws it (re-wrapped per phase) is recognised too', async () => {
+  it('"applet not found" as readAndPlan really throws it (re-wrapped per phase, CardError as cause) is recognised too', async () => {
     mockNfc.getTag.mockResolvedValue(iosIsoDepTag());
     mockNfc.ndefHandler.getNdefMessage
       .mockResolvedValueOnce(null)

@@ -4,9 +4,19 @@
  * and LOAD_PROOF) meets the REAL planning, till staging, and queue recording;
  * the mint adapter is the seam (its wire behaviour is cashuMint.test.ts's).
  */
-import {toHex, type Transceiver} from '../../src/services/cashuCard';
+import {
+  CardError,
+  isAppletNotFound,
+  toHex,
+  type Transceiver,
+} from '../../src/services/cashuCard';
 import {buildCardP2PKSecret} from '../../src/services/cashuMint';
-import {chargeCard, planPurchase} from '../../src/services/cashuCharge';
+import {
+  chargeCard,
+  PhaseError,
+  planPurchase,
+  readAndPlan,
+} from '../../src/services/cashuCharge';
 import {
   clearQueue,
   hasUnsettledForCard,
@@ -212,6 +222,57 @@ describe('planPurchase', () => {
 
   it('refuses when the card cannot cover the bill at all', () => {
     expect(planPurchase(slots, 99)).toEqual([]);
+  });
+});
+
+describe('readAndPlan', () => {
+  it('reads, plans and reports the phases', async () => {
+    const card = fakeCard({
+      slots: [
+        {amount: 8, status: 0x01},
+        {amount: 16, status: 0x01},
+      ],
+    });
+    const phases: string[] = [];
+
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+      onPhase: phase => phases.push(phase),
+    });
+
+    expect(preRead.plan.burnedSat).toBe(16);
+    expect(preRead.cardPubkey).toBe(CARD_PUBKEY_HEX);
+    expect(phases[0]).toBe('reading card');
+  });
+
+  it('wraps a phase failure with the phase in the message and the CardError as cause', async () => {
+    // A BoltCard (NTAG 424 DNA) answers the applet SELECT with 0x6A82: the
+    // router must be able to tell that apart from a Cashu card that failed,
+    // by class and status word, after the phase wrapper has re-thrown it.
+    const transceive: Transceiver = async () => sw(0x6a82);
+
+    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
+      e => e,
+    );
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[reading card\] SELECT failed/);
+    expect(failure.cause).toBeInstanceOf(CardError);
+    expect((failure.cause as CardError).sw).toBe(0x6a82);
+    expect(isAppletNotFound(failure)).toBe(true);
+  });
+
+  it('a different card refusal is wrapped the same way but is not "applet not found"', async () => {
+    const transceive: Transceiver = async () => sw(0x6983);
+
+    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
+      e => e,
+    );
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect((failure.cause as CardError).sw).toBe(0x6983);
+    expect(isAppletNotFound(failure)).toBe(false);
   });
 });
 

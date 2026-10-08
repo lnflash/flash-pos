@@ -2,13 +2,9 @@ import React, {useCallback, useEffect} from 'react';
 import {useNavigation} from '@react-navigation/native';
 import NfcManager from 'react-native-nfc-manager';
 import styled from 'styled-components/native';
-import {Alert} from 'react-native';
 
 // hooks
 import {useCardPaymentRouter} from '../../hooks/useCardPaymentRouter';
-
-// services
-import {isUserCancel} from '../../services/cashuCardNfc';
 
 // assets
 import NfcSignal from '../../assets/icons/nfc-signal.svg';
@@ -17,42 +13,13 @@ const NfcButton = () => {
   const navigation = useNavigation();
   const {routeCardPayment} = useCardPaymentRouter();
 
-  const dismiss = useCallback(() => {
-    NfcManager.cancelTechnologyRequest();
-  }, []);
-
+  // The router owns the whole tap: the support/enabled checks, the session,
+  // the alerts and the merchant-cancel handling. Nothing is caught here
+  // because routeCardPayment never rejects.
   const readFlashcard = useCallback(async () => {
-    try {
-      const isSupported = await NfcManager.isSupported();
-      const isEnabled = await NfcManager.isEnabled();
-
-      if (!isSupported) {
-        Alert.alert('NFC is not supported on this device');
-        dismiss();
-        return;
-      }
-
-      if (!isEnabled) {
-        Alert.alert('NFC is not enabled on this device.');
-        dismiss();
-        return;
-      }
-
-      NfcManager.start();
-      await routeCardPayment();
-    } catch (error) {
-      if (!isUserCancel(error)) {
-        console.error({error}, "can't fetch the Ndef payload");
-        Alert.alert(
-          'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
-        );
-      }
-      dismiss();
-      return;
-    }
-
-    dismiss();
-  }, [dismiss, routeCardPayment]);
+    NfcManager.start();
+    await routeCardPayment();
+  }, [routeCardPayment]);
 
   const renderHeaderRight = useCallback(
     () => (
