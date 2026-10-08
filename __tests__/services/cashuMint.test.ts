@@ -17,12 +17,17 @@ import {
 } from '@noble/hashes/utils';
 
 import {
+  __resetReconcileThrottle,
   __resetWalletCache,
   buildCardP2PKSecret,
   makeCanonicalCardOutput,
   createSettlementAdapter,
+  isRateLimited,
   listSettledProofs,
   meltSettledProofs,
+  RECONCILE_MIN_INTERVAL_MS,
+  reconcileTill,
+  sweepSettledProofs,
 } from '../../src/services/cashuMint';
 import {
   PermanentSettlementError,
@@ -154,6 +159,7 @@ const SETTLED = [
 beforeEach(() => {
   jest.clearAllMocks();
   __resetWalletCache();
+  __resetReconcileThrottle();
   for (const k of Object.keys(mockStore)) {
     delete mockStore[k];
   }
@@ -490,5 +496,159 @@ describe('meltSettledProofs', () => {
     expect(
       Object.keys(mockStore).some(k => k.startsWith('@cashu_settled_payout')),
     ).toBe(true);
+  });
+});
+
+// ENG-626: a till under the sweep reserve asked the mint checkstate every
+// 20 s (one 146-byte POST, one 429 each) for as long as the app was in the
+// foreground, because sweepSettledProofs reconciled before it looked at the
+// total and reconcileTill swallowed the 429 — so the run read as clean and
+// the scheduler never backed off.
+describe('isRateLimited', () => {
+  it('recognises what cashu-ts throws for a 429', () => {
+    expect(isRateLimited(new cashu.RateLimitError('Too Many Requests', 2500))).toBe(true);
+    expect(isRateLimited(new cashu.HttpResponseError('throttled', 429))).toBe(true);
+  });
+
+  it('recognises a bare status or a message naming the throttle', () => {
+    expect(isRateLimited({status: 429})).toBe(true);
+    expect(isRateLimited(new Error('HTTP 429'))).toBe(true);
+    expect(isRateLimited(new Error('Rate limit exceeded'))).toBe(true);
+    expect(isRateLimited(new Error('Too Many Requests'))).toBe(true);
+  });
+
+  it('is not every other failure', () => {
+    expect(isRateLimited(new cashu.HttpResponseError('boom', 500))).toBe(false);
+    expect(isRateLimited(new cashu.MintOperationError(11001, 'Token already spent'))).toBe(false);
+    expect(isRateLimited(new TypeError('Network request failed'))).toBe(false);
+    expect(isRateLimited(new Error('amount 14290 too large'))).toBe(false);
+    expect(isRateLimited(null)).toBe(false);
+  });
+});
+
+describe('sweepSettledProofs', () => {
+  const tillProof = (amount: number, secret: string) => ({
+    id: KEYSET_ID,
+    amount,
+    secret,
+    C: TEST_CARD_PUBKEY,
+    mintUrl: MINT_URL,
+  });
+
+  beforeEach(() => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+  });
+
+  it('a till under the reserve makes no mint call at all (ENG-626)', async () => {
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'float-a'),
+      tillProof(4, 'float-b'),
+    ]);
+
+    const result = await sweepSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+      keepReserveSat: 16,
+    });
+
+    expect(result).toEqual({paidSat: 0, feeReserveSat: 0, preimage: null, change: []});
+    expect(walletMocks.checkProofsStates).not.toHaveBeenCalled();
+    expect(walletMocks.createMeltQuoteBolt11).not.toHaveBeenCalled();
+    expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    // The float is untouched.
+    await expect(listSettledProofs()).resolves.toHaveLength(2);
+  });
+
+  it('a 429 from the reconcile propagates instead of reading as a clean run', async () => {
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(16, 'big-a'),
+      tillProof(16, 'big-b'),
+    ]);
+    walletMocks.checkProofsStates.mockRejectedValue(
+      new cashu.RateLimitError('Too Many Requests', 2500),
+    );
+
+    await expect(
+      sweepSettledProofs({
+        mintUrl: MINT_URL,
+        lightningAddress: 'merchant@wallet.example',
+        keepReserveSat: 16,
+      }),
+    ).rejects.toBeInstanceOf(cashu.RateLimitError);
+
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
+    expect(walletMocks.createMeltQuoteBolt11).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    // Nothing left the till on a throttle.
+    await expect(listSettledProofs()).resolves.toHaveLength(2);
+  });
+});
+
+describe('reconcileTill', () => {
+  const tillProof = (amount: number, secret: string) => ({
+    id: KEYSET_ID,
+    amount,
+    secret,
+    C: TEST_CARD_PUBKEY,
+    mintUrl: MINT_URL,
+  });
+  const T0 = 1_700_000_000_000;
+
+  beforeEach(() => {
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(16, 'live'),
+      tillProof(16, 'gone'),
+    ]);
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.SPENT},
+    ]);
+  });
+
+  it('drops the listings the mint reports spent', async () => {
+    await expect(reconcileTill(MINT_URL, {now: T0})).resolves.toBe(1);
+    await expect(listSettledProofs()).resolves.toEqual([tillProof(16, 'live')]);
+  });
+
+  it('asks the mint at most once per window', async () => {
+    await reconcileTill(MINT_URL, {now: T0});
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
+
+    await expect(
+      reconcileTill(MINT_URL, {now: T0 + RECONCILE_MIN_INTERVAL_MS - 1}),
+    ).resolves.toBe(0);
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
+
+    await reconcileTill(MINT_URL, {now: T0 + RECONCILE_MIN_INTERVAL_MS});
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(2);
+  });
+
+  it('the test seam reopens the window', async () => {
+    await reconcileTill(MINT_URL, {now: T0});
+    __resetReconcileThrottle();
+    await reconcileTill(MINT_URL, {now: T0 + 1});
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throttled attempt counts as the window\'s one ask, and rethrows', async () => {
+    walletMocks.checkProofsStates.mockRejectedValue(
+      new cashu.RateLimitError('Too Many Requests', 2500),
+    );
+    await expect(reconcileTill(MINT_URL, {now: T0})).rejects.toBeInstanceOf(
+      cashu.RateLimitError,
+    );
+    await expect(reconcileTill(MINT_URL, {now: T0 + 20_000})).resolves.toBe(0);
+    expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
+    // The store is not flipped to all-clear by a throttle.
+    await expect(listSettledProofs()).resolves.toHaveLength(2);
+  });
+
+  it('every other failure keeps the last known state, quietly', async () => {
+    walletMocks.checkProofsStates.mockRejectedValue(
+      new TypeError('Network request failed'),
+    );
+    await expect(reconcileTill(MINT_URL, {now: T0})).resolves.toBe(0);
+    await expect(listSettledProofs()).resolves.toHaveLength(2);
   });
 });

@@ -32,6 +32,7 @@
 import {
   Amount,
   blindMessage,
+  HttpResponseError,
   isMintOperationError,
   isP2PKSpendAuthorised,
   OutputData,
@@ -642,15 +643,72 @@ export async function rebalanceTill(
 }
 
 /**
+ * The mint said "slow down": cashu-ts raises `RateLimitError` (an
+ * `HttpResponseError` with status 429) for a literal 429; older paths and
+ * hand-rolled fetches surface the same verdict as a status field or a
+ * message. A throttle is a signal the caller must honour by backing off —
+ * never a failure to swallow and retry on the next tick (ENG-626: a 20 s
+ * cadence of swallowed 429s re-armed forge's limiter indefinitely).
+ */
+export function isRateLimited(error: unknown): boolean {
+  if (error instanceof HttpResponseError && error.status === 429) {
+    return true;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as {status?: unknown}).status === 429
+  ) {
+    return true;
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : '';
+  return /\b429\b|rate.?limit|too many requests/i.test(message);
+}
+
+/**
+ * Reconcile asks the mint about every till proof (NUT-07 checkstate). The
+ * till only drifts when a melt/swap response is lost, so once per window is
+ * plenty — and the auto-settle loop would otherwise ask every 20 s for as
+ * long as the app is in the foreground.
+ */
+export const RECONCILE_MIN_INTERVAL_MS = 5 * 60 * 1000;
+
+let lastReconcileAt = 0;
+
+/** Test seam: forget when the till was last reconciled. */
+export function __resetReconcileThrottle(): void {
+  lastReconcileAt = 0;
+}
+
+/**
  * Drop till listings the mint no longer honours. The store can drift from
  * mint reality when a melt/swap consumes a proof but the response (and its
  * store update) is lost — every later sweep/payout then fails 11001. The
  * mint's own checkstate is the arbiter: a spent listing is worthless
  * bookkeeping and leaves.
+ *
+ * Throttled to once per `RECONCILE_MIN_INTERVAL_MS`: a call inside the
+ * window returns 0 without touching the network. A 429 from the mint is
+ * rethrown so the caller backs off; every other failure keeps the last
+ * known state. Paths that need a fresh verdict right now (the 11001 retry
+ * in makeChangeOnTill) call `checkProofsStates` directly, not this.
  */
-export async function reconcileTill(mintUrl: string): Promise<number> {
+export async function reconcileTill(
+  mintUrl: string,
+  opts: {now?: number} = {},
+): Promise<number> {
+  const now = opts.now ?? Date.now();
+  if (now - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) {return 0;}
   const proofs = await listSettledProofs();
   if (proofs.length === 0) {return 0;}
+  // Stamp the attempt, not the success: a throttled or offline reconcile
+  // must not be re-asked on the next tick either.
+  lastReconcileAt = now;
   try {
     const wallet = await getWallet(mintUrl);
     const states = await wallet.checkProofsStates(
@@ -663,7 +721,10 @@ export async function reconcileTill(mintUrl: string): Promise<number> {
     const remaining = proofs.filter(p => !spent.has(p.secret));
     await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
     return spent.size;
-  } catch {
+  } catch (error) {
+    if (isRateLimited(error)) {
+      throw error;
+    }
     // A failed reconcile keeps the last known state — never flip to
     // all-clear on a network error.
     return 0;
@@ -686,12 +747,21 @@ export async function sweepSettledProofs(opts: {
   now?: number;
 }): Promise<PayoutResult> {
   const {keepReserveSat = 0, mintUrl} = opts;
-  // Reconcile first: a till listing the mint already spent (consumed by an
-  // earlier melt/swap whose store update was lost) would fail every payout
-  // with 11001 forever. Drop spent listings, then sweep the survivors.
-  await reconcileTill(mintUrl);
+  const sumSat = (ps: SettledProof[]) => ps.reduce((t, p) => t + p.amount, 0);
+  // Nothing above the float means nothing to sweep: answer from the store
+  // alone, with no mint call. Reconciling first here is what ENG-626 was —
+  // a till sitting under the reserve asked the mint checkstate every 20 s,
+  // took a 429 each time, and the run still read as clean.
+  if (sumSat(await listSettledProofs()) <= keepReserveSat) {
+    return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+  }
+  // Reconcile before melting: a till listing the mint already spent
+  // (consumed by an earlier melt/swap whose store update was lost) would
+  // fail every payout with 11001 forever. Drop spent listings, then sweep
+  // the survivors. A 429 propagates — the caller backs off.
+  await reconcileTill(mintUrl, {now: opts.now});
   const proofs = await listSettledProofs();
-  const total = proofs.reduce((t, p) => t + p.amount, 0);
+  const total = sumSat(proofs);
   if (total <= keepReserveSat) {
     return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
   }

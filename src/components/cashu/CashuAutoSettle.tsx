@@ -4,7 +4,9 @@ import {AppState} from 'react-native';
 import {useAppSelector} from '../../store/hooks';
 import {toastShow} from '../../utils/toast';
 import {
+  AUTO_SETTLE_BASELINE_MS,
   autoSettleInFlight,
+  nextAutoSettleDelay,
   runAutoSettlement,
 } from '../../services/cashuAutoSettle';
 
@@ -26,13 +28,9 @@ const CashuAutoSettle = () => {
   }, [username]);
 
   useEffect(() => {
-    // Forge's limiter sustains its block under steady pressure: a fixed
-    // cadence re-arms it every tick and a throttled settlement never clears.
-    // The retry loop therefore backs off while runs come back incomplete and
-    // snaps back to the fast baseline once a run lands clean.
-    const BASELINE_MS = 20000;
-    const MAX_MS = 240000;
-    let delay = BASELINE_MS;
+    // The cadence policy (baseline, backoff, cap) is nextAutoSettleDelay;
+    // this effect only owns the timer.
+    let delay = AUTO_SETTLE_BASELINE_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const attempt = () => {
       // One run per tick; a tap can also start one, and runAutoSettlement
@@ -51,14 +49,10 @@ const CashuAutoSettle = () => {
                 type: 'error',
               });
             }
-            if (result.stillPending > 0 || result.payoutError) {
-              delay = Math.min(delay * 2, MAX_MS);
-            } else {
-              delay = BASELINE_MS;
-            }
+            delay = nextAutoSettleDelay(delay, result);
           })
           .catch(() => {
-            delay = Math.min(delay * 2, MAX_MS);
+            delay = nextAutoSettleDelay(delay, null);
           });
       }
     };
