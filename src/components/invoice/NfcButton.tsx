@@ -7,6 +7,9 @@ import {Alert} from 'react-native';
 // hooks
 import {useCardPaymentRouter} from '../../hooks/useCardPaymentRouter';
 
+// services
+import {isUserCancel} from '../../services/cashuCardNfc';
+
 // assets
 import NfcSignal from '../../assets/icons/nfc-signal.svg';
 
@@ -38,10 +41,12 @@ const NfcButton = () => {
       NfcManager.start();
       await routeCardPayment();
     } catch (error) {
-      console.error({error}, "can't fetch the Ndef payload");
-      Alert.alert(
-        'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
-      );
+      if (!isUserCancel(error)) {
+        console.error({error}, "can't fetch the Ndef payload");
+        Alert.alert(
+          'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
+        );
+      }
       dismiss();
       return;
     }

@@ -154,10 +154,15 @@ export function useCardPaymentRouter() {
       handleTag(tag);
       return false;
     } catch (error) {
-      console.error({error}, "can't fetch the Ndef payload");
-      Alert.alert(
-        'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
-      );
+      // Cancel on the tap sheet (iOS) or our own cancelTechnologyRequest
+      // rejects requestTechnology with UserCancel: the merchant backed out,
+      // nothing failed.
+      if (!isUserCancel(error)) {
+        console.error({error}, "can't fetch the Ndef payload");
+        Alert.alert(
+          'E​r​r​o​r​ ​r​e​a​d​i​n​g​ ​N​F​C​ ​t​a​g​.​ ​P​l​e​a​s​e​ ​t​r​y​ ​a​g​a​i​n​.',
+        );
+      }
       return false;
     } finally {
       setNfcBusy(false);

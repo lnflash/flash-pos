@@ -342,3 +342,29 @@ describe('useCardPaymentRouter — routing by evidence (ENG-614)', () => {
     expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalled();
   });
 });
+
+describe('useCardPaymentRouter — cancelling the tap', () => {
+  it('Cancel on the tap sheet is not an error: no alert, returns false, session and context released', async () => {
+    mockNfc.requestTechnology.mockRejectedValue(new NfcError.UserCancel());
+
+    const routed = await route();
+
+    expect(routed).toBe(false);
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockHandleTag).not.toHaveBeenCalled();
+    expect(mockReadAndPlan).not.toHaveBeenCalled();
+    expect(mockSetNfcBusy).toHaveBeenLastCalledWith(false);
+    expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalled();
+  });
+
+  it('a real session failure still alerts', async () => {
+    mockNfc.requestTechnology.mockRejectedValue(new Error('boom'));
+
+    const routed = await route();
+
+    expect(routed).toBe(false);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(mockSetNfcBusy).toHaveBeenLastCalledWith(false);
+    expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalled();
+  });
+});
