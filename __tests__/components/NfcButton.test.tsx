@@ -52,17 +52,19 @@ describe('NfcButton', () => {
     expect(header.getByText('NFC')).toBeTruthy();
   });
 
-  it('a press starts NFC and hands the tap to the card payment router', async () => {
+  it('a press hands the tap to the card payment router and nothing else', async () => {
     const header = renderHeaderButton();
 
     await act(async () => {
       fireEvent.press(header.getByText('NFC'));
     });
 
-    expect(mockNfc.start).toHaveBeenCalledTimes(1);
     expect(mockRouteCardPayment).toHaveBeenCalledTimes(1);
-    // The router does these itself; a second copy here would double the
-    // alerts on a device without NFC.
+    // The router does all of these itself, and only after its support and
+    // enabled checks. A start() here would run before those checks and reject
+    // with an unhandled promise on an NFC-less iPad; a second support check
+    // would double the alerts on a device without NFC.
+    expect(mockNfc.start).not.toHaveBeenCalled();
     expect(mockNfc.isSupported).not.toHaveBeenCalled();
     expect(mockNfc.isEnabled).not.toHaveBeenCalled();
     expect(alertSpy).not.toHaveBeenCalled();

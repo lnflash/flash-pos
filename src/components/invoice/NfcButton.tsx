@@ -1,6 +1,5 @@
 import React, {useCallback, useEffect} from 'react';
 import {useNavigation} from '@react-navigation/native';
-import NfcManager from 'react-native-nfc-manager';
 import styled from 'styled-components/native';
 
 // hooks
@@ -13,11 +12,11 @@ const NfcButton = () => {
   const navigation = useNavigation();
   const {routeCardPayment} = useCardPaymentRouter();
 
-  // The router owns the whole tap: the support/enabled checks, the session,
-  // the alerts and the merchant-cancel handling. Nothing is caught here
-  // because routeCardPayment never rejects.
+  // The router owns the whole tap: the support/enabled checks, NfcManager
+  // start, the session, the alerts and the merchant-cancel handling. Nothing
+  // is caught here because routeCardPayment does not reject on tap failures
+  // (it can still reject if the isSupported/isEnabled bridge calls throw).
   const readFlashcard = useCallback(async () => {
-    NfcManager.start();
     await routeCardPayment();
   }, [routeCardPayment]);
 
