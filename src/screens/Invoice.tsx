@@ -223,10 +223,12 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       const calculatedReward = calculateReward(Number(satAmount), rewardConfig);
 
       // Try to get LNURL from context state, fallback to storage lookup
-      let cardLnurl = lnurl ?? paidCard?.lnurl;
+      // The snapshot is the card BTCPay debited; the live context may already
+      // hold a different card tapped while the paid confirmation was pending.
+      let cardLnurl = paidCard?.lnurl ?? lnurl;
       if (!cardLnurl) {
         const storageLnurl = await getCardLnurlFromStorage(
-          tag?.id ?? paidCard?.tagId,
+          paidCard?.tagId ?? tag?.id,
         );
         if (storageLnurl) {
           cardLnurl = storageLnurl;
