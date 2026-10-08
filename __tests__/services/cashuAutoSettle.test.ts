@@ -15,6 +15,7 @@ import {
   AUTO_SETTLE_MAX_MS,
   cashuOutstanding,
   nextAutoSettleDelay,
+  payoutToast,
   RATE_LIMITED_PAYOUT,
   runAutoSettlement,
   type AutoSettleResult,
@@ -104,6 +105,7 @@ describe('runAutoSettlement', () => {
     const result: AutoSettleResult = await runAutoSettlement('merchant');
     expect(result.paidSat).toBeNull();
     expect(result.payoutError).toBe('lightning address unreachable');
+    expect(result.rateLimited).toBe(false);
   });
 
   it('a throttled sweep reports the throttle by name, so the loop backs off (ENG-626)', async () => {
@@ -117,6 +119,7 @@ describe('runAutoSettlement', () => {
 
     const result = await runAutoSettlement('merchant');
     expect(result.paidSat).toBeNull();
+    expect(result.rateLimited).toBe(true);
     expect(result.payoutError).toBe(RATE_LIMITED_PAYOUT);
     expect(result.payoutError).toMatch(/rate-?limit/i);
     expect(nextAutoSettleDelay(AUTO_SETTLE_BASELINE_MS, result)).toBeGreaterThan(
@@ -195,5 +198,48 @@ describe('nextAutoSettleDelay', () => {
   it('a run that threw backs off like an incomplete one', () => {
     expect(nextAutoSettleDelay(20000, null)).toBe(40000);
     expect(nextAutoSettleDelay(AUTO_SETTLE_MAX_MS, null)).toBe(AUTO_SETTLE_MAX_MS);
+  });
+});
+
+describe('payoutToast', () => {
+  const run = (over: Partial<AutoSettleResult>): AutoSettleResult => ({
+    ran: true,
+    settled: 0,
+    stillPending: 0,
+    paidSat: null,
+    rateLimited: false,
+    ...over,
+  });
+
+  it('a payout is announced', () => {
+    expect(payoutToast(run({paidSat: 21}))).toEqual({
+      message: 'eCash: paid out 21 sat to your wallet',
+      type: 'success',
+    });
+  });
+
+  it('a payout failure is announced', () => {
+    expect(
+      payoutToast(run({payoutError: 'lightning address unreachable'})),
+    ).toEqual({
+      message: 'eCash payout pending: lightning address unreachable',
+      type: 'error',
+    });
+  });
+
+  it('a throttle is not — the loop backs off instead of toasting every tick (ENG-626)', () => {
+    expect(
+      payoutToast(run({payoutError: RATE_LIMITED_PAYOUT, rateLimited: true})),
+    ).toBeNull();
+    // The decision hangs on the flag, not on the text the banner displays.
+    expect(
+      payoutToast(run({payoutError: 'any copy edit of the above', rateLimited: true})),
+    ).toBeNull();
+  });
+
+  it('a clean run with nothing paid says nothing', () => {
+    expect(payoutToast(run({}))).toBeNull();
+    expect(payoutToast(run({paidSat: 0}))).toBeNull();
+    expect(payoutToast(run({skippedPayout: 'nothing settled to sweep'}))).toBeNull();
   });
 });

@@ -31,6 +31,12 @@ export interface AutoSettleResult {
   /** Sats swept to the account address; null when the sweep did not run. */
   paidSat: number | null;
   payoutError?: string;
+  /**
+   * True when `payoutError` is the mint's 429. The scheduler and the toast
+   * policy branch on this flag, never on the error text — the text is what
+   * the banner shows the operator and is free to change.
+   */
+  rateLimited: boolean;
   skippedPayout?: string;
 }
 
@@ -68,6 +74,36 @@ export function nextAutoSettleDelay(
   return AUTO_SETTLE_BASELINE_MS;
 }
 
+export interface PayoutToast {
+  message: string;
+  type: 'success' | 'error';
+}
+
+/**
+ * What the automatic loop tells the merchant about a run, if anything. A
+ * payout is worth a toast; a payout failure is worth one too — except a
+ * throttle, which is the loop's business (it backs off) and would otherwise
+ * toast on every tick for as long as the mint keeps saying 429. The banner
+ * still shows the throttle; this only decides the toast.
+ */
+export function payoutToast(
+  result: Pick<AutoSettleResult, 'paidSat' | 'payoutError' | 'rateLimited'>,
+): PayoutToast | null {
+  if (result.paidSat != null && result.paidSat > 0) {
+    return {
+      message: `eCash: paid out ${result.paidSat} sat to your wallet`,
+      type: 'success',
+    };
+  }
+  if (result.payoutError && !result.rateLimited) {
+    return {
+      message: `eCash payout pending: ${result.payoutError}`,
+      type: 'error',
+    };
+  }
+  return null;
+}
+
 let inFlight: Promise<AutoSettleResult> | null = null;
 
 /**
@@ -103,6 +139,7 @@ export async function runAutoSettlement(
     const settled = await listSettledProofs();
     let paidSat: number | null = null;
     let payoutError: string | undefined;
+    let rateLimited = false;
     let skippedPayout: string | undefined;
 
     if (settled.length === 0) {
@@ -124,7 +161,8 @@ export async function runAutoSettlement(
         // proofs remain in the store and the next run retries the sweep.
         // A throttle is named as one so the scheduler (and the operator)
         // read it as "wait", not as a broken payout.
-        payoutError = isRateLimited(error)
+        rateLimited = isRateLimited(error);
+        payoutError = rateLimited
           ? RATE_LIMITED_PAYOUT
           : error instanceof Error
             ? error.message
@@ -138,6 +176,7 @@ export async function runAutoSettlement(
       stillPending: drain.stillPending,
       paidSat,
       payoutError,
+      rateLimited,
       skippedPayout,
     };
     return lastResult;

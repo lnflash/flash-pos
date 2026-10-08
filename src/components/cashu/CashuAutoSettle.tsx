@@ -7,7 +7,7 @@ import {
   AUTO_SETTLE_BASELINE_MS,
   autoSettleInFlight,
   nextAutoSettleDelay,
-  RATE_LIMITED_PAYOUT,
+  payoutToast,
   runAutoSettlement,
 } from '../../services/cashuAutoSettle';
 
@@ -39,21 +39,11 @@ const CashuAutoSettle = () => {
       if (!autoSettleInFlight() && usernameRef.current) {
         runAutoSettlement(usernameRef.current)
           .then(result => {
-            if (result.paidSat != null && result.paidSat > 0) {
-              toastShow({
-                message: `eCash: paid out ${result.paidSat} sat to your wallet`,
-                type: 'success',
-              });
-            } else if (
-              result.payoutError &&
-              result.payoutError !== RATE_LIMITED_PAYOUT
-            ) {
-              // A throttle is the loop's business, not the merchant's: it
-              // backs off quietly instead of toasting on every tick.
-              toastShow({
-                message: `eCash payout pending: ${result.payoutError}`,
-                type: 'error',
-              });
+            // Both policies live in the service: what to tell the merchant
+            // (payoutToast) and when to run next (nextAutoSettleDelay).
+            const toast = payoutToast(result);
+            if (toast) {
+              toastShow(toast);
             }
             delay = nextAutoSettleDelay(delay, result);
           })

@@ -210,7 +210,7 @@ export function createSettlementAdapter(): SettlementAdapter {
       try {
         swapped = await attempt();
       } catch (error) {
-        if ((error as {status?: number}).status !== 429) {
+        if (!isRateLimited(error)) {
           throw error;
         }
         await sleep((error as {retryAfterMs?: number}).retryAfterMs ?? 2500);
@@ -667,7 +667,11 @@ export function isRateLimited(error: unknown): boolean {
       : typeof error === 'string'
         ? error
         : '';
-  return /\b429\b|rate.?limit|too many requests/i.test(message);
+  // Only an explicit HTTP status counts: a bare `429` in free text is just
+  // as likely an amount (`payout needs 429 sat …`), and a real payout
+  // failure must never be read as a throttle. The lnurlp fetches above say
+  // `HTTP 429`; cashu-ts's own 429 is a typed error caught earlier.
+  return /\bHTTP\s*429\b|rate.?limit|too many requests/i.test(message);
 }
 
 /**
@@ -693,17 +697,21 @@ export function __resetReconcileThrottle(): void {
  * bookkeeping and leaves.
  *
  * Throttled to once per `RECONCILE_MIN_INTERVAL_MS`: a call inside the
- * window returns 0 without touching the network. A 429 from the mint is
+ * window returns 0 without touching the network, unless `force` is set —
+ * the mint just answered 11001, so the store is provably stale and waiting
+ * out the window would only repeat the failure. A 429 from the mint is
  * rethrown so the caller backs off; every other failure keeps the last
  * known state. Paths that need a fresh verdict right now (the 11001 retry
  * in makeChangeOnTill) call `checkProofsStates` directly, not this.
  */
 export async function reconcileTill(
   mintUrl: string,
-  opts: {now?: number} = {},
+  opts: {now?: number; force?: boolean} = {},
 ): Promise<number> {
   const now = opts.now ?? Date.now();
-  if (now - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) {return 0;}
+  if (!opts.force && now - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) {
+    return 0;
+  }
   const proofs = await listSettledProofs();
   if (proofs.length === 0) {return 0;}
   // Stamp the attempt, not the success: a throttled or offline reconcile
@@ -760,33 +768,57 @@ export async function sweepSettledProofs(opts: {
   // fail every payout with 11001 forever. Drop spent listings, then sweep
   // the survivors. A 429 propagates — the caller backs off.
   await reconcileTill(mintUrl, {now: opts.now});
-  const proofs = await listSettledProofs();
-  const total = sumSat(proofs);
-  if (total <= keepReserveSat) {
-    return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+  // The reconcile is throttled, so a listing that went stale INSIDE the
+  // window (a melt response lost since the last ask) still reaches the melt
+  // and comes back 11001. That verdict is the mint telling us the store is
+  // stale right now: reconcile again regardless of the window and retry
+  // once, so the self-heal stays silent instead of toasting on every tick
+  // until the window reopens.
+  for (let attempt = 0; ; attempt += 1) {
+    const proofs = await listSettledProofs();
+    const total = sumSat(proofs);
+    if (total <= keepReserveSat) {
+      return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+    }
+    // Largest-first melt selection, stopping so the remaining proofs still
+    // cover the reserve. Melted proofs leave the store inside
+    // meltSettledProofs; the survivors are the float.
+    const sorted = [...proofs].sort((a, b) => b.amount - a.amount);
+    const meltTarget = total - keepReserveSat;
+    let acc = 0;
+    const meltSet = new Set<string>();
+    for (const p of sorted) {
+      if (acc >= meltTarget) {break;}
+      meltSet.add(p.secret);
+      acc += p.amount;
+    }
+    const survivors = proofs.filter(p => !meltSet.has(p.secret));
+    let result: PayoutResult;
+    try {
+      result = await meltSettledProofs({...opts});
+    } catch (error) {
+      if (
+        attempt === 0 &&
+        isMintOperationError(error) &&
+        error.code === TOKEN_ALREADY_SPENT &&
+        (await reconcileTill(mintUrl, {now: opts.now, force: true})) > 0
+      ) {
+        continue;
+      }
+      throw error;
+    }
+    // meltSettledProofs melted the WHOLE store; re-stage the survivors by
+    // writing them back over whatever the melt left (its change).
+    const current = await listSettledProofs();
+    await setSecure(
+      SETTLED_PROOFS_KEY,
+      JSON.stringify([
+        ...current.filter(c => !survivors.some(s => s.secret === c.secret)),
+        ...survivors,
+      ]),
+    );
+    return result;
   }
-  // Largest-first melt selection, stopping so the remaining proofs still
-  // cover the reserve. Melted proofs leave the store inside
-  // meltSettledProofs; the survivors are the float.
-  const sorted = [...proofs].sort((a, b) => b.amount - a.amount);
-  const meltTarget = total - keepReserveSat;
-  let acc = 0;
-  const meltSet = new Set<string>();
-  for (const p of sorted) {
-    if (acc >= meltTarget) {break;}
-    meltSet.add(p.secret);
-    acc += p.amount;
-  }
-  const survivors = proofs.filter(p => !meltSet.has(p.secret));
-  const result = await meltSettledProofs({...opts});
-  // meltSettledProofs melted the WHOLE store; re-stage the survivors by
-  // writing them back over whatever the melt left (its change).
-  const current = await listSettledProofs();
-  await setSecure(
-    SETTLED_PROOFS_KEY,
-    JSON.stringify([...current.filter(c => !survivors.some(s => s.secret === c.secret)), ...survivors]),
-  );
-  return result;
 }
 
 // ── change minting: till proofs → P2PK proofs for the customer's card ──────
@@ -796,16 +828,15 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 /**
  * Forge rate-limits bursts, and a charge is a burst: settle + rebalance +
  * change-swap inside one session. One retry after the mint's own
- * retryAfterMs (or 2.5s) clears the routine throttle.
+ * retryAfterMs (or 2.5s) clears the routine throttle. Only a throttle is
+ * retried: a mint operation error (11001 and friends) is the mint's verdict
+ * and re-sending the same request would only repeat it.
  */
 async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    const retryable =
-      isMintOperationError(error) ||
-      (error instanceof Error && /rate limit/i.test(error.message));
-    if (!retryable) {throw error;}
+    if (!isRateLimited(error)) {throw error;}
     const wait =
       (error as {retryAfterMs?: number}).retryAfterMs ?? 2500;
     await sleep(wait);
