@@ -578,7 +578,12 @@ describe('Invoice screen Flashcard withdraw callback', () => {
       }
     });
 
-    it('keeps the card on the context after OK so the reward reaches it, and resets once the sale is recorded', async () => {
+    // The context is cleared the moment BTCPay answers OK. consumedK1Ref is
+    // per screen instance, so a k1 left on the context would be replayed by
+    // the next Invoice screen whenever this one never reaches
+    // handleSuccessfulPayment (poll gave up, invoice expired, Back). The
+    // reward must still reach the card from what was snapshotted at OK.
+    it('resets the card as soon as the callback answers OK and still sends the reward from the snapshot', async () => {
       jest.useFakeTimers(FAKE_TIMERS);
       const confirmStatus = jest
         .fn()
@@ -587,13 +592,26 @@ describe('Invoice screen Flashcard withdraw callback', () => {
       mockUseLazyQuery.mockReturnValue([confirmStatus]);
       fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
 
-      const {store, navigation} = renderInvoice({reward: rewardsOn});
+      const {store, navigation, rerenderInvoice} = renderInvoice({
+        reward: rewardsOn,
+      });
 
       await flush();
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      // OK is not the end of the payment: tag and lnurl must survive until
-      // handleSuccessfulPayment has used them.
-      expect(mockResetFlashcard).not.toHaveBeenCalled();
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      expect(navigation.replace).not.toHaveBeenCalled();
+
+      // The provider has honoured the reset: nothing on the context now.
+      mockUseFlashcard.mockImplementation(() => ({
+        ...idleFlashcard(),
+        tag: undefined,
+        lnurl: undefined,
+        k1: undefined,
+        callback: undefined,
+      }));
+      await act(async () => {
+        rerenderInvoice();
+      });
 
       await act(async () => {
         jest.advanceTimersByTime(1000);
@@ -613,9 +631,122 @@ describe('Invoice screen Flashcard withdraw callback', () => {
           cardLnurl: 'lnurl1cardreward',
         }),
       );
-      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
       expect(navigation.replace).toHaveBeenCalledWith('Success');
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      // Reset once at OK; the context was already empty when the sale closed.
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends the reward from the snapshot when the subscription confirms paid after the poll gave up', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      const confirmStatus = jest.fn(() =>
+        Promise.resolve(statusResult('PENDING')),
+      );
+      mockUseLazyQuery.mockReturnValue([confirmStatus]);
+      fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
+
+      const {store, navigation, rerenderInvoice} = renderInvoice({
+        reward: rewardsOn,
+      });
+
+      await flush();
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      mockUseFlashcard.mockImplementation(() => ({
+        ...idleFlashcard(),
+        tag: undefined,
+        lnurl: undefined,
+        k1: undefined,
+        callback: undefined,
+      }));
+
+      for (let second = 0; second < 25; second += 1) {
+        await act(async () => {
+          jest.advanceTimersByTime(1000);
+        });
+        await flush();
+      }
+      expect(confirmStatus).toHaveBeenCalledTimes(20);
+      expect(navigation.replace).not.toHaveBeenCalled();
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+
+      // The websocket comes back and reports PAID; the status query agrees.
+      confirmStatus.mockImplementation(() =>
+        Promise.resolve(statusResult('PAID')),
+      );
+      mockUseSubscription.mockReturnValue({
+        data: paidSubscriptionData,
+        error: undefined,
+      });
+      await act(async () => {
+        rerenderInvoice();
+      });
+      await flush();
+      await flush();
+
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        expect.stringContaining('/pull-payments/pull-payment-1/payouts'),
+        expect.objectContaining({destination: 'lnurl1cardreward'}),
+      );
+      const [transaction] = store.getState().transactionHistory.transactions;
+      expect(transaction.reward).toEqual(
+        expect.objectContaining({
+          sentToCard: true,
+          cardLnurl: 'lnurl1cardreward',
+        }),
+      );
+      expect(navigation.replace).toHaveBeenCalledWith('Success');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('looks the card up in storage by the snapshotted tag when it had no lnurl at OK', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockUseFlashcard.mockImplementation(() => ({
+        ...cardOnContext(),
+        lnurl: undefined,
+      }));
+      mockGetAllStoredCards.mockResolvedValueOnce([
+        {tagId: 'tag-1', lnurl: 'lnurl1fromstorage'},
+      ] as never);
+      const confirmStatus = jest
+        .fn()
+        .mockResolvedValueOnce(statusResult('PENDING'))
+        .mockResolvedValue(statusResult('PAID'));
+      mockUseLazyQuery.mockReturnValue([confirmStatus]);
+      fetchMock.mockResolvedValue(lnurlResponse({status: 'OK'}));
+
+      const {store, rerenderInvoice} = renderInvoice({reward: rewardsOn});
+
+      await flush();
+      expect(mockResetFlashcard).toHaveBeenCalledTimes(1);
+      mockUseFlashcard.mockImplementation(() => ({
+        ...idleFlashcard(),
+        tag: undefined,
+        lnurl: undefined,
+        k1: undefined,
+        callback: undefined,
+      }));
+      await act(async () => {
+        rerenderInvoice();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+      await flush();
+      await flush();
+
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        expect.stringContaining('/pull-payments/pull-payment-1/payouts'),
+        expect.objectContaining({destination: 'lnurl1fromstorage'}),
+      );
+      const [transaction] = store.getState().transactionHistory.transactions;
+      expect(transaction.reward).toEqual(
+        expect.objectContaining({
+          sentToCard: true,
+          cardLnurl: 'lnurl1fromstorage',
+        }),
+      );
     });
 
     it('resets the card when the callback answers ERROR', async () => {

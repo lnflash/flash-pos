@@ -79,6 +79,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   // BoltCard k1 is single-use: BTCPay charges the card on the first request
   // and answers "Replayed or expired query" to any repeat (ENG-627).
   const consumedK1Ref = useRef<string>();
+  // The card BTCPay has just charged, snapshotted at OK so the Flashcard
+  // context can be reset at once (a consumed k1 left on the context would be
+  // sent again by the next Invoice screen, ENG-627) while the reward still
+  // reaches the card whichever path confirms the payment first.
+  const paidCardRef = useRef<{lnurl?: string; tagId?: string}>();
   const paidPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmountedRef = useRef(false);
   // Set once the status query reports EXPIRED; the paid poll stops there
@@ -126,25 +131,26 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     },
   );
 
-  const getCardLnurlFromStorage = useCallback(async (): Promise<
-    string | null
-  > => {
-    try {
-      if (!tag?.id) {
-        return null;
-      }
-      const allCards = await getAllStoredCards();
-      const cardInfo = allCards.find(card => card.tagId === tag.id);
+  const getCardLnurlFromStorage = useCallback(
+    async (tagId?: string): Promise<string | null> => {
+      try {
+        if (!tagId) {
+          return null;
+        }
+        const allCards = await getAllStoredCards();
+        const cardInfo = allCards.find(card => card.tagId === tagId);
 
-      if (cardInfo && cardInfo.lnurl) {
-        return cardInfo.lnurl;
-      } else {
+        if (cardInfo && cardInfo.lnurl) {
+          return cardInfo.lnurl;
+        } else {
+          return null;
+        }
+      } catch (err) {
         return null;
       }
-    } catch (err) {
-      return null;
-    }
-  }, [tag?.id, getAllStoredCards]);
+    },
+    [getAllStoredCards],
+  );
 
   const sendRewardsToCard = useCallback(
     async (cardLnurl: string, rewardAmount: number) => {
@@ -204,6 +210,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     }
     completedPaymentHashRef.current = paymentIdentifier;
 
+    // The card is on the context until the withdraw callback answers OK, and
+    // in paidCardRef after that; this sale is the one use of either.
+    const paidCard = paidCardRef.current;
+    paidCardRef.current = undefined;
+
     // Calculate reward information if rewards are enabled
     let rewardInfo;
     let rewardSentToCard = false;
@@ -212,9 +223,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       const calculatedReward = calculateReward(Number(satAmount), rewardConfig);
 
       // Try to get LNURL from context state, fallback to storage lookup
-      let cardLnurl = lnurl;
+      let cardLnurl = lnurl ?? paidCard?.lnurl;
       if (!cardLnurl) {
-        const storageLnurl = await getCardLnurlFromStorage();
+        const storageLnurl = await getCardLnurlFromStorage(
+          tag?.id ?? paidCard?.tagId,
+        );
         if (storageLnurl) {
           cardLnurl = storageLnurl;
         }
@@ -460,10 +473,13 @@ const Invoice: React.FC<Props> = ({navigation}) => {
         setPaymentLoading(false);
         toastShow({message: lnurlResponse.reason, type: 'error'});
       } else if (lnurlResponse.status === 'OK') {
-        // Leave the card on the context: handleSuccessfulPayment reads
-        // `lnurl` / `tag` to send the reward to the card and resets the
-        // context itself once the sale is recorded. consumedK1Ref keeps the
-        // lingering k1 from being sent again.
+        // BTCPay has charged the card and the k1 is spent. Keep what the
+        // reward needs, then clear the context right away: consumedK1Ref is
+        // per screen instance, so a k1 left here would be replayed by the
+        // next Invoice screen if this one never reaches
+        // handleSuccessfulPayment (poll gave up, invoice expired, Back).
+        paidCardRef.current = {lnurl, tagId: tag?.id};
+        resetFlashcard();
         pollUntilPaid();
       }
     } catch (err) {
@@ -471,7 +487,15 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
     }
-  }, [k1, callback, paymentRequest, resetFlashcard, pollUntilPaid]);
+  }, [
+    k1,
+    callback,
+    paymentRequest,
+    lnurl,
+    tag?.id,
+    resetFlashcard,
+    pollUntilPaid,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
