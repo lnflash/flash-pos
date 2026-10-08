@@ -12,7 +12,7 @@ Flash POS deployment involves building native Android and iOS applications with 
 ```bash
 # Production GraphQL endpoints
 FLASH_GRAPHQL_URI=https://api-prod.flash.com/graphql
-FLASH_GRAPHQL_WS_URI=wss://api-prod.flash.com/graphql
+FLASH_GRAPHQL_WS_URI=wss://ws-prod.flash.com/graphql
 
 # Production BTCPay Server
 BTC_PAY_SERVER=https://btcpay-prod.flash.com
@@ -27,7 +27,7 @@ DEBUG=false
 ```bash
 # Staging GraphQL endpoints
 FLASH_GRAPHQL_URI=https://api-staging.flash.com/graphql
-FLASH_GRAPHQL_WS_URI=wss://api-staging.flash.com/graphql
+FLASH_GRAPHQL_WS_URI=wss://ws-staging.flash.com/graphql
 
 # Staging BTCPay Server
 BTC_PAY_SERVER=https://btcpay-staging.flash.com
@@ -37,6 +37,8 @@ PULL_PAYMENT_ID=staging-pull-payment-id
 NODE_ENV=staging
 DEBUG=true
 ```
+
+`FLASH_GRAPHQL_WS_URI` must point at the `ws.` host, not `api.` — the `api.` host refuses the websocket handshake and Lightning payment subscriptions never fire. Real hosts per environment are listed in [ENVIRONMENT.md](ENVIRONMENT.md).
 
 ### Build Scripts
 

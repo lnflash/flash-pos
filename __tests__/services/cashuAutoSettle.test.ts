@@ -8,8 +8,15 @@
  * rejections — a failed payout must not look like a failed settlement), and
  * concurrent triggers collapse into one run.
  */
+import {RateLimitError} from '@cashu/cashu-ts';
+
 import {
+  AUTO_SETTLE_BASELINE_MS,
+  AUTO_SETTLE_MAX_MS,
   cashuOutstanding,
+  nextAutoSettleDelay,
+  payoutToast,
+  RATE_LIMITED_PAYOUT,
   runAutoSettlement,
   type AutoSettleResult,
 } from '../../src/services/cashuAutoSettle';
@@ -98,6 +105,26 @@ describe('runAutoSettlement', () => {
     const result: AutoSettleResult = await runAutoSettlement('merchant');
     expect(result.paidSat).toBeNull();
     expect(result.payoutError).toBe('lightning address unreachable');
+    expect(result.rateLimited).toBe(false);
+  });
+
+  it('a throttled sweep reports the throttle by name, so the loop backs off (ENG-626)', async () => {
+    mockSettlePending.mockResolvedValue({settled: 1, stillPending: 0, failed: 0, lost: 0});
+    mockListSettledProofs.mockResolvedValue([
+      {id: 'k', amount: 32, secret: 's', C: 'c', mintUrl: 'https://forge.flashapp.me'},
+    ]);
+    mockSweepSettledProofs.mockRejectedValue(
+      new RateLimitError('Too Many Requests', 2500),
+    );
+
+    const result = await runAutoSettlement('merchant');
+    expect(result.paidSat).toBeNull();
+    expect(result.rateLimited).toBe(true);
+    expect(result.payoutError).toBe(RATE_LIMITED_PAYOUT);
+    expect(result.payoutError).toMatch(/rate-?limit/i);
+    expect(nextAutoSettleDelay(AUTO_SETTLE_BASELINE_MS, result)).toBeGreaterThan(
+      AUTO_SETTLE_BASELINE_MS,
+    );
   });
 
   it('collapses concurrent triggers into a single run', async () => {
@@ -142,5 +169,77 @@ describe('cashuOutstanding', () => {
       queueCount: 0,
       settledSat: 0,
     });
+  });
+});
+
+describe('nextAutoSettleDelay', () => {
+  const clean = {stillPending: 0, payoutError: undefined};
+
+  it('a clean run snaps back to the baseline', () => {
+    expect(nextAutoSettleDelay(AUTO_SETTLE_BASELINE_MS, clean)).toBe(AUTO_SETTLE_BASELINE_MS);
+    expect(nextAutoSettleDelay(AUTO_SETTLE_MAX_MS, clean)).toBe(AUTO_SETTLE_BASELINE_MS);
+  });
+
+  it('a payout error doubles, up to the cap', () => {
+    const throttled = {stillPending: 0, payoutError: RATE_LIMITED_PAYOUT};
+    let delay = AUTO_SETTLE_BASELINE_MS;
+    const seen: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      delay = nextAutoSettleDelay(delay, throttled);
+      seen.push(delay);
+    }
+    expect(seen).toEqual([40000, 80000, 160000, 240000, 240000, 240000]);
+  });
+
+  it('entries still pending double too', () => {
+    expect(nextAutoSettleDelay(20000, {stillPending: 1, payoutError: undefined})).toBe(40000);
+  });
+
+  it('a run that threw backs off like an incomplete one', () => {
+    expect(nextAutoSettleDelay(20000, null)).toBe(40000);
+    expect(nextAutoSettleDelay(AUTO_SETTLE_MAX_MS, null)).toBe(AUTO_SETTLE_MAX_MS);
+  });
+});
+
+describe('payoutToast', () => {
+  const run = (over: Partial<AutoSettleResult>): AutoSettleResult => ({
+    ran: true,
+    settled: 0,
+    stillPending: 0,
+    paidSat: null,
+    rateLimited: false,
+    ...over,
+  });
+
+  it('a payout is announced', () => {
+    expect(payoutToast(run({paidSat: 21}))).toEqual({
+      message: 'eCash: paid out 21 sat to your wallet',
+      type: 'success',
+    });
+  });
+
+  it('a payout failure is announced', () => {
+    expect(
+      payoutToast(run({payoutError: 'lightning address unreachable'})),
+    ).toEqual({
+      message: 'eCash payout pending: lightning address unreachable',
+      type: 'error',
+    });
+  });
+
+  it('a throttle is not — the loop backs off instead of toasting every tick (ENG-626)', () => {
+    expect(
+      payoutToast(run({payoutError: RATE_LIMITED_PAYOUT, rateLimited: true})),
+    ).toBeNull();
+    // The decision hangs on the flag, not on the text the banner displays.
+    expect(
+      payoutToast(run({payoutError: 'any copy edit of the above', rateLimited: true})),
+    ).toBeNull();
+  });
+
+  it('a clean run with nothing paid says nothing', () => {
+    expect(payoutToast(run({}))).toBeNull();
+    expect(payoutToast(run({paidSat: 0}))).toBeNull();
+    expect(payoutToast(run({skippedPayout: 'nothing settled to sweep'}))).toBeNull();
   });
 });

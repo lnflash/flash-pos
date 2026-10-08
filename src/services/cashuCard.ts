@@ -55,6 +55,25 @@ export class CardError extends Error {
   }
 }
 
+/** ISO 7816 "file or application not found": the SELECT hit a card without our applet. */
+export const SW_APPLET_NOT_FOUND = 0x6a82;
+
+/**
+ * True when the failure is the card saying it does not run the Cashu applet.
+ *
+ * Matches the raw `CardError` from `selectApplet`, and one wrapped as the
+ * `cause` of another error (the per-phase `PhaseError` that `readAndPlan`
+ * throws). The decision rests on the class and the status word, never on
+ * the message text. This is the signature of a non-Cashu ISO-DEP card — a
+ * BoltCard on an NTAG 424 DNA, for one — not of a card that failed.
+ */
+export function isAppletNotFound(error: unknown): boolean {
+  const cause =
+    error instanceof Error ? (error as {cause?: unknown}).cause : undefined;
+  const cardError = cause instanceof CardError ? cause : error;
+  return cardError instanceof CardError && cardError.sw === SW_APPLET_NOT_FOUND;
+}
+
 /**
  * The card accepted the command (0x9000) but the framing was wrong — a short
  * response, a wrong-length body.

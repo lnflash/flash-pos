@@ -15,6 +15,7 @@
  * fight over the queue's single-writer lock.
  */
 import {
+  isRateLimited,
   listSettledProofs,
   sweepSettledProofs,
 } from './cashuMint';
@@ -30,6 +31,12 @@ export interface AutoSettleResult {
   /** Sats swept to the account address; null when the sweep did not run. */
   paidSat: number | null;
   payoutError?: string;
+  /**
+   * True when `payoutError` is the mint's 429. The scheduler and the toast
+   * policy branch on this flag, never on the error text — the text is what
+   * the banner shows the operator and is free to change.
+   */
+  rateLimited: boolean;
   skippedPayout?: string;
 }
 
@@ -38,6 +45,64 @@ export interface AutoSettleResult {
  * without the network. Everything settled above it sweeps to the wallet.
  */
 export const SWEEP_RESERVE_SAT = 16;
+
+/** The `payoutError` a run reports when the mint answered 429. */
+export const RATE_LIMITED_PAYOUT = 'mint is rate-limiting, backing off';
+
+// ── retry cadence ────────────────────────────────────────────────────────────
+
+/**
+ * Forge's limiter sustains its block under steady pressure: a fixed cadence
+ * re-arms it every tick and a throttled settlement never clears. The loop
+ * therefore backs off while runs come back incomplete and snaps back to the
+ * fast baseline once a run lands clean.
+ */
+export const AUTO_SETTLE_BASELINE_MS = 20000;
+export const AUTO_SETTLE_MAX_MS = 240000;
+
+/**
+ * The delay before the next automatic run, given the one that just finished.
+ * `null` is a run that threw (rather than reporting), which backs off too.
+ */
+export function nextAutoSettleDelay(
+  previousMs: number,
+  result: Pick<AutoSettleResult, 'stillPending' | 'payoutError'> | null,
+): number {
+  if (result === null || result.stillPending > 0 || result.payoutError) {
+    return Math.min(previousMs * 2, AUTO_SETTLE_MAX_MS);
+  }
+  return AUTO_SETTLE_BASELINE_MS;
+}
+
+export interface PayoutToast {
+  message: string;
+  type: 'success' | 'error';
+}
+
+/**
+ * What the automatic loop tells the merchant about a run, if anything. A
+ * payout is worth a toast; a payout failure is worth one too — except a
+ * throttle, which is the loop's business (it backs off) and would otherwise
+ * toast on every tick for as long as the mint keeps saying 429. The banner
+ * still shows the throttle; this only decides the toast.
+ */
+export function payoutToast(
+  result: Pick<AutoSettleResult, 'paidSat' | 'payoutError' | 'rateLimited'>,
+): PayoutToast | null {
+  if (result.paidSat != null && result.paidSat > 0) {
+    return {
+      message: `eCash: paid out ${result.paidSat} sat to your wallet`,
+      type: 'success',
+    };
+  }
+  if (result.payoutError && !result.rateLimited) {
+    return {
+      message: `eCash payout pending: ${result.payoutError}`,
+      type: 'error',
+    };
+  }
+  return null;
+}
 
 let inFlight: Promise<AutoSettleResult> | null = null;
 
@@ -74,6 +139,7 @@ export async function runAutoSettlement(
     const settled = await listSettledProofs();
     let paidSat: number | null = null;
     let payoutError: string | undefined;
+    let rateLimited = false;
     let skippedPayout: string | undefined;
 
     if (settled.length === 0) {
@@ -93,7 +159,14 @@ export async function runAutoSettlement(
       } catch (error) {
         // The sweep is best-effort on top of a confirmed settlement: the
         // proofs remain in the store and the next run retries the sweep.
-        payoutError = error instanceof Error ? error.message : String(error);
+        // A throttle is named as one so the scheduler (and the operator)
+        // read it as "wait", not as a broken payout.
+        rateLimited = isRateLimited(error);
+        payoutError = rateLimited
+          ? RATE_LIMITED_PAYOUT
+          : error instanceof Error
+            ? error.message
+            : String(error);
       }
     }
 
@@ -103,6 +176,7 @@ export async function runAutoSettlement(
       stillPending: drain.stillPending,
       paidSat,
       payoutError,
+      rateLimited,
       skippedPayout,
     };
     return lastResult;
