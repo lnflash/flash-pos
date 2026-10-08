@@ -53,6 +53,12 @@ type Props = StackScreenProps<RootStackType, 'Invoice'>;
 const invoiceUnavailableMessage =
   'Please try again. Either the invoice has expired or it has not been paid.';
 
+// After the Flashcard withdraw callback answers OK, the paid state is polled
+// from the status query so it shows even when the payment-status websocket
+// is down (ENG-627). About once a second, for about 20 s.
+const PAID_POLL_INTERVAL_MS = 1000;
+const PAID_POLL_MAX_ATTEMPTS = 20;
+
 const Invoice: React.FC<Props> = ({navigation}) => {
   const dispatch = useAppDispatch();
   const {paymentRequest, paymentHash, paymentSecret} = useAppSelector(
@@ -69,6 +75,21 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [errMessage, setErrMessage] = useState('');
   const completedPaymentHashRef = useRef<string | null>(null);
+  // The k1 of the one Flashcard withdraw callback this screen has sent. A
+  // BoltCard k1 is single-use: BTCPay charges the card on the first request
+  // and answers "Replayed or expired query" to any repeat (ENG-627).
+  const consumedK1Ref = useRef<string>();
+  // The card BTCPay has just charged, snapshotted at OK so the Flashcard
+  // context can be reset at once (a consumed k1 left on the context would be
+  // sent again by the next Invoice screen, ENG-627) while the reward still
+  // reaches the card whichever path confirms the payment first.
+  const paidCardRef = useRef<{lnurl?: string; tagId?: string}>();
+  const paidPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unmountedRef = useRef(false);
+  // Set once the status query reports EXPIRED; the paid poll stops there
+  // instead of spending its remaining attempts on an invoice that cannot
+  // become PAID.
+  const invoiceExpiredRef = useRef(false);
 
   const {k1, callback, lnurl, tag, loading, resetFlashcard, getAllStoredCards} =
     useFlashcard();
@@ -83,6 +104,20 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     [],
   );
 
+  useEffect(() => {
+    // Reset on every mount, not only the first: StrictMode and Fast Refresh
+    // run this cleanup and then the effect again on the same instance, and
+    // a poll started after that must not think the screen is gone.
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      if (paidPollTimerRef.current) {
+        clearTimeout(paidPollTimerRef.current);
+        paidPollTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const {data, error} = useSubscription(LnInvoicePaymentStatus, {
     variables: {
       input: {paymentRequest},
@@ -96,25 +131,26 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     },
   );
 
-  const getCardLnurlFromStorage = useCallback(async (): Promise<
-    string | null
-  > => {
-    try {
-      if (!tag?.id) {
-        return null;
-      }
-      const allCards = await getAllStoredCards();
-      const cardInfo = allCards.find(card => card.tagId === tag.id);
+  const getCardLnurlFromStorage = useCallback(
+    async (tagId?: string): Promise<string | null> => {
+      try {
+        if (!tagId) {
+          return null;
+        }
+        const allCards = await getAllStoredCards();
+        const cardInfo = allCards.find(card => card.tagId === tagId);
 
-      if (cardInfo && cardInfo.lnurl) {
-        return cardInfo.lnurl;
-      } else {
+        if (cardInfo && cardInfo.lnurl) {
+          return cardInfo.lnurl;
+        } else {
+          return null;
+        }
+      } catch (err) {
         return null;
       }
-    } catch (err) {
-      return null;
-    }
-  }, [tag?.id, getAllStoredCards]);
+    },
+    [getAllStoredCards],
+  );
 
   const sendRewardsToCard = useCallback(
     async (cardLnurl: string, rewardAmount: number) => {
@@ -174,6 +210,11 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     }
     completedPaymentHashRef.current = paymentIdentifier;
 
+    // The card is on the context until the withdraw callback answers OK, and
+    // in paidCardRef after that; this sale is the one use of either.
+    const paidCard = paidCardRef.current;
+    paidCardRef.current = undefined;
+
     // Calculate reward information if rewards are enabled
     let rewardInfo;
     let rewardSentToCard = false;
@@ -182,9 +223,13 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       const calculatedReward = calculateReward(Number(satAmount), rewardConfig);
 
       // Try to get LNURL from context state, fallback to storage lookup
-      let cardLnurl = lnurl;
+      // The snapshot is the card BTCPay debited; the live context may already
+      // hold a different card tapped while the paid confirmation was pending.
+      let cardLnurl = paidCard?.lnurl ?? lnurl;
       if (!cardLnurl) {
-        const storageLnurl = await getCardLnurlFromStorage();
+        const storageLnurl = await getCardLnurlFromStorage(
+          paidCard?.tagId ?? tag?.id,
+        );
         if (storageLnurl) {
           cardLnurl = storageLnurl;
         }
@@ -291,6 +336,7 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     }
 
     if (statusPayload?.status === 'EXPIRED') {
+      invoiceExpiredRef.current = true;
       setErrMessage(invoiceUnavailableMessage);
     }
 
@@ -334,10 +380,84 @@ const Invoice: React.FC<Props> = ({navigation}) => {
     };
   }, [data, error, confirmInvoiceIsPaid, handleSuccessfulPayment]);
 
+  // The poll outlives any one render, so it reads the latest confirm and
+  // success handlers through a ref rather than closing over one version.
+  const paymentHandlersRef = useRef({
+    confirmInvoiceIsPaid,
+    handleSuccessfulPayment,
+  });
+  useEffect(() => {
+    paymentHandlersRef.current = {
+      confirmInvoiceIsPaid,
+      handleSuccessfulPayment,
+    };
+  }, [confirmInvoiceIsPaid, handleSuccessfulPayment]);
+
+  // Success without the LnInvoicePaymentStatus subscription: once the
+  // withdraw callback has accepted the invoice, ask the status query until it
+  // says PAID. handleSuccessfulPayment is idempotent, so the subscription
+  // path may still land first (or later) without a second transaction.
+  const pollUntilPaid = useCallback(() => {
+    if (paidPollTimerRef.current) {
+      clearTimeout(paidPollTimerRef.current);
+      paidPollTimerRef.current = null;
+    }
+
+    let attempts = 0;
+    const tick = async () => {
+      paidPollTimerRef.current = null;
+      if (unmountedRef.current || completedPaymentHashRef.current) {
+        return;
+      }
+
+      attempts += 1;
+      const paid = await paymentHandlersRef.current.confirmInvoiceIsPaid();
+      if (unmountedRef.current || completedPaymentHashRef.current) {
+        return;
+      }
+
+      if (paid) {
+        setPaymentLoading(false);
+        paymentHandlersRef.current.handleSuccessfulPayment();
+        return;
+      }
+
+      if (invoiceExpiredRef.current) {
+        // confirmInvoiceIsPaid has already put the expired message on the
+        // QR screen; nothing further can turn this invoice PAID.
+        setPaymentLoading(false);
+        return;
+      }
+
+      if (attempts >= PAID_POLL_MAX_ATTEMPTS) {
+        // The card has been debited (BTCPay answered OK), so say so before
+        // the QR screen comes back; a silent return reads as "not paid"
+        // and invites a second tap. The subscription keeps listening.
+        toastShow({
+          message: 'Card charged. Waiting for payment confirmation.',
+          type: 'info',
+        });
+        setPaymentLoading(false);
+        return;
+      }
+
+      paidPollTimerRef.current = setTimeout(tick, PAID_POLL_INTERVAL_MS);
+    };
+
+    tick();
+  }, []);
+
   const payUsingFlashcard = useCallback(async () => {
     if (!k1 || !callback) {
       return;
     }
+    // One callback per k1, decided before any network: the focus effect
+    // below re-runs whenever this function's identity changes, which can
+    // happen while the first request is still in flight.
+    if (consumedK1Ref.current === k1) {
+      return;
+    }
+    consumedK1Ref.current = k1;
 
     try {
       setPaymentLoading(true);
@@ -350,16 +470,34 @@ const Invoice: React.FC<Props> = ({navigation}) => {
       const lnurlResponse = await result.json();
       // LNURL response processed
 
-      resetFlashcard();
       if (lnurlResponse.status === 'ERROR') {
+        resetFlashcard();
         setPaymentLoading(false);
         toastShow({message: lnurlResponse.reason, type: 'error'});
+      } else if (lnurlResponse.status === 'OK') {
+        // BTCPay has charged the card and the k1 is spent. Keep what the
+        // reward needs, then clear the context right away: consumedK1Ref is
+        // per screen instance, so a k1 left here would be replayed by the
+        // next Invoice screen if this one never reaches
+        // handleSuccessfulPayment (poll gave up, invoice expired, Back).
+        paidCardRef.current = {lnurl, tagId: tag?.id};
+        resetFlashcard();
+        pollUntilPaid();
       }
     } catch (err) {
+      resetFlashcard();
       setPaymentLoading(false);
       toastShow({message: 'Payment failed. Please try again.', type: 'error'});
     }
-  }, [k1, callback, paymentRequest, resetFlashcard]);
+  }, [
+    k1,
+    callback,
+    paymentRequest,
+    lnurl,
+    tag?.id,
+    resetFlashcard,
+    pollUntilPaid,
+  ]);
 
   useFocusEffect(
     useCallback(() => {

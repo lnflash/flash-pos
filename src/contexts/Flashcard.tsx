@@ -2,6 +2,7 @@ import React, {
   createContext,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -109,56 +110,6 @@ export const FlashcardProvider = ({children}: Props) => {
     }
   };
 
-  const handleTag = async (scannedTag: TagEvent) => {
-    // Check if NFC is enabled before processing
-    if (!isNfcEnabledRef.current) {
-      return;
-    }
-
-    const currentScreen = navigationRef.getCurrentRoute()?.name;
-
-    if (scannedTag?.id) {
-      if (!scannedTag.ndefMessage?.length) {
-        // A Flashcard v2 (Cashu javacard) has no NDEF surface; it is
-        // routed by the card payment router, not this lnurlw flow.
-        if (isIsoDepTag(scannedTag)) {
-          return;
-        }
-        toastShow({message: 'NDEF message not found.', type: 'error'});
-      } else {
-        setLoading(true);
-        // One decoder, one definition of "is a BoltCard": the same scan the
-        // card payment router makes before handing the tag here, so a tag
-        // it routed as lnurlw is never read differently on arrival.
-        const payload = getLnurlwPayload(scannedTag);
-
-        if (payload) {
-          setTag(scannedTag);
-          if (currentScreen === 'Invoice') {
-            await getPayDetails(payload, scannedTag);
-          } else if (currentScreen === 'Keypad') {
-            await getHtml(payload, currentScreen, scannedTag);
-          } else if (currentScreen === 'Rewards' && isRewardsEnabled()) {
-            await getHtml(payload, currentScreen, scannedTag);
-          } else {
-            toastShow({
-              message:
-                'Card scans only work on Keypad, Invoice, and Rewards screens',
-              type: 'info',
-            });
-          }
-        }
-        setLoading(false);
-      }
-    } else {
-      toastShow({message: 'No tag found', type: 'error'});
-    }
-  };
-
-  useEffect(() => {
-    handleTagRef.current = handleTag;
-  });
-
   useEffect(() => {
     if (Platform.OS === 'ios') {
       return;
@@ -190,118 +141,200 @@ export const FlashcardProvider = ({children}: Props) => {
     };
   }, []);
 
-  const getPayDetails = async (payload: string, currentTag: TagEvent) => {
-    try {
-      // First, get the payment details for Lightning payment
-      const lnurlParams = await getParams(payload);
-      if ('tag' in lnurlParams && lnurlParams.tag === 'withdrawRequest') {
-        const {k1: paramK1, callback: paramCallback} = lnurlParams;
-        setK1(paramK1);
-        setCallback(paramCallback);
-      } else {
+  // Card storage functions
+  // TODO: Upgrade to Supabase storage later for cloud sync and better management
+  const storeCardInfo = useCallback(
+    async (tagId: string, cardLnurl: string, cardBalanceInSats?: number) => {
+      try {
+        await storeFlashcardInfo(tagId, cardLnurl, cardBalanceInSats);
+      } catch (err) {}
+    },
+    [],
+  );
+
+  const getStoredCardInfo = useCallback(
+    async (tagId: string): Promise<StoredCardInfo | null> => {
+      try {
+        return await getStoredFlashcard(tagId);
+      } catch (err) {
+        return null;
+      }
+    },
+    [],
+  );
+
+  const getPayDetails = useCallback(
+    async (payload: string, currentTag: TagEvent) => {
+      try {
+        // First, get the payment details for Lightning payment
+        const lnurlParams = await getParams(payload);
+        if ('tag' in lnurlParams && lnurlParams.tag === 'withdrawRequest') {
+          const {k1: paramK1, callback: paramCallback} = lnurlParams;
+          setK1(paramK1);
+          setCallback(paramCallback);
+        } else {
+          toastShow({
+            message: `not a properly configured lnurl withdraw tag\n\n${payload}\n\n${
+              'reason' in lnurlParams && lnurlParams.reason
+            }`,
+            type: 'error',
+          });
+          return;
+        }
+
+        // Try to get LNURL from stored card info instead of making another request
+        if (currentTag?.id) {
+          const storedCardInfo = await getStoredCardInfo(currentTag.id);
+
+          if (storedCardInfo && storedCardInfo.lnurl) {
+            setLnurl(storedCardInfo.lnurl);
+            if (storedCardInfo.balanceInSats !== undefined) {
+              setBalanceInSats(storedCardInfo.balanceInSats);
+            }
+          } else {
+          }
+        }
+      } catch (err) {
         toastShow({
-          message: `not a properly configured lnurl withdraw tag\n\n${payload}\n\n${
-            'reason' in lnurlParams && lnurlParams.reason
-          }`,
+          message:
+            'Unsupported NFC card. Please ensure you are using a flashcard.',
           type: 'error',
         });
-        return;
       }
+    },
+    [getStoredCardInfo],
+  );
 
-      // Try to get LNURL from stored card info instead of making another request
-      if (currentTag?.id) {
-        const storedCardInfo = await getStoredCardInfo(currentTag.id);
+  const getHtml = useCallback(
+    async (payload: string, currentScreen?: string, currentTag?: TagEvent) => {
+      try {
+        // Extract the full URL from the payload instead of just the query parameters
+        const urlMatch = payload.match(/lnurlw?:\/\/[^?]+/);
 
-        if (storedCardInfo && storedCardInfo.lnurl) {
-          setLnurl(storedCardInfo.lnurl);
-          if (storedCardInfo.balanceInSats !== undefined) {
-            setBalanceInSats(storedCardInfo.balanceInSats);
+        if (!urlMatch) {
+          throw new Error('No valid URL found in payload');
+        }
+        let baseUrl = urlMatch[0].replace(/^lnurlw?:\/\//, 'https://');
+
+        // Convert boltcard endpoint to boltcards/balance endpoint
+        if (baseUrl.includes('/boltcard')) {
+          baseUrl = baseUrl.replace('/boltcard', '/boltcards/balance');
+        }
+
+        const payloadPart = payload.split('?')[1];
+
+        const url = `${baseUrl}?${payloadPart}`;
+
+        const response = await axios.get(url);
+
+        const html = response.data;
+
+        // Extract card information using new helper functions that return values
+        const extractedLnurl = getLnurlFromHtml(html);
+        const extractedBalance = getBalanceFromHtml(html);
+        const extractedTransactions = getTransactionsFromHtml(html);
+
+        // Set state for immediate UI use
+        if (extractedLnurl) {
+          setLnurl(extractedLnurl);
+        }
+        if (extractedBalance !== undefined) {
+          setBalanceInSats(extractedBalance);
+        }
+        if (extractedTransactions) {
+          setTransactions(extractedTransactions);
+        }
+
+        // Store card info immediately for future use (when making payments)
+        if (currentTag?.id && extractedLnurl) {
+          await storeCardInfo(currentTag.id, extractedLnurl, extractedBalance);
+
+          // Verify storage worked by immediately checking
+          const verifyStoredCard = await getStoredCardInfo(currentTag.id);
+          if (verifyStoredCard) {
+          } else {
           }
         } else {
         }
+
+        if (
+          currentScreen !== 'Rewards' &&
+          currentScreen !== 'Success' &&
+          currentScreen !== 'RewardsSuccess' &&
+          navigationRef.isReady()
+        ) {
+          navigationRef.navigate('FlashcardBalance');
+        }
+      } catch (err) {
+        toastShow({
+          message:
+            'Unsupported NFC card. Please ensure you are using a flashcard or other boltcard compatible NFC.',
+          type: 'error',
+        });
       }
-    } catch (err) {
-      toastShow({
-        message:
-          'Unsupported NFC card. Please ensure you are using a flashcard.',
-        type: 'error',
-      });
-    }
-  };
+    },
+    [storeCardInfo, getStoredCardInfo],
+  );
 
-  const getHtml = async (
-    payload: string,
-    currentScreen?: string,
-    currentTag?: TagEvent,
-  ) => {
-    try {
-      // Extract the full URL from the payload instead of just the query parameters
-      const urlMatch = payload.match(/lnurlw?:\/\/[^?]+/);
-
-      if (!urlMatch) {
-        throw new Error('No valid URL found in payload');
-      }
-      let baseUrl = urlMatch[0].replace(/^lnurlw?:\/\//, 'https://');
-
-      // Convert boltcard endpoint to boltcards/balance endpoint
-      if (baseUrl.includes('/boltcard')) {
-        baseUrl = baseUrl.replace('/boltcard', '/boltcards/balance');
+  const handleTag = useCallback(
+    async (scannedTag: TagEvent) => {
+      // Check if NFC is enabled before processing
+      if (!isNfcEnabledRef.current) {
+        return;
       }
 
-      const payloadPart = payload.split('?')[1];
+      const currentScreen = navigationRef.getCurrentRoute()?.name;
 
-      const url = `${baseUrl}?${payloadPart}`;
-
-      const response = await axios.get(url);
-
-      const html = response.data;
-
-      // Extract card information using new helper functions that return values
-      const extractedLnurl = getLnurlFromHtml(html);
-      const extractedBalance = getBalanceFromHtml(html);
-      const extractedTransactions = getTransactionsFromHtml(html);
-
-      // Set state for immediate UI use
-      if (extractedLnurl) {
-        setLnurl(extractedLnurl);
-      }
-      if (extractedBalance !== undefined) {
-        setBalanceInSats(extractedBalance);
-      }
-      if (extractedTransactions) {
-        setTransactions(extractedTransactions);
-      }
-
-      // Store card info immediately for future use (when making payments)
-      if (currentTag?.id && extractedLnurl) {
-        await storeCardInfo(currentTag.id, extractedLnurl, extractedBalance);
-
-        // Verify storage worked by immediately checking
-        const verifyStoredCard = await getStoredCardInfo(currentTag.id);
-        if (verifyStoredCard) {
+      if (scannedTag?.id) {
+        if (!scannedTag.ndefMessage?.length) {
+          // A Flashcard v2 (Cashu javacard) has no NDEF surface; it is
+          // routed by the card payment router, not this lnurlw flow.
+          if (isIsoDepTag(scannedTag)) {
+            return;
+          }
+          toastShow({message: 'NDEF message not found.', type: 'error'});
         } else {
+          setLoading(true);
+          // One decoder, one definition of "is a BoltCard": the same scan the
+          // card payment router makes before handing the tag here, so a tag
+          // it routed as lnurlw is never read differently on arrival.
+          const payload = getLnurlwPayload(scannedTag);
+
+          if (payload) {
+            setTag(scannedTag);
+            if (currentScreen === 'Invoice') {
+              await getPayDetails(payload, scannedTag);
+            } else if (currentScreen === 'Keypad') {
+              await getHtml(payload, currentScreen, scannedTag);
+            } else if (currentScreen === 'Rewards' && isRewardsEnabled()) {
+              await getHtml(payload, currentScreen, scannedTag);
+            } else {
+              toastShow({
+                message:
+                  'Card scans only work on Keypad, Invoice, and Rewards screens',
+                type: 'info',
+              });
+            }
+          }
+          setLoading(false);
         }
       } else {
+        toastShow({message: 'No tag found', type: 'error'});
       }
+    },
+    [getPayDetails, getHtml],
+  );
 
-      if (
-        currentScreen !== 'Rewards' &&
-        currentScreen !== 'Success' &&
-        currentScreen !== 'RewardsSuccess' &&
-        navigationRef.isReady()
-      ) {
-        navigationRef.navigate('FlashcardBalance');
-      }
-    } catch (err) {
-      toastShow({
-        message:
-          'Unsupported NFC card. Please ensure you are using a flashcard or other boltcard compatible NFC.',
-        type: 'error',
-      });
-    }
-  };
+  useEffect(() => {
+    handleTagRef.current = handleTag;
+  }, [handleTag]);
 
-  const resetFlashcard = () => {
+  // Every function on the context value keeps a stable identity (ENG-627).
+  // The state setters are stable, so these have no live dependencies. A
+  // consumer that lists one of them in a hook's deps (Invoice's
+  // payUsingFlashcard lists resetFlashcard) must not have that hook re-run
+  // just because this provider rendered.
+  const resetFlashcard = useCallback(() => {
     setTag(undefined);
     setK1(undefined);
     setCallback(undefined);
@@ -310,78 +343,80 @@ export const FlashcardProvider = ({children}: Props) => {
     setTransactions(undefined);
     setLoading(undefined);
     setError(undefined);
-  };
+  }, []);
 
-  // Card storage functions
-  // TODO: Upgrade to Supabase storage later for cloud sync and better management
-  const storeCardInfo = async (
-    tagId: string,
-    cardLnurl: string,
-    cardBalanceInSats?: number,
-  ) => {
-    try {
-      await storeFlashcardInfo(tagId, cardLnurl, cardBalanceInSats);
-    } catch (err) {}
-  };
-
-  const getStoredCardInfo = async (
-    tagId: string,
-  ): Promise<StoredCardInfo | null> => {
-    try {
-      return await getStoredFlashcard(tagId);
-    } catch (err) {
-      return null;
-    }
-  };
-
-  const getAllStoredCards = async (): Promise<StoredCardInfo[]> => {
+  const getAllStoredCards = useCallback(async (): Promise<StoredCardInfo[]> => {
     try {
       return await getAllStoredFlashcards();
     } catch (err) {
       return [];
     }
-  };
+  }, []);
 
-  const deleteStoredCard = async (tagId: string): Promise<boolean> => {
-    try {
-      return await deleteStoredFlashcard(tagId);
-    } catch (err) {
-      return false;
-    }
-  };
+  const deleteStoredCard = useCallback(
+    async (tagId: string): Promise<boolean> => {
+      try {
+        return await deleteStoredFlashcard(tagId);
+      } catch (err) {
+        return false;
+      }
+    },
+    [],
+  );
 
-  const clearAllStoredCards = async (): Promise<boolean> => {
+  const clearAllStoredCards = useCallback(async (): Promise<boolean> => {
     try {
       return await clearStoredFlashcards();
     } catch (err) {
       return false;
     }
-  };
+  }, []);
 
-  const getCardRewardLnurl = () => {
+  const getCardRewardLnurl = useCallback(() => {
     // Return the LNURL that can receive rewards
     return lnurl;
-  };
+  }, [lnurl]);
 
-  const value = {
-    tag,
-    k1,
-    callback,
-    lnurl,
-    balanceInSats,
-    transactions,
-    loading,
-    error,
-    isNfcEnabled,
-    handleTag,
-    resetFlashcard,
-    setNfcEnabled,
-    setNfcBusy,
-    getCardRewardLnurl,
-    getAllStoredCards,
-    deleteStoredCard,
-    clearAllStoredCards,
-  };
+  const value = useMemo<FlashcardInterface>(
+    () => ({
+      tag,
+      k1,
+      callback,
+      lnurl,
+      balanceInSats,
+      transactions,
+      loading,
+      error,
+      isNfcEnabled,
+      handleTag,
+      resetFlashcard,
+      setNfcEnabled,
+      setNfcBusy,
+      getCardRewardLnurl,
+      getAllStoredCards,
+      deleteStoredCard,
+      clearAllStoredCards,
+    }),
+    [
+      tag,
+      k1,
+      callback,
+      lnurl,
+      balanceInSats,
+      transactions,
+      loading,
+      error,
+      isNfcEnabled,
+      handleTag,
+      resetFlashcard,
+      setNfcEnabled,
+      setNfcBusy,
+      getCardRewardLnurl,
+      getAllStoredCards,
+      deleteStoredCard,
+      clearAllStoredCards,
+    ],
+  );
 
   return (
     <FlashcardContext.Provider value={value}>
