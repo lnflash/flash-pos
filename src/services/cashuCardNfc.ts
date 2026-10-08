@@ -33,6 +33,7 @@
 import {Platform} from 'react-native';
 import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
 
+import {nowMs, resetApduTimings, summarizeApduTimings} from './apduTiming';
 import {
   CardError,
   readCard,
@@ -145,8 +146,12 @@ export async function withCardSession<T>(
   fn: (transceive: Transceiver) => Promise<T>,
   {alertMessage = 'Hold the Flash card to the phone'}: CardSessionOptions = {},
 ): Promise<T> {
+  // Timing starts fresh per session so the summary below is this tap only.
+  resetApduTimings();
   console.log('[card-session] arming IsoDep request');
+  const armedAt = nowMs();
   await NfcManager.requestTechnology(NfcTech.IsoDep, {alertMessage});
+  const connectedAt = nowMs();
   console.log('[card-session] tag connected');
   try {
     await extendCardTimeout();
@@ -159,6 +164,14 @@ export async function withCardSession<T>(
     // swallows every subsequent tap app-wide, including BoltCard payments.
     // cancelCardSession never throws, so it cannot mask the original error.
     await cancelCardSession();
+    // "tap wait" is arm → tag connected: the user's reach plus field
+    // discovery, which cannot be separated here. "session" is tag connected →
+    // closed, and the APDU figures inside it are the card's own answer time.
+    console.log(
+      `[card-session] timing: tap wait ${Math.round(connectedAt - armedAt)}ms` +
+        ` · session ${Math.round(nowMs() - connectedAt)}ms` +
+        ` · ${summarizeApduTimings()}`,
+    );
     console.log('[card-session] session closed');
   }
 }

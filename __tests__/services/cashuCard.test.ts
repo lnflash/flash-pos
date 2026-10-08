@@ -22,6 +22,7 @@ import {
 } from '../../src/services/cashuCard';
 import * as cardModule from '../../src/services/cashuCard';
 import {recoveryMessage} from '../../src/services/cashuSettlement';
+import {getApduTimings, resetApduTimings} from '../../src/services/apduTiming';
 
 const OK = [0x90, 0x00];
 const ok = (data: number[] = []) => [...data, ...OK];
@@ -725,5 +726,35 @@ describe('getSlotStatuses', () => {
       CardProtocolError,
     );
     expect(card.sent).toHaveLength(0);
+  });
+});
+
+describe('APDU timing', () => {
+  beforeEach(() => resetApduTimings());
+
+  it('readCard records one sample per command, named as the protocol does', async () => {
+    const card = fakeCard();
+    await readCard(card.transceive);
+    expect(getApduTimings().map(s => s.context)).toEqual([
+      'SELECT',
+      'GET_INFO',
+      'GET_PUBKEY',
+      'GET_BALANCE',
+    ]);
+    expect(getApduTimings().every(s => s.ms >= 0)).toBe(true);
+  });
+
+  it('a command the card refuses is still timed', async () => {
+    const card = fakeCard({signStatusWord: 0x6982});
+    await expect(
+      spendProof(card.transceive, 0, new Array(32).fill(0)),
+    ).rejects.toBeInstanceOf(CardError);
+    expect(getApduTimings().map(s => s.context)).toEqual(['SPEND_PROOF']);
+  });
+
+  it('a SELECT that falls back to the applet AID is timed twice', async () => {
+    const card = fakeCard({selectFails: [PACKAGE_AID.length]});
+    await selectApplet(card.transceive);
+    expect(getApduTimings().map(s => s.context)).toEqual(['SELECT', 'SELECT']);
   });
 });

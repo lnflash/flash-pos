@@ -15,6 +15,7 @@
  * Command reference: cashu-javacard `spec/APDU.md`. Kept byte-for-byte in step
  * with the reference host driver `tools/cardctl/cardctl.py`.
  */
+import {nowMs, recordApdu} from './apduTiming';
 import {recoveryMessage, type SettlementEntry} from './cashuSettlement';
 
 /** 7-byte package AID. SELECT does prefix matching, so this also finds the applet. */
@@ -44,8 +45,33 @@ export const INS = {
   SIGN_ARBITRARY: 0x21,
 } as const;
 
+/** Instruction byte → name, for the timing log. */
+const INS_NAME = new Map<number, string>(
+  Object.entries(INS).map(([name, ins]) => [ins, name]),
+);
+
 /** Sends a raw APDU and resolves to the full response: data bytes + SW1 + SW2. */
 export type Transceiver = (apdu: number[]) => Promise<number[]>;
+
+/**
+ * Every APDU goes through here so each one lands in `apduTiming` under its
+ * command name. The sample is taken around the transceive call itself — the
+ * round trip the phone sees — and is recorded even when the card answers with
+ * an error status, since a 6982 that took 700 ms is exactly the kind of number
+ * a timing run exists to show.
+ */
+async function timedTransceive(
+  transceive: Transceiver,
+  apdu: number[],
+  context: string,
+): Promise<number[]> {
+  const startedAt = nowMs();
+  try {
+    return await transceive(apdu);
+  } finally {
+    recordApdu(context, nowMs() - startedAt);
+  }
+}
 
 /** A command reached the card and the card refused it. `sw` is the status word. */
 export class CardError extends Error {
@@ -179,7 +205,16 @@ async function send(
   opts: Parameters<typeof buildApdu>[1] & {context: string},
 ): Promise<number[]> {
   const {context, ...apduOpts} = opts;
-  return parseResponse(await transceive(buildApdu(ins, apduOpts)), context);
+  // Timing buckets by command, not by the caller's label: "SPEND_PROOF slot 3"
+  // and "SPEND_PROOF slot 4" are the same figure.
+  return parseResponse(
+    await timedTransceive(
+      transceive,
+      buildApdu(ins, apduOpts),
+      INS_NAME.get(ins) ?? context,
+    ),
+    context,
+  );
 }
 
 export interface CardInfo {
@@ -211,7 +246,11 @@ export async function selectApplet(transceive: Transceiver): Promise<number[]> {
   for (const aid of [PACKAGE_AID, APPLET_AID]) {
     try {
       return parseResponse(
-        await transceive([0x00, 0xa4, 0x04, 0x00, aid.length, ...aid, 0x00]),
+        await timedTransceive(
+          transceive,
+          [0x00, 0xa4, 0x04, 0x00, aid.length, ...aid, 0x00],
+          'SELECT',
+        ),
         'SELECT',
       );
     } catch (error) {
@@ -320,7 +359,9 @@ export async function loadProof(
       `LOAD_PROOF: keyset id must be 16 hex chars, got ${proof.keysetId.length}`,
     );
   }
-  const keysetBytes = (proof.keysetId.match(/../g) ?? []).map(h => parseInt(h, 16));
+  const keysetBytes = (proof.keysetId.match(/../g) ?? []).map(h =>
+    parseInt(h, 16),
+  );
   const amount = proof.amount;
   const nonceBytes = (proof.nonce.match(/../g) ?? []).map(h => parseInt(h, 16));
   const cBytes = (proof.C.match(/../g) ?? []).map(h => parseInt(h, 16));
@@ -378,9 +419,15 @@ export async function getSlotStatuses(
     );
   }
   return body.map(b => {
-    if (b === 0x00) {return 'empty';}
-    if (b === 0x01) {return 'unspent';}
-    if (b === 0x02) {return 'spent';}
+    if (b === 0x00) {
+      return 'empty';
+    }
+    if (b === 0x01) {
+      return 'unspent';
+    }
+    if (b === 0x02) {
+      return 'spent';
+    }
     throw new CardProtocolError(
       `GET_SLOT_STATUS: unknown status byte 0x${b.toString(16)}`,
     );
@@ -569,4 +616,3 @@ export async function resignWitness(
 ): Promise<number[]> {
   return signArbitrary(transceive, recoveryMessage(entry));
 }
-

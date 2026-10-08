@@ -14,6 +14,7 @@ import {
   withCardSession,
 } from '../../src/services/cashuCardNfc';
 import {CardError, CardProtocolError} from '../../src/services/cashuCard';
+import {recordApdu} from '../../src/services/apduTiming';
 
 // The bridge is stubbed, but `NfcError` is the *real* class hierarchy: the
 // describeCardFailure tests below assert on `instanceof`, so hand-rolled
@@ -407,7 +408,7 @@ describe('describeCardFailure', () => {
 });
 
 describe('isUserCancel', () => {
-  it('is true for a UserCancel — the iOS system sheet\'s Cancel lands here', () => {
+  it("is true for a UserCancel — the iOS system sheet's Cancel lands here", () => {
     expect(isUserCancel(new NfcError.UserCancel())).toBe(true);
   });
 
@@ -421,5 +422,57 @@ describe('isUserCancel', () => {
     expect(isUserCancel(new Error('boom'))).toBe(false);
     expect(isUserCancel('cancel')).toBe(false);
     expect(isUserCancel(null)).toBe(false);
+  });
+});
+
+describe('withCardSession timing', () => {
+  // mockRestore also resets the recorded calls, so each test copies them out
+  // before restoring the real console.log.
+  async function sessionLogs(run: () => Promise<unknown>): Promise<string[]> {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run();
+      return log.mock.calls.map(args => String(args[0]));
+    } finally {
+      log.mockRestore();
+    }
+  }
+  const timingLine = (texts: string[]) =>
+    texts.find(text => text.startsWith('[card-session] timing:'));
+
+  it('logs tap wait, session time and the APDU summary when the session closes', async () => {
+    const texts = await sessionLogs(() =>
+      withCardSession(async () => {
+        recordApdu('SPEND_PROOF', 740);
+        return 'ok';
+      }),
+    );
+    expect(timingLine(texts)).toMatch(
+      /^\[card-session\] timing: tap wait \d+ms · session \d+ms · SPEND_PROOF 1× 740ms · 1 APDUs, 740ms on the wire$/,
+    );
+  });
+
+  it('counts only this session: samples from before the arm are discarded', async () => {
+    recordApdu('SPEND_PROOF', 9999);
+    const texts = await sessionLogs(() => withCardSession(async () => 'ok'));
+    expect(timingLine(texts)).toMatch(/· no APDUs sent$/);
+  });
+
+  it('still logs the timing line, before "session closed", when the session fn throws', async () => {
+    const texts = await sessionLogs(() =>
+      expect(
+        withCardSession(async () => {
+          recordApdu('SELECT', 60);
+          throw new Error('card left');
+        }),
+      ).rejects.toThrow('card left'),
+    );
+    expect(timingLine(texts)).toContain('SELECT 1× 60ms');
+    const timingIdx = texts.findIndex(t =>
+      t.startsWith('[card-session] timing:'),
+    );
+    const closedIdx = texts.indexOf('[card-session] session closed');
+    expect(timingIdx).toBeGreaterThan(-1);
+    expect(timingIdx).toBeLessThan(closedIdx);
   });
 });
