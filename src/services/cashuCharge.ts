@@ -227,12 +227,16 @@ export async function reconcileOwedChange({
     } catch (error) {
       // The piece is on the card: it is NOT owed, whatever the store will
       // take right now, so it stays out of `remaining`. A stale 'owed'
-      // record is harmless — the attempt was counted ahead of its LOAD, so
-      // the next tap reads the card before it could send a duplicate
-      // (`writeOwedChange` and `executeCharge` tolerate the same refusal
-      // the same way). From `readAndPlan` this runs outside `step`: a throw
-      // here would refuse a charge the card can physically take, with a
-      // raw store error for a title.
+      // record is harmless because every path that writes owed change
+      // (`readAndPlan`, `executeCharge`'s retry gate, the keypad reader)
+      // reconciles against the card first, so a stale record is never sent
+      // without a read. That invariant — not the attempt count — is what
+      // keeps a duplicate off the card: the bill's own change in
+      // `executeCharge` is LOADed with `attempts` still 0, so an unconditional
+      // reconcile is load-bearing. `writeOwedChange` and `executeCharge`
+      // tolerate the same refusal the same way. From `readAndPlan` this runs
+      // outside `step`: a throw here would refuse a charge the card can
+      // physically take, with a raw store error for a title.
       if (!markRefused) {
         markRefused = true;
         console.warn(
