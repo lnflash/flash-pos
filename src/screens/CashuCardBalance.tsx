@@ -148,7 +148,15 @@ const Label = styled.Text`
   color: #747474;
 `;
 
+/**
+ * Shrinks and wraps under the row's right edge: Yoga's default flex-shrink is
+ * 0, and the slot count ("14 unspent · 18 spent · 0 free of 32") is wider
+ * than a 375pt phone's Details box leaves beside its label.
+ */
 const Value = styled.Text`
+  flex-shrink: 1;
+  margin-left: 12px;
+  text-align: right;
   font-size: 15px;
   font-family: 'Outfit-SemiBold';
   color: #212121;

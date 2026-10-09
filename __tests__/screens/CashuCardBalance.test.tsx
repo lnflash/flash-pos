@@ -1,4 +1,5 @@
 import React from 'react';
+import {StyleSheet} from 'react-native';
 import {fireEvent, render} from '@testing-library/react-native';
 
 import CashuCardBalance from '../../src/screens/CashuCardBalance';
@@ -104,6 +105,20 @@ describe('CashuCardBalance', () => {
     });
 
     expect(getByText('14 unspent · 18 spent · 0 free of 32')).toBeTruthy();
+  });
+
+  it('lets a long slot count wrap under the right edge instead of overflowing', () => {
+    // Yoga's default flex-shrink is 0: without it, the full-card string runs
+    // past the Details box on a 375pt phone rather than wrapping.
+    const {getByText} = renderScreen({
+      ...SUMMARY,
+      info: {...SUMMARY.info, unspent: 14, spent: 18, empty: 0},
+    });
+
+    const style = StyleSheet.flatten(
+      getByText('14 unspent · 18 spent · 0 free of 32').props.style,
+    );
+    expect(style).toMatchObject({flexShrink: 1, textAlign: 'right'});
   });
 
   it.each([
