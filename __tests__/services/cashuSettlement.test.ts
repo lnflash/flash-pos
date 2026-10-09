@@ -12,6 +12,10 @@ import {
   UNKNOWN_EXPOSURE_KEY,
   __resetDrainState,
   __setPersistDelay,
+  CORRUPT_OWED_CHANGE_KEY,
+  MAX_OWED_CHANGE_ENTRIES,
+  OWED_CHANGE_KEY,
+  OWED_CHANGE_SCHEMA_VERSION,
   acknowledgeFailed,
   acknowledgeUnknownExposure,
   attachRecoveredWitness,
@@ -32,7 +36,17 @@ import {
   recoveryMessageHex,
   settlementId,
   toCashuProof,
+  listOwedChange,
+  markOwedChangeAttemptFailed,
+  markOwedChangeWritten,
+  nonceFromSecret,
+  outstandingChangeForCard,
+  owedChangeId,
+  owedChangeQuarantineKeyFor,
+  owedChangeSatForCard,
+  recordOwedChange,
   type DrainResult,
+  type OwedChangeEntry,
   type SettlementEntry,
   type SpendRecord,
 } from '../../src/services/cashuSettlement';
@@ -1738,5 +1752,248 @@ describe('an unreadable store is not an empty one', () => {
       idOf({slot: 0}),
       idOf({slot: 1}),
     ]);
+  });
+});
+
+describe('owed change store (ENG-630)', () => {
+  const nonceA = '11'.repeat(32);
+  const nonceB = '22'.repeat(32);
+  const secretFor = (nonce: string) =>
+    JSON.stringify([
+      'P2PK',
+      {nonce, data: CARD, tags: [['sigflag', 'SIG_INPUTS']]},
+    ]);
+  const proof = (amount: number, nonce: string) => ({
+    id: '0059534ce0bfa19a',
+    amount,
+    secret: secretFor(nonce),
+    C: '02' + 'cd'.repeat(32),
+  });
+  const opts = {mintUrl: MINT, unit: 'sat'};
+  const storedOwed = (): OwedChangeEntry[] =>
+    JSON.parse(mockStore[OWED_CHANGE_KEY]).entries;
+  const entry = (over: Partial<OwedChangeEntry> = {}): OwedChangeEntry => ({
+    id: owedChangeId(CARD, nonceA),
+    cardPubkey: CARD,
+    mintUrl: MINT,
+    unit: 'sat',
+    keysetId: '0059534ce0bfa19a',
+    amount: 4,
+    secret: secretFor(nonceA),
+    C: '02' + 'cd'.repeat(32),
+    nonce: nonceA,
+    status: 'owed',
+    createdAt: T0,
+    updatedAt: T0,
+    attempts: 0,
+    ...over,
+  });
+  const seed = (entries: unknown[], v = OWED_CHANGE_SCHEMA_VERSION) => {
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify({v, entries});
+  };
+
+  beforeEach(() => {
+    for (const k of Object.keys(mockStore)) {
+      delete mockStore[k];
+    }
+    mockReadFails = null;
+    mockWriteFails = null;
+    mockWriteFailsOnlyFor = null;
+    mockWriteFailBudget = 0;
+    __resetDrainState();
+  });
+
+  it('nonceFromSecret recovers the nonce from a canonical P2PK secret and refuses anything else', () => {
+    expect(nonceFromSecret(secretFor(nonceA))).toBe(nonceA);
+    expect(() => nonceFromSecret('not json')).toThrow(/non-canonical secret/);
+    expect(() => nonceFromSecret(JSON.stringify(['P2PK', {}]))).toThrow(
+      /non-canonical secret/,
+    );
+  });
+
+  it('records minted change as owed, keyed by card and nonce, in a versioned envelope', async () => {
+    const recorded = await recordOwedChange(
+      CARD,
+      [proof(4, nonceA), proof(2, nonceB)],
+      opts,
+      T0,
+    );
+
+    expect(recorded.map(e => e.id)).toEqual([
+      `${CARD}:${nonceA}`,
+      `${CARD}:${nonceB}`,
+    ]);
+    expect(recorded[0]).toEqual(entry());
+    expect(JSON.parse(mockStore[OWED_CHANGE_KEY]).v).toBe(
+      OWED_CHANGE_SCHEMA_VERSION,
+    );
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual(recorded);
+    await expect(owedChangeSatForCard(CARD)).resolves.toBe(6);
+    await expect(outstandingChangeForCard(OTHER_CARD)).resolves.toEqual([]);
+  });
+
+  it('is idempotent: the same proof recorded again hands back what is on disk', async () => {
+    const [first] = await recordOwedChange(CARD, [proof(4, nonceA)], opts, T0);
+    await markOwedChangeWritten(first.id, 7, T0 + 1);
+
+    const again = await recordOwedChange(
+      CARD,
+      [proof(4, nonceA), proof(2, nonceB)],
+      opts,
+      T0 + 2,
+    );
+
+    expect(again[0]).toEqual(
+      expect.objectContaining({id: first.id, status: 'written', slot: 7}),
+    );
+    expect(again[1].status).toBe('owed');
+    expect(storedOwed()).toHaveLength(2);
+  });
+
+  it('records nothing for an empty change and refuses a record with no mint or unit', async () => {
+    await expect(recordOwedChange(CARD, [], opts, T0)).resolves.toEqual([]);
+    expect(mockStore[OWED_CHANGE_KEY]).toBeUndefined();
+    await expect(
+      recordOwedChange(CARD, [proof(4, nonceA)], {mintUrl: '', unit: 'sat'}, T0),
+    ).rejects.toThrow(/mint url/);
+    await expect(
+      recordOwedChange(CARD, [proof(4, nonceA)], {mintUrl: MINT, unit: ''}, T0),
+    ).rejects.toThrow(/unit/);
+    await expect(
+      recordOwedChange(
+        CARD,
+        [{...proof(4, nonceA), secret: 'junk'}],
+        opts,
+        T0,
+      ),
+    ).rejects.toThrow(/non-canonical/);
+  });
+
+  it('markOwedChangeWritten and markOwedChangeAttemptFailed move one entry and leave a missing id alone', async () => {
+    const [a, b] = await recordOwedChange(
+      CARD,
+      [proof(4, nonceA), proof(2, nonceB)],
+      opts,
+      T0,
+    );
+
+    await expect(markOwedChangeAttemptFailed(b.id, '6A84', T0 + 1)).resolves.toEqual(
+      expect.objectContaining({status: 'owed', attempts: 1, lastError: '6A84'}),
+    );
+    await expect(markOwedChangeWritten(a.id, 3, T0 + 2)).resolves.toEqual(
+      expect.objectContaining({status: 'written', slot: 3, updatedAt: T0 + 2}),
+    );
+    await expect(markOwedChangeWritten('nope', 1, T0)).resolves.toBeNull();
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([
+      expect.objectContaining({id: b.id}),
+    ]);
+    // A later write clears the last error.
+    await markOwedChangeWritten(b.id, 4, T0 + 3);
+    expect(storedOwed()[1].lastError).toBeUndefined();
+  });
+
+  it('fails closed: an unreadable store throws rather than answering "nothing owed"', async () => {
+    mockReadFails = new Error('keychain locked');
+
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    await expect(owedChangeSatForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+  });
+
+  it('fails closed on corrupt bytes, quarantines them by content, and keeps what validated', async () => {
+    mockStore[OWED_CHANGE_KEY] = '{not json';
+
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    expect(mockStore[owedChangeQuarantineKeyFor('{not json')]).toBe('{not json');
+    expect(mockStore[CORRUPT_OWED_CHANGE_KEY]).toBe('{not json');
+
+    // One bad element beside a good one: still corrupt to the money-facing
+    // reader, but the good entry survives the next write.
+    seed([entry(), null]);
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    await expect(listOwedChange()).resolves.toEqual([entry()]);
+    await recordOwedChange(CARD, [proof(2, nonceB)], opts, T0);
+    expect(storedOwed().map(e => e.nonce)).toEqual([nonceA, nonceB]);
+  });
+
+  it('refuses to overwrite a corrupt store whose bytes could not be quarantined', async () => {
+    mockStore[OWED_CHANGE_KEY] = '{not json';
+    mockWriteFails = new Error('keychain write denied');
+
+    await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toThrow(
+      /could not be quarantined/,
+    );
+    expect(mockStore[OWED_CHANGE_KEY]).toBe('{not json');
+  });
+
+  it('treats a bare array, a missing envelope and a bad status as corrupt', async () => {
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify([entry()]);
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    seed([entry({status: 'pending' as never})]);
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify({entries: [entry()]});
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+  });
+
+  it('reads a newer envelope and carries unknown fields through a write untouched', async () => {
+    seed([{...entry(), future: 'kept'}], OWED_CHANGE_SCHEMA_VERSION + 1);
+
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([
+      expect.objectContaining({id: entry().id, future: 'kept'}),
+    ]);
+    await markOwedChangeWritten(entry().id, 2, T0 + 1);
+    expect(storedOwed()[0]).toEqual(
+      expect.objectContaining({status: 'written', slot: 2, future: 'kept'}),
+    );
+  });
+
+  it('evicts only written entries, oldest first, and never an owed one', async () => {
+    const written = Array.from({length: MAX_OWED_CHANGE_ENTRIES}, (_, i) =>
+      entry({
+        id: owedChangeId(CARD, i.toString(16).padStart(64, '0')),
+        nonce: i.toString(16).padStart(64, '0'),
+        status: 'written',
+        slot: i % 32,
+        createdAt: T0 + i,
+      }),
+    );
+    seed(written);
+    await recordOwedChange(CARD, [proof(4, nonceA)], opts, T0 + 1000);
+    expect(storedOwed()).toHaveLength(MAX_OWED_CHANGE_ENTRIES);
+    expect(storedOwed()[0].nonce).toBe(written[1].nonce);
+    expect(storedOwed()[MAX_OWED_CHANGE_ENTRIES - 1].nonce).toBe(nonceA);
+
+    const owed = written.map(e => ({...e, status: 'owed' as const}));
+    seed(owed);
+    await recordOwedChange(CARD, [proof(4, nonceA)], opts, T0 + 1000);
+    expect(storedOwed()).toHaveLength(MAX_OWED_CHANGE_ENTRIES + 1);
+    expect(storedOwed().every(e => e.status === 'owed')).toBe(true);
+  });
+
+  it('keeps the owed-change store apart from the settlement queue and its exposure', async () => {
+    await recordOwedChange(CARD, [proof(4, nonceA)], opts, T0);
+
+    await expect(listSettlements()).resolves.toEqual([]);
+    const exposure = await pendingExposure();
+    expect(exposure.count).toBe(0);
+    expect(exposure.totals).toEqual({});
+    await expect(hasUnsettledForCard(CARD)).resolves.toBe(false);
+    expect(mockStore[QUEUE_KEY]).toBeUndefined();
   });
 });

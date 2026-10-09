@@ -100,6 +100,23 @@ export function isAppletNotFound(error: unknown): boolean {
   return cardError instanceof CardError && cardError.sw === SW_APPLET_NOT_FOUND;
 }
 
+/** ISO 7816 "not enough memory space in the file": LOAD_PROOF found no free slot. */
+export const SW_NO_SPACE = 0x6a84;
+
+/**
+ * True when the failure is the card refusing a LOAD_PROOF for want of a free
+ * slot. Same unwrapping as `isAppletNotFound`: the raw `CardError`, or one
+ * carried as the `cause` of the per-phase `PhaseError` `executeCharge`
+ * throws. The decision rests on the class and the status word, never on the
+ * message text.
+ */
+export function isCardFull(error: unknown): boolean {
+  const cause =
+    error instanceof Error ? (error as {cause?: unknown}).cause : undefined;
+  const cardError = cause instanceof CardError ? cause : error;
+  return cardError instanceof CardError && cardError.sw === SW_NO_SPACE;
+}
+
 /**
  * The card accepted the command (0x9000) but the framing was wrong — a short
  * response, a wrong-length body.
@@ -148,6 +165,8 @@ export function describeStatusWord(sw: number): string {
       return 'proof already spent';
     case 0x6a83:
       return 'slot index out of range';
+    case 0x6a84:
+      return 'card is full — no free slot';
     case 0x6a88:
       return 'slot is empty';
     case 0x6a86:

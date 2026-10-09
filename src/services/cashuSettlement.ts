@@ -1201,6 +1201,7 @@ export function __resetDrainState(): void {
   draining = false;
   mintConfirmed.clear();
   quarantineWritten.clear();
+  owedQuarantineWritten.clear();
   persistDelay = realDelay;
 }
 
@@ -1497,4 +1498,417 @@ export async function clearQueue(): Promise<void> {
     }
     await removeSecure(QUEUE_KEY);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Owed change — the CUSTOMER's money, kept apart from the merchant's queue.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where change the mint has signed for a card but the card has not yet taken
+ * is recorded.
+ *
+ * A charge's swap mints P2PK change locked to the customer's card and then
+ * writes it slot by slot with `LOAD_PROOF`. Between the swap and the last
+ * load the change exists only in this process: a `6A84` (no free slot) on the
+ * second piece, a tag lost mid-write, or the app being killed would otherwise
+ * strand mint-signed proofs that only this card can ever spend. So the change
+ * is recorded here **before** the first load, and written on the card's next
+ * tap (`reconcileOwedChange` / `writeOwedChange` in `cashuCharge.ts`).
+ *
+ * A separate key and a separate shape from the settlement queue, on purpose:
+ * `isV0Entry` rejects any status outside `SETTLEMENT_STATUSES`, so a new
+ * status would make a downgraded build quarantine the whole queue, raise
+ * `unknownSince`, and fail `hasUnsettledForCard` closed forever. And the
+ * queue totals money the merchant is owed (`pendingExposure`); this is money
+ * the customer is owed, which must never be added to that figure.
+ */
+export const OWED_CHANGE_KEY = '@cashu_owed_change';
+
+/** Most recent unparseable owed-change blob. See `CORRUPT_QUEUE_KEY`. */
+export const CORRUPT_OWED_CHANGE_KEY = '@cashu_owed_change_corrupt';
+
+/** Per-blob quarantine slot for owed change; content-keyed like `quarantineKeyFor`. */
+export const owedChangeQuarantineKeyFor = (raw: string): string =>
+  `${CORRUPT_OWED_CHANGE_KEY}:${bytesToHex(sha256(utf8ToBytes(raw))).slice(
+    0,
+    16,
+  )}`;
+
+/**
+ * Version of the stored owed-change envelope, `{v, entries}`. Same rules as
+ * `QUEUE_SCHEMA_VERSION`: a new version may add fields, never remove or
+ * retype one, and unknown fields ride through a read untouched.
+ */
+export const OWED_CHANGE_SCHEMA_VERSION = 1;
+
+/**
+ * Soft cap on the owed-change store. Only `'written'` entries are ever
+ * evicted (oldest first); an `'owed'` entry is money the customer has not
+ * received and is kept, cap or no cap.
+ */
+export const MAX_OWED_CHANGE_ENTRIES = 200;
+
+export type OwedChangeStatus =
+  /** Minted for the card, not yet confirmed on it. Written on the next tap. */
+  | 'owed'
+  /** `LOAD_PROOF` answered with a slot, or the nonce was found on the card. */
+  | 'written';
+
+export interface OwedChangeEntry {
+  /** `<cardPubkey>:<nonce>` — derived from the proof, never supplied. See `owedChangeId`. */
+  id: string;
+  cardPubkey: string;
+  mintUrl: string;
+  unit: string;
+  keysetId: string;
+  amount: number;
+  /** The full NUT-10 P2PK secret, verbatim — what the LOAD rebuilds the nonce from. */
+  secret: string;
+  C: string;
+  nonce: string;
+  status: OwedChangeStatus;
+  /** The slot `LOAD_PROOF` answered with, or the slot the nonce was found in. */
+  slot?: number;
+  createdAt: number;
+  updatedAt: number;
+  attempts: number;
+  lastError?: string;
+}
+
+/**
+ * The owed-change id of a proof: `<cardPubkey>:<nonce>`. The nonce is fresh
+ * per minted output, so recording the same change twice lands on the same
+ * entry instead of a twin.
+ */
+export const owedChangeId = (cardPubkey: string, nonce: string): string =>
+  `${cardPubkey}:${nonce}`;
+
+/**
+ * The nonce lives inside the P2PK secret this terminal built; recover it for
+ * the LOAD. Non-standard secrets cannot be re-loaded, which is fine: they were
+ * never this terminal's change.
+ */
+export function nonceFromSecret(secret: string): string {
+  try {
+    const parsed = JSON.parse(secret) as [{kind: string}, {nonce: string}];
+    const nonce = parsed[1].nonce;
+    if (!isText(nonce)) {
+      throw new Error('no nonce');
+    }
+    return nonce;
+  } catch {
+    throw new Error('proof has a non-canonical secret; cannot write change');
+  }
+}
+
+const OWED_CHANGE_STATUSES: ReadonlySet<string> = new Set<OwedChangeStatus>([
+  'owed',
+  'written',
+]);
+
+function isOwedChangeEntry(value: unknown): value is OwedChangeEntry {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const e = value as Record<string, unknown>;
+  return (
+    isText(e.id) &&
+    isText(e.cardPubkey) &&
+    typeof e.mintUrl === 'string' &&
+    isText(e.unit) &&
+    isText(e.keysetId) &&
+    isText(e.secret) &&
+    isText(e.C) &&
+    isText(e.nonce) &&
+    isNum(e.amount) &&
+    isNum(e.createdAt) &&
+    isNum(e.updatedAt) &&
+    isNum(e.attempts) &&
+    typeof e.status === 'string' &&
+    OWED_CHANGE_STATUSES.has(e.status) &&
+    (e.slot === undefined || isNum(e.slot)) &&
+    (e.lastError === undefined || typeof e.lastError === 'string')
+  );
+}
+
+interface OwedChangeRead {
+  entries: OwedChangeEntry[];
+  corrupt: boolean;
+  corruptionRecorded: boolean;
+}
+
+/** Owed-change quarantine keys already written by this process. See `quarantineWritten`. */
+const owedQuarantineWritten = new Set<string>();
+
+/**
+ * Preserve unparseable owed-change bytes. Returns whether the content-keyed
+ * copy landed: that copy is what `withOwedChange` requires before it will
+ * overwrite a corrupt store, since the blob is the only record of change a
+ * customer is still owed.
+ */
+async function quarantineOwedChange(raw: string): Promise<boolean> {
+  const key = owedChangeQuarantineKeyFor(raw);
+  if (owedQuarantineWritten.has(key)) {
+    return true;
+  }
+  try {
+    await setSecure(key, raw);
+    owedQuarantineWritten.add(key);
+  } catch {
+    return false;
+  }
+  try {
+    await setSecure(CORRUPT_OWED_CHANGE_KEY, raw);
+  } catch {
+    // The pointer is a convenience; the content-keyed copy is the record.
+  }
+  return true;
+}
+
+async function loadOwedChange(): Promise<OwedChangeRead> {
+  let raw: string | null;
+  try {
+    raw = await getSecureStrict(OWED_CHANGE_KEY);
+  } catch (error) {
+    throw new QueueUnavailableError(
+      `owed change store unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!raw) {
+    return {entries: [], corrupt: false, corruptionRecorded: false};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      entries: [],
+      corrupt: true,
+      corruptionRecorded: await quarantineOwedChange(raw),
+    };
+  }
+  // Only ever written as an envelope: a bare array has no version to read.
+  const {version, elements} = Array.isArray(parsed)
+    ? {version: -1, elements: null}
+    : unwrap(parsed);
+  if (elements === null || version < 1) {
+    return {
+      entries: [],
+      corrupt: true,
+      corruptionRecorded: await quarantineOwedChange(raw),
+    };
+  }
+  // v1 and every version after it: `filter` hands back the original objects,
+  // so fields a newer build added ride through the next write untouched.
+  const entries = elements.filter(isOwedChangeEntry);
+  if (entries.length !== elements.length) {
+    return {
+      entries,
+      corrupt: true,
+      corruptionRecorded: await quarantineOwedChange(raw),
+    };
+  }
+  return {entries, corrupt: false, corruptionRecorded: false};
+}
+
+async function writeOwedChangeStore(entries: OwedChangeEntry[]): Promise<void> {
+  await setSecure(
+    OWED_CHANGE_KEY,
+    JSON.stringify({v: OWED_CHANGE_SCHEMA_VERSION, entries}),
+  );
+}
+
+/**
+ * `withQueue`'s twin for the owed-change store: the same serialising `tail`,
+ * so a charge recording change and a keypad tap writing it can never
+ * interleave a read-modify-write, and the same refusal to overwrite corrupt
+ * bytes that could not be quarantined.
+ */
+function withOwedChange<T>(
+  fn: (read: OwedChangeRead) => Promise<T>,
+): Promise<T> {
+  const run = tail.then(async () => {
+    const read = await loadOwedChange();
+    if (read.corrupt && !read.corruptionRecorded) {
+      throw new QueueUnavailableError(
+        'owed change store is corrupt and could not be quarantined; refusing to overwrite it',
+      );
+    }
+    return fn(read);
+  });
+  tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * Drop the oldest `'written'` entries once over the cap. Never an `'owed'`
+ * one: the store is allowed past the cap rather than forget change a
+ * customer has not received.
+ */
+function evictOwedChange(entries: OwedChangeEntry[]): OwedChangeEntry[] {
+  const overBy = entries.length - MAX_OWED_CHANGE_ENTRIES;
+  if (overBy <= 0) {
+    return entries;
+  }
+  const drop = new Set<OwedChangeEntry>();
+  for (const e of entries) {
+    if (drop.size >= overBy) {
+      break;
+    }
+    if (e.status === 'written') {
+      drop.add(e);
+    }
+  }
+  return entries.filter(e => !drop.has(e));
+}
+
+/** The minted change proof as the mint adapter returns it (`SettledProof`). */
+export interface OwedChangeProof {
+  /** The keyset id. */
+  id: string;
+  amount: number;
+  secret: string;
+  C: string;
+}
+
+/**
+ * Durably record minted change for a card. **Await this before the first
+ * `LOAD_PROOF`.** Idempotent by id: the same proof recorded twice returns the
+ * entry already on disk. Throws if nothing could be written — the caller
+ * still attempts the loads, since the card is then the only home left for
+ * the change, but must not claim the change is safe.
+ */
+export async function recordOwedChange(
+  cardPubkey: string,
+  proofs: OwedChangeProof[],
+  {mintUrl, unit}: {mintUrl: string; unit: string},
+  now: number,
+): Promise<OwedChangeEntry[]> {
+  if (proofs.length === 0) {
+    return [];
+  }
+  if (!mintUrl) {
+    throw new Error('owed change record is missing the mint url');
+  }
+  if (!unit) {
+    throw new Error('owed change record is missing the keyset unit');
+  }
+  const fresh = proofs.map((proof): OwedChangeEntry => {
+    const nonce = nonceFromSecret(proof.secret);
+    return {
+      id: owedChangeId(cardPubkey, nonce),
+      cardPubkey,
+      mintUrl,
+      unit,
+      keysetId: proof.id,
+      amount: proof.amount,
+      secret: proof.secret,
+      C: proof.C,
+      nonce,
+      status: 'owed',
+      createdAt: now,
+      updatedAt: now,
+      attempts: 0,
+    };
+  });
+  return withOwedChange(async ({entries}) => {
+    const byId = new Map(entries.map(e => [e.id, e]));
+    const result: OwedChangeEntry[] = [];
+    const added: OwedChangeEntry[] = [];
+    for (const entry of fresh) {
+      const existing = byId.get(entry.id);
+      if (existing) {
+        result.push(existing);
+      } else {
+        byId.set(entry.id, entry);
+        added.push(entry);
+        result.push(entry);
+      }
+    }
+    if (added.length > 0) {
+      await writeOwedChangeStore(evictOwedChange([...entries, ...added]));
+    }
+    return result;
+  });
+}
+
+/**
+ * Change this card is still owed. Throws `QueueUnavailableError` on an
+ * unreadable or corrupt store rather than returning `[]`: an empty answer
+ * tells the terminal there is nothing to write, which is the one answer that
+ * turns recoverable change into a permanent loss.
+ */
+export async function outstandingChangeForCard(
+  cardPubkey: string,
+): Promise<OwedChangeEntry[]> {
+  const {entries, corrupt} = await loadOwedChange();
+  if (corrupt) {
+    throw new QueueUnavailableError(
+      'owed change store is corrupt; outstanding change unknown',
+    );
+  }
+  return entries.filter(
+    e => e.cardPubkey === cardPubkey && e.status === 'owed',
+  );
+}
+
+/** Sats of change this card is still owed, for the UI. Same failure rules as `outstandingChangeForCard`. */
+export async function owedChangeSatForCard(
+  cardPubkey: string,
+): Promise<number> {
+  return (await outstandingChangeForCard(cardPubkey)).reduce(
+    (t, e) => t + e.amount,
+    0,
+  );
+}
+
+async function updateOwedChange(
+  id: string,
+  patch: (e: OwedChangeEntry) => OwedChangeEntry,
+): Promise<OwedChangeEntry | null> {
+  return withOwedChange(async ({entries}) => {
+    const idx = entries.findIndex(e => e.id === id);
+    if (idx === -1) {
+      return null;
+    }
+    const next = patch(entries[idx]);
+    entries[idx] = next;
+    await writeOwedChangeStore(entries);
+    return next;
+  });
+}
+
+/** The card took the piece (LOAD_PROOF answered `slot`), or it was found there. */
+export const markOwedChangeWritten = (id: string, slot: number, now: number) =>
+  updateOwedChange(id, e => ({
+    ...e,
+    status: 'written',
+    slot,
+    updatedAt: now,
+    lastError: undefined,
+  }));
+
+/** A LOAD that did not land: still owed, attempt count goes up. */
+export const markOwedChangeAttemptFailed = (
+  id: string,
+  reason: string,
+  now: number,
+) =>
+  updateOwedChange(id, e => ({
+    ...e,
+    status: 'owed',
+    updatedAt: now,
+    attempts: e.attempts + 1,
+    lastError: reason,
+  }));
+
+/** Raw enumeration of the owed-change store, for a debug screen. */
+export async function listOwedChange(): Promise<OwedChangeEntry[]> {
+  return (await loadOwedChange()).entries;
 }
