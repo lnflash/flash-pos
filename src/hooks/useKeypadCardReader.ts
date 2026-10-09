@@ -74,8 +74,10 @@ type BalanceParams = RootStackType['CashuCardBalance'];
  * LOAD refused mid-write, a tag lost, a killed app). A card with no PIN
  * takes it in this very session — LOAD_PROOF is only PIN-gated when a PIN
  * is set, and the keypad has no pad — and the balance is re-read so the
- * screen shows the card as it now is. A PIN card is told what is waiting;
- * the next charge writes it (`executeCharge`, after the PIN verify).
+ * screen shows the card as it now is. A PIN card is told what is waiting —
+ * after the same read-only reconcile, so a piece already on the card is
+ * not counted — and the next charge writes it (`executeCharge`, after the
+ * PIN verify).
  *
  * A balance tap is a READ. The write is opportunistic, and nothing it does
  * may veto the read: the owed-change store failing, a slot read failing, or
@@ -94,10 +96,36 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
   if (owed.length === 0) {
     return {summary};
   }
-  if (summary.info.pinState !== 'unset') {
-    return {summary, owedChangeSat: sumSat(owed)};
-  }
   const now = Date.now();
+  if (summary.info.pinState !== 'unset') {
+    // The write waits for the next charge (after the PIN verify), but the
+    // read-only reconcile does not: GET_PROOF is never PIN-gated (the applet
+    // guards writes only), and a piece whose LOAD landed with its answer
+    // lost is on the card AND 'owed' on disk at once. Told `sumSat(owed)`
+    // straight from the store, the screen would show a balance that already
+    // holds that piece plus "Change waiting — added on the next charge",
+    // and the next charge would reconcile it away and add nothing. So count
+    // only what the card does not hold. A failed reconcile still may not
+    // veto the read: it falls back to what the store says.
+    let remaining = owed;
+    try {
+      const statuses = await getSlotStatuses(
+        nfcTransceiver,
+        summary.info.maxSlots,
+      );
+      remaining = await reconcileOwedChange({
+        transceive: nfcTransceiver,
+        cardPubkey: summary.pubkey,
+        statuses,
+        now,
+      });
+    } catch {
+      remaining = owed;
+    }
+    return remaining.length === 0
+      ? {summary}
+      : {summary, owedChangeSat: sumSat(remaining)};
+  }
   let remaining = owed;
   let written: OwedChangeEntry[] = [];
   try {

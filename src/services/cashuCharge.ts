@@ -215,12 +215,31 @@ export async function reconcileOwedChange({
     }
   }
   const remaining: OwedChangeEntry[] = [];
+  let markRefused = false;
   for (const entry of owed) {
     const slot = onCard.get(entry.nonce);
     if (slot === undefined) {
       remaining.push(entry);
-    } else {
+      continue;
+    }
+    try {
       await markOwedChangeWritten(entry.id, slot, now);
+    } catch (error) {
+      // The piece is on the card: it is NOT owed, whatever the store will
+      // take right now, so it stays out of `remaining`. A stale 'owed'
+      // record is harmless — the attempt was counted ahead of its LOAD, so
+      // the next tap reads the card before it could send a duplicate
+      // (`writeOwedChange` and `executeCharge` tolerate the same refusal
+      // the same way). From `readAndPlan` this runs outside `step`: a throw
+      // here would refuse a charge the card can physically take, with a
+      // raw store error for a title.
+      if (!markRefused) {
+        markRefused = true;
+        console.warn(
+          '[charge] owed change found on the card but its written mark was refused; leaving the stale record for the next reconcile',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
   return remaining;

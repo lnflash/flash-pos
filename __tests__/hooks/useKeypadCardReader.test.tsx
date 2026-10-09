@@ -690,16 +690,77 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
 
   it('tells a PIN card what is waiting instead of writing — the keypad has no pad', async () => {
     mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    // Nothing owed is on the card yet: the reconcile hands every piece back.
+    mockReconcileOwedChange.mockResolvedValue(OWED);
     renderHook(() => useKeypadCardReader());
     focus();
     await flush();
     await tap(V2_TAG);
     await flush();
 
-    expect(mockGetSlotStatuses).not.toHaveBeenCalled();
-    expect(mockReconcileOwedChange).not.toHaveBeenCalled();
+    // The read-only reconcile runs (GET_PROOF is not PIN-gated); the write
+    // does not.
+    expect(mockGetSlotStatuses).toHaveBeenCalledWith(
+      expect.any(Function),
+      SUMMARY.info.maxSlots,
+    );
+    expect(mockReconcileOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({cardPubkey: SUMMARY.pubkey}),
+    );
     expect(mockWriteOwedChange).not.toHaveBeenCalled();
     expect(mockReadCard).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+      owedChangeSat: 6,
+    });
+  });
+
+  it('a PIN card already holding an owed piece (its LOAD answer was lost) is not told that piece is waiting', async () => {
+    // The 4-sat piece is in a slot and still 'owed' on disk: the balance
+    // read already includes it. Counting it as waiting too would promise
+    // it twice, and the next charge would reconcile it away and add nothing.
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue([OWED[1]]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+      owedChangeSat: 2,
+    });
+  });
+
+  it('a PIN card holding every owed piece opens the balance with no "Change waiting" at all', async () => {
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue([]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+    });
+  });
+
+  it('a PIN card whose slot read fails is still told what the store says is waiting', async () => {
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockGetSlotStatuses.mockRejectedValue(new Error('Tag was lost.'));
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockReconcileOwedChange).not.toHaveBeenCalled();
+    expect(mockToastShow).not.toHaveBeenCalled();
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: SUMMARY,
       owedChangeSat: 6,

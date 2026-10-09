@@ -216,6 +216,33 @@ describe('failureBody', () => {
     expect(body).not.toMatch(/next time/i);
   });
 
+  it('a change write the card refused for ANY other reason still says paid + saved — never the raw APDU text', () => {
+    // Under "writing change to card" the swap has settled and the owed
+    // record landed (the unrecorded case has its own phase). A 6982, a
+    // 6A80 or a protocol error on the LOAD is still "paid, change saved":
+    // a body showing the raw refusal under "Charge didn't finish" reads as
+    // "nothing happened", and the merchant's Retry burns the card for the
+    // same bill again.
+    const refusals = [
+      'LOAD_PROOF failed: security status not satisfied (0x6982)',
+      'LOAD_PROOF failed: wrong data (0x6A80)',
+      'LOAD_PROOF: expected 1-byte slot, got 0',
+    ];
+    for (const reason of refusals) {
+      const failure = parseFailure(`[writing change to card] ${reason}`);
+      expect(failure).toMatchObject({tagLost: false, cardFull: false});
+      const body = failureBody(failure, ctx());
+      expect(body).toBe(
+        '12 sats are paid. Your 4 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+      expect(body).not.toMatch(/LOAD_PROOF|0x69|0x6A|1-byte/);
+    }
+    // The raw reason stays on the pill, from the same parse.
+    expect(parseFailure(`[writing change to card] ${refusals[0]}`).detail).toBe(
+      refusals[0],
+    );
+  });
+
   it('a change write that died with NO record landed says the bill is paid and the change did not reach the card — never that it is saved', () => {
     const FULL = 'LOAD_PROOF failed: card is full — no free slot (0x6A84)';
     const unrecorded = (reason: string) =>

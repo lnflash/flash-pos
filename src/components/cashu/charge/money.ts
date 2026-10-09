@@ -100,18 +100,19 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
       ctx.changeSat,
     )} change could not be put on the card.`;
   }
-  if (
-    /^writing change/i.test(phase) &&
-    ctx.changeSat > 0 &&
-    (failure.tagLost || failure.cardFull)
-  ) {
+  if (/^writing change/i.test(phase) && ctx.changeSat > 0) {
     // The mint has settled before the change is written: the bill is paid,
-    // and the change is recorded on the terminal. A tag that moved goes
-    // onto the card at its next tap. A card that ran out of slots does not:
-    // the next tap gives the owed piece no slot either (a spend leaves its
-    // slot 'spent', not free, and nothing in the app clears spent slots
-    // until ENG-631) — so promise only what is true: it is saved here and
-    // goes on once the card has room.
+    // and the change is recorded on the terminal — WHATEVER the card said
+    // to the LOAD (the unrecorded case has its own phase above). A 6982
+    // security-status refusal, a 6A80 wrong-data, a protocol error: all of
+    // them leave the money exactly where a lost tag does, and a body that
+    // showed the raw APDU text instead would send the merchant to Retry,
+    // which burns the card for the same bill a second time. A tag that
+    // moved goes onto the card at its next tap. A card that ran out of
+    // slots does not: the next tap gives the owed piece no slot either (a
+    // spend leaves its slot 'spent', not free, and nothing in the app
+    // clears spent slots until ENG-631) — so promise only what is true: it
+    // is saved here and goes on once the card has room.
     const saved = `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
       ctx.changeSat,
     )} change is saved on this terminal`;

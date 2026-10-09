@@ -1201,6 +1201,90 @@ describe('owed change (ENG-630)', () => {
     ]);
   });
 
+  it('reconcileOwedChange tolerates the store refusing a written mark: the piece on the card stays out of the remainder and the charge proceeds', async () => {
+    // Two pieces owed: the 4-sat one is already in slot 1 (its LOAD answer
+    // was lost), the 2-sat one is nowhere. The keychain then refuses the
+    // `written` mark — the same refusal `writeOwedChange` and
+    // `executeCharge` already tolerate. The read must not turn into a
+    // refused charge with a raw store error for a title: the piece IS on
+    // the card, so it is not owed, and the stale record is harmless (the
+    // next reconcile finds it again).
+    const [onCard, missing] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, seededNonce(1)), changeProof(2, '72'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({
+      slots: [
+        {amount: 16, status: 0x01},
+        {amount: 4, status: 0x01},
+      ],
+      pin: '1234',
+      maxSlots: 4,
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (k === OWED_CHANGE_KEY) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const remaining = await reconcileOwedChange({
+        transceive: card.transceive,
+        cardPubkey: CARD_PUBKEY_HEX,
+        statuses: card.statuses,
+        now: 2000,
+      });
+
+      expect(remaining).toEqual([missing]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/written mark was refused/),
+        'keychain write denied',
+      );
+      // The store still says 'owed' for the piece on the card — stale, and
+      // harmless: the next reconcile finds the nonce in its slot again.
+      expect(owedStore().map(e => [e.amount, e.status])).toEqual([
+        [4, 'owed'],
+        [2, 'owed'],
+      ]);
+
+      // The same refusal from inside `readAndPlan` (outside `step`) does
+      // not refuse the charge: the plan carries only the piece that is
+      // genuinely missing, and the bill goes through.
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 16,
+      });
+      expect(preRead.owedChange).toEqual([missing]);
+      expect(preRead.owedChange).not.toContainEqual(
+        expect.objectContaining({id: onCard.id}),
+      );
+      mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 3000,
+      });
+      expect(result.changeSat).toBe(0);
+      expect(card.burnCount).toBe(1);
+      // The piece already on the card was never LOADed a second time.
+      expect(card.loads.map(l => l.nonce)).not.toContain(seededNonce(1));
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+      warn.mockRestore();
+    }
+  });
+
   it('writeOwedChange marks each piece as the card answers and records a refusal', async () => {
     const [a, b] = await recordOwedChange(
       CARD_PUBKEY_HEX,
