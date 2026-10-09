@@ -38,12 +38,12 @@ import {
   toCashuProof,
   listOwedChange,
   markOwedChangeAttemptFailed,
+  markOwedChangeSending,
   markOwedChangeWritten,
   nonceFromSecret,
   outstandingChangeForCard,
   owedChangeId,
   owedChangeQuarantineKeyFor,
-  owedChangeSatForCard,
   recordOwedChange,
   type DrainResult,
   type OwedChangeEntry,
@@ -1828,7 +1828,6 @@ describe('owed change store (ENG-630)', () => {
       OWED_CHANGE_SCHEMA_VERSION,
     );
     await expect(outstandingChangeForCard(CARD)).resolves.toEqual(recorded);
-    await expect(owedChangeSatForCard(CARD)).resolves.toBe(6);
     await expect(outstandingChangeForCard(OTHER_CARD)).resolves.toEqual([]);
   });
 
@@ -1869,7 +1868,7 @@ describe('owed change store (ENG-630)', () => {
     ).rejects.toThrow(/non-canonical/);
   });
 
-  it('markOwedChangeWritten and markOwedChangeAttemptFailed move one entry and leave a missing id alone', async () => {
+  it('markOwedChangeSending, markOwedChangeWritten and markOwedChangeAttemptFailed move one entry and leave a missing id alone', async () => {
     const [a, b] = await recordOwedChange(
       CARD,
       [proof(4, nonceA), proof(2, nonceB)],
@@ -1877,9 +1876,15 @@ describe('owed change store (ENG-630)', () => {
       T0,
     );
 
+    // The attempt is counted as the LOAD goes out (write-ahead); the
+    // failure records the reason and counts nothing a second time.
+    await expect(markOwedChangeSending(b.id, T0 + 1)).resolves.toEqual(
+      expect.objectContaining({status: 'owed', attempts: 1}),
+    );
     await expect(markOwedChangeAttemptFailed(b.id, '6A84', T0 + 1)).resolves.toEqual(
       expect.objectContaining({status: 'owed', attempts: 1, lastError: '6A84'}),
     );
+    await expect(markOwedChangeSending('nope', T0)).resolves.toBeNull();
     await expect(markOwedChangeWritten(a.id, 3, T0 + 2)).resolves.toEqual(
       expect.objectContaining({status: 'written', slot: 3, updatedAt: T0 + 2}),
     );
@@ -1896,9 +1901,6 @@ describe('owed change store (ENG-630)', () => {
     mockReadFails = new Error('keychain locked');
 
     await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
-    await expect(owedChangeSatForCard(CARD)).rejects.toBeInstanceOf(
       QueueUnavailableError,
     );
     await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toBeInstanceOf(
@@ -1924,7 +1926,6 @@ describe('owed change store (ENG-630)', () => {
     });
     mockStore[OWED_CHANGE_KEY] = raw;
     await expect(outstandingChangeForCard(CARD)).resolves.toEqual([entry()]);
-    await expect(owedChangeSatForCard(CARD)).resolves.toBe(4);
     expect(mockStore[owedChangeQuarantineKeyFor(raw)]).toBe(raw);
     await expect(listOwedChange()).resolves.toEqual([entry()]);
     await recordOwedChange(CARD, [proof(2, nonceB)], opts, T0);
@@ -1938,9 +1939,6 @@ describe('owed change store (ENG-630)', () => {
 
     await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
       QueueUnavailableError,
-    );
-    await expect(owedChangeSatForCard(CARD)).rejects.toThrow(
-      /could not be quarantined/,
     );
     await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toThrow(
       /could not be quarantined/,

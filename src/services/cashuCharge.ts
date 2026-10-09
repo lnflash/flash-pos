@@ -41,6 +41,7 @@ import {
   listSettlements,
   markEntriesSettled,
   markOwedChangeAttemptFailed,
+  markOwedChangeSending,
   markOwedChangeWritten,
   nonceFromSecret,
   outstandingChangeForCard,
@@ -265,6 +266,22 @@ export async function writeOwedChange({
   for (const entry of owed) {
     const phase = owedChangePhase(entry.amount);
     onPhase(phase);
+    // Write-ahead: the attempt is counted BEFORE the LOAD goes out. The card
+    // does not dedup a LOAD, so whatever fails after this point — the
+    // answer lost, the `written` mark refused by the keychain, the process
+    // killed — the next try sees `attempts > 0` and reads the card before
+    // sending this piece again. If the store will not take the mark,
+    // nothing is sent: this piece and the rest stay `owed` for a later tap
+    // (writing nothing is the safe side; writing a duplicate is not).
+    try {
+      await markOwedChangeSending(entry.id, now);
+    } catch (error) {
+      console.warn(
+        '[charge] owed-change attempt could not be recorded; leaving the rest owed for a later tap',
+        error instanceof Error ? error.message : String(error),
+      );
+      return written;
+    }
     let slot: number;
     try {
       slot = await loadProof(transceive, {
@@ -278,12 +295,18 @@ export async function writeOwedChange({
       try {
         await markOwedChangeAttemptFailed(entry.id, reason, now);
       } catch {
-        // The entry stays 'owed' on disk either way; the attempt count is
+        // The entry stays 'owed' on disk either way; the reason is
         // bookkeeping and must not mask the card's answer.
       }
       throw new PhaseError(phase, error);
     }
-    await markOwedChangeWritten(entry.id, slot, now);
+    try {
+      await markOwedChangeWritten(entry.id, slot, now);
+    } catch {
+      // The piece is on the card. A stale 'owed' record is harmless: the
+      // attempt was counted ahead, so the next try reconciles and finds the
+      // nonce in its slot before it could send a duplicate.
+    }
     written += 1;
   }
   return written;
@@ -364,8 +387,6 @@ export interface PreReadCharge {
    * for a later tap and never refuse a charge the card can physically take.
    */
   owedChange: OwedChangeEntry[];
-  /** Empty slots the card reported, before any owed change is written. */
-  emptySlots: number;
 }
 
 export async function readAndPlan({
@@ -459,7 +480,6 @@ export async function readAndPlan({
     pinRequired: info.pinState === 'set',
     unspent,
     owedChange,
-    emptySlots,
   };
 }
 
@@ -595,13 +615,16 @@ export async function executeCharge({
   //
   // The store alone is not enough on a retry: a LOAD whose answer was lost
   // (the tag dropped as the card wrote the slot) leaves the piece ON the
-  // card and still `owed` on disk, with the attempt counted. Re-sending it
-  // from the store's word would put a second copy of the proof on the card
-  // — a phantom balance and a mint rejection when the copy is spent. So any
-  // piece that has already been attempted is settled against the card
-  // first (`reconcileOwedChange`, the rule at its doc comment) and only
-  // what the card does not hold goes on. A first attempt (`attempts` 0) was
-  // never sent, so it skips the read and the common path costs no APDU.
+  // card and still `owed` on disk, with the attempt counted (it is counted
+  // BEFORE the LOAD goes out — `writeOwedChange` — so a `written` mark the
+  // keychain refused after the card answered looks the same). Re-sending
+  // it from the store's word would put a second copy of the proof on the
+  // card — a phantom balance and a mint rejection when the copy is spent.
+  // So any piece that has already been attempted is settled against the
+  // card first (`reconcileOwedChange`, the rule at its doc comment) and
+  // only what the card does not hold goes on. A first attempt (`attempts`
+  // 0) was never sent, so it skips the read and the common path costs no
+  // APDU.
   if (owedChange.length > 0) {
     let toWrite = await stillOwedOf(cardPubkey, owedChange);
     if (toWrite.some(e => e.attempts > 0)) {

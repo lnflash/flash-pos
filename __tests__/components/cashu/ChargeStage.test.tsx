@@ -272,7 +272,7 @@ describe('errors', () => {
     expect(late.getByText('The card is full', visible)).toBeTruthy();
     expect(
       late.getByText(
-        '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.',
+        '12 sats are paid. Your 4 sats change is saved on this terminal and will be added once the card has a free slot.',
         visible,
       ),
     ).toBeTruthy();

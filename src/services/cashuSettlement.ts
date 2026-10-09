@@ -1867,16 +1867,6 @@ export async function outstandingChangeForCard(
   );
 }
 
-/** Sats of change this card is still owed, for the UI. Same failure rules as `outstandingChangeForCard`. */
-export async function owedChangeSatForCard(
-  cardPubkey: string,
-): Promise<number> {
-  return (await outstandingChangeForCard(cardPubkey)).reduce(
-    (t, e) => t + e.amount,
-    0,
-  );
-}
-
 async function updateOwedChange(
   id: string,
   patch: (e: OwedChangeEntry) => OwedChangeEntry,
@@ -1903,7 +1893,27 @@ export const markOwedChangeWritten = (id: string, slot: number, now: number) =>
     lastError: undefined,
   }));
 
-/** A LOAD that did not land: still owed, attempt count goes up. */
+/**
+ * Write-ahead marker: the LOAD for this piece is about to go out. The
+ * attempt is counted BEFORE the card sees it, so a retry after any later
+ * failure — the answer lost, the `written` mark refused by the keychain, the
+ * process killed — finds `attempts > 0` and reconciles against the card
+ * before sending again. Counting only on the failure path left the one
+ * case where the LOAD landed and the store write failed looking like a
+ * first attempt, and the card does not dedup a LOAD.
+ */
+export const markOwedChangeSending = (id: string, now: number) =>
+  updateOwedChange(id, e => ({
+    ...e,
+    status: 'owed',
+    updatedAt: now,
+    attempts: e.attempts + 1,
+  }));
+
+/**
+ * A LOAD that did not land: still owed, with the card's reason. The attempt
+ * was already counted by `markOwedChangeSending`; this records why.
+ */
 export const markOwedChangeAttemptFailed = (
   id: string,
   reason: string,
@@ -1913,7 +1923,6 @@ export const markOwedChangeAttemptFailed = (
     ...e,
     status: 'owed',
     updatedAt: now,
-    attempts: e.attempts + 1,
     lastError: reason,
   }));
 

@@ -106,11 +106,18 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     (failure.tagLost || failure.cardFull)
   ) {
     // The mint has settled before the change is written: the bill is paid,
-    // and the change is recorded on the terminal — it goes onto the card at
-    // its next tap, whether the tag moved or the card ran out of slots.
-    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+    // and the change is recorded on the terminal. A tag that moved goes
+    // onto the card at its next tap. A card that ran out of slots does not:
+    // the next tap gives the owed piece no slot either (a spend leaves its
+    // slot 'spent', not free, and nothing in the app clears spent slots
+    // until ENG-631) — so promise only what is true: it is saved here and
+    // goes on once the card has room.
+    const saved = `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
       ctx.changeSat,
-    )} change is saved and will be added the next time this card is charged.`;
+    )} change is saved on this terminal`;
+    return failure.cardFull
+      ? `${saved} and will be added once the card has a free slot.`
+      : `${saved} and will be added the next time this card is charged.`;
   }
   if (!failure.tagLost) {
     return failure.detail || 'The card stopped responding.';

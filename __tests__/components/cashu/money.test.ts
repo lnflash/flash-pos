@@ -179,23 +179,15 @@ describe('failureBody', () => {
     ).toMatch(/^Nothing was taken from the card\./);
   });
 
-  it('a change write that died — tag lost or card full — says the change is saved for the next charge', () => {
-    const saved =
-      '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.';
+  it('a change write that died with the tag lost says the change is saved for the next charge', () => {
     expect(
       failureBody(
         parseFailure('[writing change to card] Tag was lost.'),
         ctx(),
       ),
-    ).toBe(saved);
-    expect(
-      failureBody(
-        parseFailure(
-          '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
-        ),
-        ctx(),
-      ),
-    ).toBe(saved);
+    ).toBe(
+      '12 sats are paid. Your 4 sats change is saved on this terminal and will be added the next time this card is charged.',
+    );
     expect(
       failureBody(parseFailure('[writing change to card] Tag was lost.'), {
         ...ctx(),
@@ -203,8 +195,25 @@ describe('failureBody', () => {
         changeSat: 1,
       }),
     ).toBe(
-      '1 sat is paid. Your 1 sat change is saved and will be added the next time this card is charged.',
+      '1 sat is paid. Your 1 sat change is saved on this terminal and will be added the next time this card is charged.',
     );
+  });
+
+  it('a change write the card refused as full says the change is saved and goes on once the card has a free slot — never "next time"', () => {
+    // A full card stays full: the next tap gives the owed piece no slot
+    // either (nothing frees a spent slot until ENG-631), so "the next time
+    // this card is charged" would be false for exactly the case that
+    // triggers it.
+    const body = failureBody(
+      parseFailure(
+        '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      ),
+      ctx(),
+    );
+    expect(body).toBe(
+      '12 sats are paid. Your 4 sats change is saved on this terminal and will be added once the card has a free slot.',
+    );
+    expect(body).not.toMatch(/next time/i);
   });
 
   it('a change write that died with NO record landed says the bill is paid and the change did not reach the card — never that it is saved', () => {

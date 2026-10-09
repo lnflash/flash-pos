@@ -742,7 +742,6 @@ describe('slot pre-flight (ENG-630)', () => {
     });
 
     expect(preRead.plan).toEqual({slots: [1], burnedSat: 18, changeSat: 8});
-    expect(preRead.emptySlots).toBe(1);
     expect(preRead.owedChange).toEqual([]);
   });
 
@@ -780,7 +779,6 @@ describe('slot pre-flight (ENG-630)', () => {
       amountSat: 10,
     });
     expect(billFirst.plan).toEqual({slots: [0], burnedSat: 16, changeSat: 6});
-    expect(billFirst.emptySlots).toBe(2);
     expect(billFirst.owedChange).toEqual([]);
     await expect(
       outstandingChangeForCard(CARD_PUBKEY_HEX),
@@ -811,7 +809,6 @@ describe('slot pre-flight (ENG-630)', () => {
       amountSat: 16,
     });
     expect(preRead.plan.changeSat).toBe(0);
-    expect(preRead.emptySlots).toBe(1);
     expect(preRead.owedChange.map(e => e.amount)).toEqual([4]);
     await expect(
       outstandingChangeForCard(CARD_PUBKEY_HEX),
@@ -856,7 +853,6 @@ describe('slot pre-flight (ENG-630)', () => {
       amountSat: 12,
     });
     expect(preRead.plan).toEqual({slots: [0], burnedSat: 16, changeSat: 4});
-    expect(preRead.emptySlots).toBe(1);
     expect(preRead.owedChange).toEqual([]);
 
     const result = await executeCharge({
@@ -1402,6 +1398,148 @@ describe('owed change (ENG-630)', () => {
     await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
       [],
     );
+  });
+
+  it('a PIN-flow retry never re-sends an owed piece whose LOAD landed but whose written mark the store refused', async () => {
+    const nonce = '71'.repeat(32);
+    const [owed] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, nonce)],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      maxSlots: 4,
+    });
+    // The card takes the LOAD and answers its slot; the keychain then
+    // refuses the `written` mark — the same failure the bill's own change
+    // already tolerates. The piece is ON the card and `owed` on disk.
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    let owedWrites = 0;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      // 1st owed-store write of the session = the write-ahead attempt mark
+      // (lands); 2nd = the `written` mark after the card answered (refused).
+      if (k === OWED_CHANGE_KEY && ++owedWrites === 2) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    // Then the tag drops under the burn before the card sees it: the charge
+    // dies before any money moves, and the PIN pad retries with the same
+    // args.
+    let dropNextBurn = true;
+    const transceive: Transceiver = async apdu => {
+      if (insOf(apdu) === 0x20 && dropNextBurn) {
+        dropNextBurn = false;
+        throw new Error('Tag was lost.');
+      }
+      return card.transceive(apdu);
+    };
+    try {
+      const preRead = await readAndPlan({transceive, amountSat: 16});
+      expect(preRead.owedChange).toEqual([owed]);
+      const args = {
+        ...preRead,
+        transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 2000,
+      };
+      mockMintChargeChange.mockResolvedValue({change: [], till: []});
+
+      await expect(executeCharge(args)).rejects.toThrow(
+        /^\[burning 16 sat \(proof 1\/1\)\] Tag was lost/,
+      );
+      expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
+      expect(card.statuses).toEqual(['unspent', 'unspent', 'empty', 'empty']);
+      // The attempt was counted BEFORE the LOAD went out, so the refused
+      // `written` mark leaves a record that still says "this was sent".
+      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+        expect.objectContaining({id: owed.id, status: 'owed', attempts: 1}),
+      ]);
+
+      // The customer re-enters the PIN: same plan, same owedChange snapshot.
+      // `attempts > 0` sends the retry to the card first; the nonce is found
+      // in slot 1, marked written, and never LOADed a second time.
+      const result = await executeCharge({...args, now: 3000});
+
+      expect(result.changeSat).toBe(0);
+      expect(card.burnCount).toBe(1);
+      expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(1);
+      expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
+      expect(card.statuses).toEqual(['spent', 'unspent', 'empty', 'empty']);
+      expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
+        [4, 'written', 1],
+      ]);
+      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
+        [],
+      );
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+    }
+  });
+
+  it('an owed piece whose attempt mark the store refuses is never sent: nothing owed goes on, the charge completes', async () => {
+    const [owed] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, '71'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      maxSlots: 4,
+    });
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.owedChange).toEqual([owed]);
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (k === OWED_CHANGE_KEY) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+    try {
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 2000,
+      });
+
+      expect(result.changeSat).toBe(0);
+      expect(card.burnCount).toBe(1);
+      // A LOAD the store could not count ahead would be invisible to the
+      // next retry — so it is not sent. The piece waits for a later tap.
+      expect(card.sent.find(a => insOf(a) === 0x30)).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/owed-change attempt could not be recorded/),
+        'keychain write denied',
+      );
+      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+        expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
+      ]);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+      warn.mockRestore();
+    }
   });
 
   it('a first owed write does not re-read the card', async () => {

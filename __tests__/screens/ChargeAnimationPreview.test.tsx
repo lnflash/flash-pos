@@ -166,7 +166,7 @@ describe('ChargeAnimationPreview', () => {
     // card's next tap (ENG-630).
     expect(
       getByText(
-        '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.',
+        '12 sats are paid. Your 4 sats change is saved on this terminal and will be added the next time this card is charged.',
         visible,
       ),
     ).toBeTruthy();

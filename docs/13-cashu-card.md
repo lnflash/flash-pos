@@ -208,9 +208,12 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
   non-empty slot it was not handed already (`readAndPlan` passes the unspent
   slots it just pulled, so only the spent ones cost an APDU — a lost LOAD
   answer leaves the piece on the card, and the card does not dedup) and marks
-  any piece already there, then `writeOwedChange` loads the rest. In a charge
-  that happens after the PIN verify and before the burn (`LOAD_PROOF` is
-  PIN-gated when a PIN is set); on the keypad's balance read a PIN-less card
+  any piece already there, then `writeOwedChange` loads the rest — counting
+  each attempt (`markOwedChangeSending`) BEFORE its `LOAD_PROOF` goes out, so
+  a `written` mark the keychain refuses after the card answered still reads
+  as attempted and the retry reconciles instead of sending a twin. In a
+  charge that happens after the PIN verify and before the burn (`LOAD_PROOF`
+  is PIN-gated when a PIN is set); on the keypad's balance read a PIN-less card
   takes it in the same session and a PIN card is told what is waiting
   (`CashuCardBalance`). The balance tap is a read: a refused or lost write
   there never vetoes it, the screen opens with what is still waiting.
