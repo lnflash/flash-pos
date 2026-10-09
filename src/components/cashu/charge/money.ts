@@ -35,6 +35,14 @@ const TAG_LOST =
  */
 const CARD_FULL = /card is full/i;
 
+/**
+ * `executeCharge` reports a change write that failed AFTER the owed-change
+ * record itself failed to land under this phase (`cashuCharge.ts`,
+ * `PHASE_WRITING_CHANGE_UNRECORDED`). The change is then nowhere but the
+ * dead process; the body must not say it is saved.
+ */
+const CHANGE_UNRECORDED = /^writing change to card \(unrecorded\)$/i;
+
 export interface Failure {
   /** The phase the charge died on, from executeCharge's "[phase] …" prefix. */
   phase: string | null;
@@ -78,7 +86,14 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
   const phase = failure.phase ?? '';
   if (failure.cardFull && ctx.burnsDone === 0) {
     // The pre-flight (or a LOAD of earlier change) refused before any burn.
-    return 'Nothing was taken from the card. It has no free slot for the change — spend from it first.';
+    // No instruction: a spend leaves its slot 'spent', not free, and nothing
+    // in the app clears spent slots yet (ENG-631 adds the top-up that does).
+    return 'Nothing was taken from the card. It has no free slot for the change.';
+  }
+  if (CHANGE_UNRECORDED.test(phase)) {
+    // The bill is paid but the change was never recorded and did not land:
+    // it is not saved anywhere, so say only what the card said.
+    return failure.detail || 'The card stopped responding.';
   }
   if (
     /^writing change/i.test(phase) &&

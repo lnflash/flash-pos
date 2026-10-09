@@ -1906,30 +1906,42 @@ describe('owed change store (ENG-630)', () => {
     );
   });
 
-  it('fails closed on corrupt bytes, quarantines them by content, and keeps what validated', async () => {
+  it('quarantines corrupt bytes by content and answers with what validated', async () => {
     mockStore[OWED_CHANGE_KEY] = '{not json';
 
-    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    // Wholly unparseable: nothing validated, the bytes are preserved for an
+    // operator, and the reader answers — it does not refuse every charge on
+    // the terminal forever.
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([]);
     expect(mockStore[owedChangeQuarantineKeyFor('{not json')]).toBe('{not json');
     expect(mockStore[CORRUPT_OWED_CHANGE_KEY]).toBe('{not json');
 
-    // One bad element beside a good one: still corrupt to the money-facing
-    // reader, but the good entry survives the next write.
-    seed([entry(), null]);
-    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    // One bad element beside a good one: the good entry is still owed, is
+    // served, and survives the next write; the blob is quarantined.
+    const raw = JSON.stringify({
+      v: OWED_CHANGE_SCHEMA_VERSION,
+      entries: [entry(), null],
+    });
+    mockStore[OWED_CHANGE_KEY] = raw;
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([entry()]);
+    await expect(owedChangeSatForCard(CARD)).resolves.toBe(4);
+    expect(mockStore[owedChangeQuarantineKeyFor(raw)]).toBe(raw);
     await expect(listOwedChange()).resolves.toEqual([entry()]);
     await recordOwedChange(CARD, [proof(2, nonceB)], opts, T0);
     expect(storedOwed().map(e => e.nonce)).toEqual([nonceA, nonceB]);
+    await expect(outstandingChangeForCard(CARD)).resolves.toHaveLength(2);
   });
 
-  it('refuses to overwrite a corrupt store whose bytes could not be quarantined', async () => {
+  it('fails closed on corrupt bytes it could not quarantine: no read, no overwrite', async () => {
     mockStore[OWED_CHANGE_KEY] = '{not json';
     mockWriteFails = new Error('keychain write denied');
 
+    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    await expect(owedChangeSatForCard(CARD)).rejects.toThrow(
+      /could not be quarantined/,
+    );
     await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toThrow(
       /could not be quarantined/,
     );
@@ -1937,18 +1949,22 @@ describe('owed change store (ENG-630)', () => {
   });
 
   it('treats a bare array, a missing envelope and a bad status as corrupt', async () => {
-    mockStore[OWED_CHANGE_KEY] = JSON.stringify([entry()]);
-    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    // Each is quarantined by content and yields no entry — never read as
+    // money, never silently dropped.
+    const bare = JSON.stringify([entry()]);
+    mockStore[OWED_CHANGE_KEY] = bare;
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([]);
+    expect(mockStore[owedChangeQuarantineKeyFor(bare)]).toBe(bare);
+
     seed([entry({status: 'pending' as never})]);
-    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
-    mockStore[OWED_CHANGE_KEY] = JSON.stringify({entries: [entry()]});
-    await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    const badStatus = mockStore[OWED_CHANGE_KEY];
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([]);
+    expect(mockStore[owedChangeQuarantineKeyFor(badStatus)]).toBe(badStatus);
+
+    const noEnvelope = JSON.stringify({entries: [entry()]});
+    mockStore[OWED_CHANGE_KEY] = noEnvelope;
+    await expect(outstandingChangeForCard(CARD)).resolves.toEqual([]);
+    expect(mockStore[owedChangeQuarantineKeyFor(noEnvelope)]).toBe(noEnvelope);
   });
 
   it('reads a newer envelope and carries unknown fields through a write untouched', async () => {

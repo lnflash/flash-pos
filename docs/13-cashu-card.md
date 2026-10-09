@@ -184,28 +184,41 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
 - **Slot pre-flight, before the burn.** `readAndPlan` counts the card's empty
   slots and takes the first plan (cheapest change first) whose change fits
   (`selectFittingPlan`). Change still owed from an earlier charge is counted
-  first. A card with no room is refused with "this card is full: …" before any
-  `SPEND_PROOF`, and the screen says nothing was taken.
+  first — as much of it as the card has room for; the rest stays `owed` on
+  disk for a later tap and never refuses a charge on its own (an exact bill
+  needs no slot, and the full-with-change-owed card ENG-630 came from must be
+  able to pay again). A card with no room for the plan's change is refused
+  with "this card is full: …" before any `SPEND_PROOF`, and the screen says
+  nothing was taken — and nothing else: a spend leaves its slot `spent`, not
+  free, and nothing in the app clears spent slots yet (ENG-631).
 - **The owed-change store** (`@cashu_owed_change`, a `{v, entries}` envelope
   separate from the settlement queue). `executeCharge` records every minted
   change piece as `owed` **before** the first `LOAD_PROOF`, and marks each
   `written` (with its slot) as the card answers. Whatever is still `owed` is
   written on the card's next tap: `reconcileOwedChange` first reads every
-  non-empty slot (spent ones too — a lost LOAD answer leaves the piece on the
-  card, and the card does not dedup) and marks any piece already there, then
-  `writeOwedChange` loads the rest. In a charge that happens after the PIN
-  verify and before the burn (`LOAD_PROOF` is PIN-gated when a PIN is set); on
-  the keypad's balance read a PIN-less card takes it in the same session and a
-  PIN card is told what is waiting (`CashuCardBalance`).
+  non-empty slot it was not handed already (`readAndPlan` passes the unspent
+  slots it just pulled, so only the spent ones cost an APDU — a lost LOAD
+  answer leaves the piece on the card, and the card does not dedup) and marks
+  any piece already there, then `writeOwedChange` loads the rest. In a charge
+  that happens after the PIN verify and before the burn (`LOAD_PROOF` is
+  PIN-gated when a PIN is set); on the keypad's balance read a PIN-less card
+  takes it in the same session and a PIN card is told what is waiting
+  (`CashuCardBalance`). The balance tap is a read: a refused or lost write
+  there never vetoes it, the screen opens with what is still waiting.
+- **When the record itself did not land** (the keychain refused the write),
+  the loads still run — the card is the only home left — and a load that
+  then fails is thrown under `writing change to card (unrecorded)`, so the
+  screen shows the card's reason and never claims the change is saved.
 
 The store is the customer's money, not the merchant's: `pendingExposure`,
-`hasUnsettledForCard` and the settlement banner ignore it by design. It reads
-fail-closed like the queue (an unreadable or corrupt store throws rather than
-answering "nothing owed", and corrupt bytes are quarantined under
-`@cashu_owed_change_corrupt:<hash>`), only `written` entries are ever evicted,
-and unknown fields from a newer build ride through a write untouched. P2PK
-change for a card that never returns stays in the store; nothing else can
-spend it.
+`hasUnsettledForCard` and the settlement banner ignore it by design. An
+unreadable store throws rather than answering "nothing owed"; corrupt bytes
+are quarantined under `@cashu_owed_change_corrupt:<hash>` and the reader then
+answers with the entries that parsed (a store that could not be quarantined
+throws) — one bad element must not refuse every Flashcard charge on the
+terminal. Only `written` entries are ever evicted, and unknown fields from a
+newer build ride through a write untouched. P2PK change for a card that never
+returns stays in the store; nothing else can spend it.
 
 ## Known gaps
 

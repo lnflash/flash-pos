@@ -1840,17 +1840,26 @@ export async function recordOwedChange(
 
 /**
  * Change this card is still owed. Throws `QueueUnavailableError` on an
- * unreadable or corrupt store rather than returning `[]`: an empty answer
- * tells the terminal there is nothing to write, which is the one answer that
- * turns recoverable change into a permanent loss.
+ * unreadable store, and on corrupt bytes that could not be quarantined,
+ * rather than returning `[]`: an empty answer tells the terminal there is
+ * nothing to write, which is the one answer that turns recoverable change
+ * into a permanent loss.
+ *
+ * Corrupt bytes that WERE quarantined answer with the entries that parsed.
+ * The unparseable rest is preserved verbatim under its content-keyed key
+ * for an operator; nothing here is lost. Throwing instead would refuse every
+ * Flashcard charge on the terminal (`readAndPlan` fails closed on this)
+ * for every card, forever, over one bad element — the settlement queue, on
+ * the same event, keeps serving what parsed, and this store has no ack
+ * path of its own.
  */
 export async function outstandingChangeForCard(
   cardPubkey: string,
 ): Promise<OwedChangeEntry[]> {
-  const {entries, corrupt} = await loadOwedChange();
-  if (corrupt) {
+  const {entries, corrupt, corruptionRecorded} = await loadOwedChange();
+  if (corrupt && !corruptionRecorded) {
     throw new QueueUnavailableError(
-      'owed change store is corrupt; outstanding change unknown',
+      'owed change store is corrupt and could not be quarantined; outstanding change unknown',
     );
   }
   return entries.filter(

@@ -248,7 +248,7 @@ describe('errors', () => {
     expect(getByText('The card is full', visible)).toBeTruthy();
     expect(
       getByText(
-        'Nothing was taken from the card. It has no free slot for the change — spend from it first.',
+        'Nothing was taken from the card. It has no free slot for the change.',
         visible,
       ),
     ).toBeTruthy();

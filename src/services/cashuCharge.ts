@@ -164,17 +164,26 @@ export function selectFittingPlan(
  * readable) is read and any owed piece whose nonce is already on the card is
  * marked written; the rest come back and are what the next write sends.
  * The card does not dedup a LOAD, so this must run before any re-send.
+ *
+ * `known` is what the caller has already pulled off the card this session
+ * (`readAndPlan` reads every unspent slot before it gets here): those slots
+ * are seeded from memory and not read again — up to 32 GET_PROOFs of ~80
+ * bytes each, hundreds of ms of extra hold on CoreNFC for data already in
+ * hand. Only the spent slots and any non-empty slot not in `known` cost an
+ * APDU.
  */
 export async function reconcileOwedChange({
   transceive,
   cardPubkey,
   statuses,
+  known = [],
   now,
   onPhase = () => {},
 }: {
   transceive: Transceiver;
   cardPubkey: string;
   statuses: SlotStatus[];
+  known?: CardProofSlot[];
   now: number;
   onPhase?: (phase: string) => void;
 }): Promise<OwedChangeEntry[]> {
@@ -184,8 +193,15 @@ export async function reconcileOwedChange({
   }
   const step = makeStep(onPhase);
   const onCard = new Map<string, number>();
+  const seeded = new Set<number>();
+  for (const proof of known) {
+    if (statuses[proof.slot] !== 'empty') {
+      onCard.set(proof.nonce, proof.slot);
+      seeded.add(proof.slot);
+    }
+  }
   for (let slot = 0; slot < statuses.length; slot++) {
-    if (statuses[slot] !== 'empty') {
+    if (statuses[slot] !== 'empty' && !seeded.has(slot)) {
       const proof = await step('reading card', () => getProof(transceive, slot));
       onCard.set(proof.nonce, slot);
     }
@@ -205,6 +221,19 @@ export async function reconcileOwedChange({
 /** The phase string `writeOwedChange` emits per piece; `phaseToStation` keys on it. */
 export const owedChangePhase = (amount: number): string =>
   `adding ${amount} sat of change owed from an earlier charge`;
+
+/** The change-write phase as `executeCharge` emits it; `phaseToStation` keys on it. */
+export const PHASE_WRITING_CHANGE = 'writing change to card';
+
+/**
+ * The phase a change-write failure is reported under when the owed-change
+ * record did NOT land first. The phase emitted to the stage is unchanged
+ * (`PHASE_WRITING_CHANGE`); only the thrown `PhaseError` carries this, so the
+ * UI can tell "saved, written on the next tap" from "not saved anywhere"
+ * and never claims the first when the second is true.
+ */
+export const PHASE_WRITING_CHANGE_UNRECORDED =
+  'writing change to card (unrecorded)';
 
 /**
  * Write change owed from an earlier charge onto the card, piece by piece,
@@ -319,9 +348,11 @@ export interface PreReadCharge {
   cardPubkey: string;
   pinRequired: boolean;
   /**
-   * Change from an earlier charge this card is still owed and does not yet
-   * hold. `executeCharge` writes it first, so it is counted against the
-   * card's empty slots when the plan is chosen.
+   * Change from an earlier charge this card is still owed, does not yet
+   * hold, and has a free slot for. `executeCharge` writes it first, so it
+   * is counted against the card's empty slots when the plan is chosen. Owed
+   * pieces beyond the card's room are NOT here: they stay `owed` on disk
+   * for a later tap, and never block a charge that needs no slot itself.
    */
   owedChange: OwedChangeEntry[];
   /** Empty slots the card reported, before any owed change is written. */
@@ -370,23 +401,23 @@ export async function readAndPlan({
   // Slot pre-flight, BEFORE anything burns: the change is written one slot
   // per power-of-two piece, and a LOAD the card answers 6A84 (no free slot)
   // after the swap strands mint-signed change (field-found: ENG-630). Change
-  // still owed from an earlier charge is written first and takes its slots
-  // off the top.
+  // still owed from an earlier charge is written first, as much of it as the
+  // card has room for, and takes those slots off the top.
   const emptySlots = statuses.filter(s => s === 'empty').length;
-  const owedChange = await reconcileOwedChange({
+  const stillOwed = await reconcileOwedChange({
     transceive,
     cardPubkey,
     statuses,
+    known: unspent,
     now,
     onPhase,
   });
+  // Only what fits is written this tap; the rest stays 'owed' on disk for a
+  // later one. Owed change must never refuse a charge on its own: an exact
+  // bill needs no slot, and the card ENG-630 came from — full, with change
+  // owed — has to be able to pay again.
+  const owedChange = stillOwed.slice(0, emptySlots);
   const free = emptySlots - owedChange.length;
-  if (free < 0) {
-    const owedSat = owedChange.reduce((t, e) => t + e.amount, 0);
-    throw new Error(
-      `this card is full: ${owedSat} sat of change from an earlier charge needs ${owedChange.length} free slots and the card has ${emptySlots}`,
-    );
-  }
   const plan = selectFittingPlan(plans, free);
   if (!plan) {
     throw new Error(
@@ -591,14 +622,26 @@ export async function executeCharge({
 
     for (const proof of minted.change) {
       const nonce = nonceFromSecret(proof.secret);
-      const slot = await step('writing change to card', () =>
-        loadProof(transceive, {
+      onPhase(PHASE_WRITING_CHANGE);
+      let slot: number;
+      try {
+        slot = await loadProof(transceive, {
           keysetId: proof.id,
           amount: proof.amount,
           nonce,
           C: proof.C,
-        }),
-      );
+        });
+      } catch (error) {
+        // Recorded: the piece is owed on disk and the next tap writes it.
+        // Unrecorded: it is nowhere but this process, and the error must say
+        // so — the UI's "your change is saved" keys on the phase.
+        throw new PhaseError(
+          changeRecorded
+            ? PHASE_WRITING_CHANGE
+            : PHASE_WRITING_CHANGE_UNRECORDED,
+          error,
+        );
+      }
       changeLoaded += 1;
       if (changeRecorded) {
         try {

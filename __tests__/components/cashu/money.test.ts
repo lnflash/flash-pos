@@ -155,15 +155,19 @@ describe('failureBody', () => {
     ...over,
   });
 
-  it('a full card before any burn: nothing taken, spend from it first', () => {
-    expect(
-      failureBody(
-        parseFailure('this card is full: 6 sat of change needs 2 free slots and the card has 0'),
-        ctx({burnsDone: 0}),
+  it('a full card before any burn: nothing taken, and no instruction that would not free a slot', () => {
+    const body = failureBody(
+      parseFailure(
+        'this card is full: 6 sat of change needs 2 free slots and the card has 0',
       ),
-    ).toBe(
-      'Nothing was taken from the card. It has no free slot for the change — spend from it first.',
+      ctx({burnsDone: 0}),
     );
+    expect(body).toBe(
+      'Nothing was taken from the card. It has no free slot for the change.',
+    );
+    // A spend leaves its slot 'spent', not free: telling the customer to
+    // spend first would send them in a loop (until ENG-631's top-up clears).
+    expect(body).not.toMatch(/spend/i);
     // The same when a LOAD of earlier change was refused before the burn.
     expect(
       failureBody(
@@ -197,6 +201,28 @@ describe('failureBody', () => {
     ).toBe(
       '1 sat is paid. Your 1 sat change is saved and will be added the next time this card is charged.',
     );
+  });
+
+  it('a change write that died with NO record landed never says the change is saved', () => {
+    const FULL = 'LOAD_PROOF failed: card is full — no free slot (0x6A84)';
+    const unrecorded = (reason: string) =>
+      failureBody(
+        parseFailure(`[writing change to card (unrecorded)] ${reason}`),
+        ctx(),
+      );
+    expect(unrecorded('Tag was lost.')).toBe('Tag was lost.');
+    expect(unrecorded(FULL)).toBe(FULL);
+    expect(unrecorded('')).toBe('The card stopped responding.');
+    for (const reason of ['Tag was lost.', FULL, '']) {
+      expect(unrecorded(reason)).not.toMatch(/saved|next time/i);
+    }
+    // The title still names the card as full / moved, from the same parse.
+    expect(
+      parseFailure(`[writing change to card (unrecorded)] ${FULL}`),
+    ).toMatchObject({
+      phase: 'writing change to card (unrecorded)',
+      cardFull: true,
+    });
   });
 
   it('keeps the other bodies: a refusal verbatim, a lost tag by where it was', () => {

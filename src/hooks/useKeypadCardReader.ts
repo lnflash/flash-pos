@@ -78,9 +78,12 @@ type BalanceParams = RootStackType['CashuCardBalance'];
  * screen shows the card as it now is. A PIN card is told what is waiting;
  * the next charge writes it (`executeCharge`, after the PIN verify).
  *
- * The owed-change store failing to read is NOT a reason to refuse the
- * balance read: the summary is still true, the change is still recorded,
- * and the next charge's `readAndPlan` fails closed on its own.
+ * A balance tap is a READ. The write is opportunistic, and nothing it does
+ * may veto the read: the owed-change store failing, a slot read failing, or
+ * the card refusing a LOAD (6A84 — full, with change owed, is exactly the
+ * field case) all leave the summary true and the change recorded, and the
+ * screen opens with what is still waiting. The next charge's `readAndPlan`
+ * fails closed on its own.
  */
 async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
   let owed: OwedChangeEntry[] = [];
@@ -96,20 +99,56 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
     return {summary, owedChangeSat: sumSat(owed)};
   }
   const now = Date.now();
-  const statuses = await getSlotStatuses(nfcTransceiver, summary.info.maxSlots);
-  const remaining = await reconcileOwedChange({
-    transceive: nfcTransceiver,
-    cardPubkey: summary.pubkey,
-    statuses,
-    now,
-  });
-  if (remaining.length > 0) {
+  let remaining = owed;
+  try {
+    const statuses = await getSlotStatuses(
+      nfcTransceiver,
+      summary.info.maxSlots,
+    );
+    remaining = await reconcileOwedChange({
+      transceive: nfcTransceiver,
+      cardPubkey: summary.pubkey,
+      statuses,
+      now,
+    });
+    if (remaining.length === 0) {
+      // Every piece was already on the card (a lost LOAD answer): nothing
+      // was added now, so nothing is said about it.
+      return {summary};
+    }
     await writeOwedChange({transceive: nfcTransceiver, owed: remaining, now});
+  } catch {
+    // A piece may have landed before the refusal: show the balance as it is
+    // now when the card will still answer, the pre-write one when it won't.
+    const latest = await readCard(nfcTransceiver).catch(() => summary);
+    return {
+      summary: latest,
+      owedChangeSat: await stillOwedSat(summary, remaining),
+    };
   }
   return {
     summary: await readCard(nfcTransceiver),
-    changeAddedSat: sumSat(owed),
+    // Only what this tap put on the card — never the pieces reconcile found
+    // already there.
+    changeAddedSat: sumSat(remaining),
   };
+}
+
+/**
+ * What the card is still owed after a write that did not finish.
+ * `writeOwedChange` marks each piece as the card answers, so the store is
+ * the truth when it reads; `fallback` (what the write was sent) when it
+ * does not.
+ */
+async function stillOwedSat(
+  summary: CardSummary,
+  fallback: OwedChangeEntry[],
+): Promise<number> {
+  try {
+    return sumSat(await outstandingChangeForCard(summary.pubkey));
+  } catch {
+    return sumSat(fallback);
+  }
 }
 
 /**

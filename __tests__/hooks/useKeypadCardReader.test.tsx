@@ -557,9 +557,11 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
       expect.objectContaining({owed: [OWED[1]]}),
     );
     expect(mockReadCard).toHaveBeenCalledTimes(2);
+    // Only what this tap put on the card counts as added: the 4-sat piece
+    // reconcile found already there was never loaded now.
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: after,
-      changeAddedSat: 6,
+      changeAddedSat: 2,
     });
     // The write happened before the session closed.
     const writeOrder = mockWriteOwedChange.mock.invocationCallOrder[0];
@@ -578,9 +580,10 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     await flush();
 
     expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    // Nothing was added by this tap, so the screen says nothing about it.
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: NO_PIN,
-      changeAddedSat: 6,
     });
   });
 
@@ -630,23 +633,89 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     });
   });
 
-  it('a write the card refuses is toasted in merchant words and the balance screen is not opened', async () => {
+  it('a write the card refuses never vetoes the balance read: the screen opens with the change still waiting', async () => {
+    // The field case: a PIN-less card that is full with change owed. A
+    // balance tap is a read; the opportunistic write failing must not turn
+    // it into a toast loop with no balance shown.
     mockReadCard.mockResolvedValue(NO_PIN);
     mockOutstandingChangeForCard.mockResolvedValue(OWED);
     mockReconcileOwedChange.mockResolvedValue(OWED);
-    mockWriteOwedChange.mockRejectedValue(
-      new CardError(0x6a84, 'LOAD_PROOF'),
-    );
+    mockWriteOwedChange.mockRejectedValue(new CardError(0x6a84, 'LOAD_PROOF'));
     renderHook(() => useKeypadCardReader());
     focus();
     await flush();
     await tap(V2_TAG);
     await flush();
 
-    expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockToastShow).toHaveBeenCalledWith({
-      message: expect.stringMatching(/card is full/i),
-      type: 'error',
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+      owedChangeSat: 6,
+    });
+  });
+
+  it('a refusal after one piece landed reports only what is still owed, from the store', async () => {
+    const after: CardSummary = {...NO_PIN, balance: 504};
+    mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
+    mockOutstandingChangeForCard
+      .mockResolvedValueOnce(OWED)
+      // After the write: the 4-sat piece was marked written as the card
+      // answered; the 2-sat piece was refused and is still owed.
+      .mockResolvedValueOnce([OWED[1]]);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockRejectedValue(new CardError(0x6a84, 'LOAD_PROOF'));
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: after,
+      owedChangeSat: 2,
+    });
+  });
+
+  it('a tag lost during the write still opens the balance it read, with the change waiting', async () => {
+    mockReadCard
+      .mockResolvedValueOnce(NO_PIN)
+      .mockRejectedValue(new Error('Tag was lost.'));
+    mockOutstandingChangeForCard
+      .mockResolvedValueOnce(OWED)
+      .mockRejectedValueOnce(new Error('keychain locked'));
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockRejectedValue(new Error('Tag was lost.'));
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    // The store would not re-read: what the write was sent is the fallback.
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+      owedChangeSat: 6,
+    });
+  });
+
+  it('a slot read that fails leaves the balance read intact and the change waiting', async () => {
+    mockReadCard.mockResolvedValue(NO_PIN);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockGetSlotStatuses.mockRejectedValue(new Error('Tag was lost.'));
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockReconcileOwedChange).not.toHaveBeenCalled();
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+      owedChangeSat: 6,
     });
   });
 });
