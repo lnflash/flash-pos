@@ -127,7 +127,7 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
     const latest = await readCard(nfcTransceiver).catch(() => summary);
     return {
       summary: latest,
-      owedChangeSat: await stillOwedSat(summary, remaining),
+      owedChangeSat: await stillOwedSat(summary, remaining, new Set()),
     };
   }
   // Only what this tap put on the card — never the pieces reconcile found
@@ -143,6 +143,7 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
     params.owedChangeSat = await stillOwedSat(
       summary,
       remaining.filter(e => !sent.has(e.id)),
+      sent,
     );
   }
   return params;
@@ -152,14 +153,18 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
  * What the card is still owed after a write that did not finish.
  * `writeOwedChange` marks each piece as the card answers, so the store is
  * the truth when it reads; `fallback` (what the write was sent) when it
- * does not.
+ * does not. A piece in `sent` is on the card whatever the store says: the
+ * write reports it even when the store refused its `written` mark, and
+ * counting it as waiting as well would promise it twice on the screen.
  */
 async function stillOwedSat(
   summary: CardSummary,
   fallback: OwedChangeEntry[],
+  sent: ReadonlySet<string>,
 ): Promise<number> {
   try {
-    return sumSat(await outstandingChangeForCard(summary.pubkey));
+    const owed = await outstandingChangeForCard(summary.pubkey);
+    return sumSat(owed.filter(e => !sent.has(e.id)));
   } catch {
     return sumSat(fallback);
   }

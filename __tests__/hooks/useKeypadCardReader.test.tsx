@@ -625,6 +625,30 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     });
   });
 
+  it('a piece this tap loaded is never also counted as waiting when the store refused its written mark', async () => {
+    const after: CardSummary = {...NO_PIN, balance: 504};
+    mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
+    // The 4-sat piece's LOAD succeeded but the store refused its `written`
+    // mark, then refused the write-ahead mark for the 2-sat piece. The
+    // write still reports the first as sent; the store, read afterwards,
+    // still lists both as owed. Only the unsent piece is waiting.
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockResolvedValue([OWED[0]]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockOutstandingChangeForCard).toHaveBeenCalledTimes(2);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: after,
+      changeAddedSat: 4,
+      owedChangeSat: 2,
+    });
+  });
+
   it('a write cut short with the store unreadable afterwards counts the unsent pieces as waiting', async () => {
     const after: CardSummary = {...NO_PIN, balance: 504};
     mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
