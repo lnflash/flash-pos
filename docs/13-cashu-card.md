@@ -190,8 +190,13 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
   on disk for a later tap and never refuses a charge the card can physically
   take (an exact bill needs no slot, and the full-with-change-owed card
   ENG-630 came from must be able to pay again). `executeCharge` re-checks
-  the store before writing owed change, so a PIN-flow retry never re-sends a
-  piece the first attempt already landed. A card with no room for the plan's change is refused
+  the store before writing owed change, and any piece the store says was
+  already attempted is reconciled against the card first (`GET_INFO`, slot
+  statuses, `reconcileOwedChange`) — a LOAD whose answer was lost leaves the
+  piece on the card and still `owed` on disk, and the card does not dedup —
+  so a PIN-flow retry never re-sends a piece the first attempt landed,
+  whether the store heard the answer or not. A first attempt skips the
+  re-read. A card with no room for the plan's change is refused
   with "this card is full: …" before any `SPEND_PROOF`, and the screen says
   nothing was taken — and nothing else: a spend leaves its slot `spent`, not
   free, and nothing in the app clears spent slots yet (ENG-631).

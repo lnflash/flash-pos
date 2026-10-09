@@ -506,17 +506,21 @@ export async function chargeCard({
 }
 
 /**
- * The subset of `owedChange` the store still calls `owed` for this card, in
- * the caller's order. `[]` when the store cannot be read: writing nothing is
- * the safe side (a later tap reconciles), writing a duplicate is not.
+ * The STORE's entries for the subset of `owedChange` it still calls `owed`
+ * on this card, in the caller's order — the store's, not the caller's
+ * snapshot, so `attempts` is live and the caller can tell a first write from
+ * a retry. `[]` when the store cannot be read: writing nothing is the safe
+ * side (a later tap reconciles), writing a duplicate is not.
  */
 async function stillOwedOf(
   cardPubkey: string,
   owedChange: OwedChangeEntry[],
 ): Promise<OwedChangeEntry[]> {
-  let live: Set<string>;
+  let live: Map<string, OwedChangeEntry>;
   try {
-    live = new Set((await outstandingChangeForCard(cardPubkey)).map(e => e.id));
+    live = new Map(
+      (await outstandingChangeForCard(cardPubkey)).map(e => [e.id, e]),
+    );
   } catch (error) {
     console.warn(
       '[charge] owed-change store unreadable; skipping the owed write this tap',
@@ -524,7 +528,10 @@ async function stillOwedOf(
     );
     return [];
   }
-  return owedChange.filter(e => live.has(e.id));
+  return owedChange.flatMap(e => {
+    const entry = live.get(e.id);
+    return entry ? [entry] : [];
+  });
 }
 
 export interface ExecuteChargeArgs {
@@ -583,10 +590,39 @@ export async function executeCharge({
   // `owedChange` across a failed attempt and calls back in with the same
   // args, and the card does not dedup a LOAD — a piece the first attempt
   // already landed (marked written as the card answered) must not go on
-  // again as a duplicate proof. One store read, no APDU; if the store will
-  // not read, nothing owed is written this tap and a later one reconciles.
+  // again as a duplicate proof. If the store will not read, nothing owed is
+  // written this tap and a later one reconciles.
+  //
+  // The store alone is not enough on a retry: a LOAD whose answer was lost
+  // (the tag dropped as the card wrote the slot) leaves the piece ON the
+  // card and still `owed` on disk, with the attempt counted. Re-sending it
+  // from the store's word would put a second copy of the proof on the card
+  // — a phantom balance and a mint rejection when the copy is spent. So any
+  // piece that has already been attempted is settled against the card
+  // first (`reconcileOwedChange`, the rule at its doc comment) and only
+  // what the card does not hold goes on. A first attempt (`attempts` 0) was
+  // never sent, so it skips the read and the common path costs no APDU.
   if (owedChange.length > 0) {
-    const toWrite = await stillOwedOf(cardPubkey, owedChange);
+    let toWrite = await stillOwedOf(cardPubkey, owedChange);
+    if (toWrite.some(e => e.attempts > 0)) {
+      const info = await step('reading card', () => getInfo(transceive));
+      const statuses = await step('reading card', () =>
+        getSlotStatuses(transceive, info.maxSlots),
+      );
+      const remaining = new Set(
+        (
+          await reconcileOwedChange({
+            transceive,
+            cardPubkey,
+            statuses,
+            known: unspent,
+            now,
+            onPhase,
+          })
+        ).map(e => e.id),
+      );
+      toWrite = toWrite.filter(e => remaining.has(e.id));
+    }
     if (toWrite.length > 0) {
       await writeOwedChange({transceive, owed: toWrite, now, onPhase});
     }

@@ -1343,6 +1343,106 @@ describe('owed change (ENG-630)', () => {
     );
   });
 
+  it('a PIN-flow retry reconciles against the card when the first LOAD landed but its answer was lost', async () => {
+    const nonce = '71'.repeat(32);
+    const [owed] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, nonce)],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    // The card writes the slot and the tag drops before the 9000 reaches
+    // the host: the 4 is ON the card, the store still calls it owed with
+    // one attempt counted.
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      maxSlots: 4,
+      loseAnswerOnLoad: i => i === 0,
+    });
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.owedChange).toEqual([owed]);
+    const args = {
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 2000,
+    };
+    mockMintChargeChange.mockResolvedValue({change: [], till: []});
+
+    await expect(executeCharge(args)).rejects.toThrow(
+      /^\[adding 4 sat of change owed from an earlier charge\] Tag was lost/,
+    );
+    expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
+    expect(card.statuses).toEqual(['unspent', 'unspent', 'empty', 'empty']);
+    expect(card.burnCount).toBe(0);
+    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+      expect.objectContaining({id: owed.id, status: 'owed', attempts: 1}),
+    ]);
+
+    // The customer re-enters the PIN: same plan, same owedChange snapshot.
+    // The store still says owed, so the card is read before anything is
+    // sent — the nonce is found in slot 1 and the piece is marked written,
+    // never LOADed a second time.
+    const result = await executeCharge({...args, now: 3000});
+
+    expect(result.changeSat).toBe(0);
+    expect(card.burnCount).toBe(1);
+    expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(1);
+    expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
+    expect(card.statuses).toEqual(['spent', 'unspent', 'empty', 'empty']);
+    expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
+      [4, 'written', 1],
+    ]);
+    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
+      [],
+    );
+  });
+
+  it('a first owed write does not re-read the card', async () => {
+    const [owed] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, '71'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      maxSlots: 4,
+    });
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.owedChange).toEqual([owed]);
+    const apdusAfterRead = card.sent.length;
+    mockMintChargeChange.mockResolvedValue({change: [], till: []});
+
+    await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 2000,
+    });
+
+    // Session 2 never asks GET_INFO (0x01), slot statuses (0x14) or
+    // GET_PROOF (0x13) before the LOAD: the attempt count was 0.
+    const session2 = card.sent.slice(apdusAfterRead);
+    const firstLoad = session2.findIndex(a => insOf(a) === 0x30);
+    expect(firstLoad).toBeGreaterThan(-1);
+    expect(
+      session2.slice(0, firstLoad).map(insOf),
+    ).toEqual([0xa4, 0x40]);
+  });
+
   it('an unreadable owed-change store skips the owed write and the charge still completes', async () => {
     const [owed] = await recordOwedChange(
       CARD_PUBKEY_HEX,
