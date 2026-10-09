@@ -135,7 +135,9 @@ function ChargeStage(props: ChargeStageProps) {
     const failure = parseFailure(error);
     return {
       paidTitle: PAID_TITLE,
-      errorTitle: failure.tagLost
+      errorTitle: failure.cardFull
+        ? 'The card is full'
+        : failure.tagLost
         ? 'The card moved away'
         : 'Charge didn’t finish',
       // The pill is the trust surface: the failure exactly as reported.

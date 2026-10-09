@@ -28,6 +28,13 @@ export function last4FromPubkey(hex: string | null | undefined): string | null {
 const TAG_LOST =
   /tag (was )?lost|left the field|not connected|stopped responding/i;
 
+/**
+ * The card has no free slot for the change: the pre-flight refusal in
+ * `readAndPlan` ("this card is full: …") and the card's own 6A84 on a LOAD
+ * (`describeStatusWord`: "card is full — no free slot") both say so.
+ */
+const CARD_FULL = /card is full/i;
+
 export interface Failure {
   /** The phase the charge died on, from executeCharge's "[phase] …" prefix. */
   phase: string | null;
@@ -35,6 +42,8 @@ export interface Failure {
   detail: string;
   /** The card left the antenna (vs a card or mint refusal). */
   tagLost: boolean;
+  /** The card has no free slot for the change (vs any other refusal). */
+  cardFull: boolean;
 }
 
 export function parseFailure(message: string | null | undefined): Failure {
@@ -42,7 +51,12 @@ export function parseFailure(message: string | null | undefined): Failure {
   const match = /^\[([^\]]+)\]\s*([\s\S]*)$/.exec(text);
   const phase = match ? match[1] : null;
   const detail = (match ? match[2] : text).trim();
-  return {phase, detail, tagLost: detail === '' || TAG_LOST.test(detail)};
+  return {
+    phase,
+    detail,
+    tagLost: detail === '' || TAG_LOST.test(detail),
+    cardFull: CARD_FULL.test(detail),
+  };
 }
 
 export interface FailureContext {
@@ -61,15 +75,24 @@ export interface FailureContext {
  * repeats the title. A card or mint refusal keeps its own reason.
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
+  const phase = failure.phase ?? '';
+  if (failure.cardFull && ctx.burnsDone === 0) {
+    // The pre-flight (or a LOAD of earlier change) refused before any burn.
+    return 'Nothing was taken from the card. It has no free slot for the change — spend from it first.';
+  }
+  if (
+    /^writing change/i.test(phase) &&
+    ctx.changeSat > 0 &&
+    (failure.tagLost || failure.cardFull)
+  ) {
+    // The mint has settled before the change is written: the bill is paid,
+    // and the change is recorded on the terminal — it goes onto the card at
+    // its next tap, whether the tag moved or the card ran out of slots.
+    const verb = ctx.paidSat === 1 ? 'is' : 'are';
+    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(ctx.changeSat)} change is saved and will be added the next time this card is charged.`;
+  }
   if (!failure.tagLost) {
     return failure.detail || 'The card stopped responding.';
-  }
-  const phase = failure.phase ?? '';
-  if (/^writing change/i.test(phase) && ctx.changeSat > 0) {
-    // The mint has settled before the change is written: the bill is paid,
-    // only the change is not on the card yet.
-    const verb = ctx.paidSat === 1 ? 'is' : 'are';
-    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Hold the card to the phone again to add your ${ctx.fmt(ctx.changeSat)} change.`;
   }
   // "Nothing was taken" only when no money phase was ever reached — not
   // even the one it died on.

@@ -1,5 +1,6 @@
 import {
   changePieces,
+  failureBody,
   last4FromPubkey,
   parseFailure,
   pinFailureText,
@@ -85,6 +86,7 @@ describe('parseFailure', () => {
       phase: 'writing change to card',
       detail: 'Tag was lost.',
       tagLost: true,
+      cardFull: false,
     });
     expect(parseFailure('[burning 16 sat (proof 1/2)] tag lost').tagLost).toBe(
       true,
@@ -99,11 +101,13 @@ describe('parseFailure', () => {
       phase: 'verifying PIN',
       detail: 'wrong PIN — 2 tries left',
       tagLost: false,
+      cardFull: false,
     });
     expect(parseFailure('card PIN is blocked')).toEqual({
       phase: null,
       detail: 'card PIN is blocked',
       tagLost: false,
+      cardFull: false,
     });
   });
 
@@ -112,8 +116,102 @@ describe('parseFailure', () => {
       phase: 'settling payment and minting change',
       detail: '',
       tagLost: true,
+      cardFull: false,
     });
     expect(parseFailure(null).tagLost).toBe(true);
+  });
+
+  it('spots a full card, from the pre-flight and from the card\'s own 6A84', () => {
+    expect(
+      parseFailure(
+        '[reading card] this card is full: 6 sat of change needs 2 free slots and the card has 0',
+      ),
+    ).toMatchObject({cardFull: true, tagLost: false});
+    expect(
+      parseFailure(
+        'this card is full: 6 sat of change needs 2 free slots and the card has 0',
+      ),
+    ).toMatchObject({phase: null, cardFull: true, tagLost: false});
+    expect(
+      parseFailure(
+        '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      ),
+    ).toMatchObject({
+      phase: 'writing change to card',
+      cardFull: true,
+      tagLost: false,
+    });
+    expect(parseFailure('[verifying PIN] wrong PIN').cardFull).toBe(false);
+  });
+});
+
+describe('failureBody', () => {
+  const fmt = (sat: number) => `${sat} ${sat === 1 ? 'sat' : 'sats'}`;
+  const ctx = (over: Partial<{burnsDone: number; changeSat: number}> = {}) => ({
+    burnsDone: 1,
+    paidSat: 12,
+    changeSat: 4,
+    fmt,
+    ...over,
+  });
+
+  it('a full card before any burn: nothing taken, spend from it first', () => {
+    expect(
+      failureBody(
+        parseFailure('this card is full: 6 sat of change needs 2 free slots and the card has 0'),
+        ctx({burnsDone: 0}),
+      ),
+    ).toBe(
+      'Nothing was taken from the card. It has no free slot for the change — spend from it first.',
+    );
+    // The same when a LOAD of earlier change was refused before the burn.
+    expect(
+      failureBody(
+        parseFailure(
+          '[adding 2 sat of change owed from an earlier charge] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        ),
+        ctx({burnsDone: 0}),
+      ),
+    ).toMatch(/^Nothing was taken from the card\./);
+  });
+
+  it('a change write that died — tag lost or card full — says the change is saved for the next charge', () => {
+    const saved =
+      '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.';
+    expect(
+      failureBody(parseFailure('[writing change to card] Tag was lost.'), ctx()),
+    ).toBe(saved);
+    expect(
+      failureBody(
+        parseFailure(
+          '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        ),
+        ctx(),
+      ),
+    ).toBe(saved);
+    expect(
+      failureBody(
+        parseFailure('[writing change to card] Tag was lost.'),
+        {...ctx(), paidSat: 1, changeSat: 1},
+      ),
+    ).toBe(
+      '1 sat is paid. Your 1 sat change is saved and will be added the next time this card is charged.',
+    );
+  });
+
+  it('keeps the other bodies: a refusal verbatim, a lost tag by where it was', () => {
+    expect(
+      failureBody(parseFailure('[verifying PIN] wrong PIN — 2 tries left'), ctx()),
+    ).toBe('wrong PIN — 2 tries left');
+    expect(
+      failureBody(parseFailure('[reading card] Tag was lost.'), ctx({burnsDone: 0})),
+    ).toBe('Nothing was taken from the card. Hold it to the phone again.');
+    expect(
+      failureBody(parseFailure('[burning 16 sat (proof 1/1)] Tag was lost.'), ctx()),
+    ).toBe('Hold the card to the phone again to finish.');
+    expect(failureBody(parseFailure(''), ctx())).toBe(
+      'Hold the card to the phone again to finish.',
+    );
   });
 });
 

@@ -19,6 +19,9 @@ import {useRealtimePrice} from '../hooks';
 // services
 import type {CardInfo} from '../services/cashuCard';
 
+// utils
+import {formatSatAmount} from '../utils/satCurrency';
+
 type Props = StackScreenProps<RootStackType, 'CashuCardBalance'>;
 
 const {width: screenWidth} = Dimensions.get('window');
@@ -43,9 +46,19 @@ const PIN_LABEL: Record<CardInfo['pinState'], string> = {
  * what the card itself reported — its count of unspent slot amounts.
  */
 const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
-  const {summary} = route.params;
+  const {summary, owedChangeSat, changeAddedSat} = route.params;
   const {satsToCurrency, loading} = useRealtimePrice();
   const {info} = summary;
+
+  // Change from an earlier charge (ENG-630): either written just now by the
+  // keypad read (PIN-less card) or waiting for the next charge (PIN card).
+  const changeNote = changeAddedSat
+    ? `Change added · ${formatSatAmount(changeAddedSat)}`
+    : owedChangeSat
+    ? `Change waiting · ${formatSatAmount(
+        owedChangeSat,
+      )} — added on the next charge`
+    : null;
 
   const onCharge = useCallback(() => navigation.goBack(), [navigation]);
 
@@ -77,6 +90,7 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
           <Value>{PIN_LABEL[info.pinState] ?? PIN_LABEL.unknown}</Value>
         </Row>
       </Details>
+      {changeNote ? <ChangeNote>{changeNote}</ChangeNote> : null}
 
       <PrimaryButton
         btnText="Charge this card"
@@ -138,6 +152,15 @@ const Label = styled.Text`
   font-size: 15px;
   font-family: 'Outfit-Regular';
   color: #747474;
+`;
+
+const ChangeNote = styled.Text`
+  width: 100%;
+  margin-top: 12px;
+  font-size: 14px;
+  font-family: 'Outfit-Regular';
+  color: #747474;
+  text-align: center;
 `;
 
 const Value = styled.Text`

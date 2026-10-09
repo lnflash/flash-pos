@@ -166,3 +166,45 @@ describe('friendlyLabel', () => {
     expect(friendlyLabel(change).title).toBe('Putting your change on the card');
   });
 });
+
+describe('owed change from an earlier charge (ENG-630)', () => {
+  const OWED = 'adding 6 sat of change owed from an earlier charge';
+
+  it('spins in place: the station holds, never station 5 before the burn', () => {
+    let state = mapPhase(INITIAL_STAGE, {text: PHASE_READING, seq: 1});
+    state = mapPhase(state, {text: PHASE_PIN, seq: 2});
+    const owed = mapPhase(state, {text: OWED, seq: 3});
+    expect(owed.station).toBe(2);
+    expect(owed.event).toBe('spin');
+    expect(owed.tidying).toBe(false);
+    expect(owed.changeWritten).toBe(0);
+    // A PIN-less card: the owed write lands at station 1 and stays there.
+    const noPin = mapPhase(
+      mapPhase(INITIAL_STAGE, {text: PHASE_READING, seq: 1}),
+      {text: OWED, seq: 2},
+    );
+    expect(noPin.station).toBe(1);
+    // The burn that follows still marks the PIN station skipped.
+    const burn = mapPhase(noPin, {text: 'burning 16 sat (proof 1/1)', seq: 3});
+    expect(burn.station).toBe(3);
+    expect(burn.pinSkipped).toBe(true);
+  });
+
+  it('is labelled in plain words with the amount', () => {
+    const state = mapPhase(
+      mapPhase(INITIAL_STAGE, {text: PHASE_READING, seq: 1}),
+      {text: OWED, seq: 2},
+    );
+    expect(friendlyLabel(state).title).toBe(
+      'Adding 6 sats of change from an earlier charge',
+    );
+    expect(
+      friendlyLabel(
+        mapPhase(state, {
+          text: 'adding 1 sat of change owed from an earlier charge',
+          seq: 3,
+        }),
+      ).title,
+    ).toBe('Adding 1 sat of change from an earlier charge');
+  });
+});

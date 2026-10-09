@@ -8,7 +8,17 @@ import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 import {useFlashcard} from './useFlashcard';
 
 // services
-import {CardError, readCard} from '../services/cashuCard';
+import {
+  CardError,
+  getSlotStatuses,
+  readCard,
+  type CardSummary,
+} from '../services/cashuCard';
+import {reconcileOwedChange, writeOwedChange} from '../services/cashuCharge';
+import {
+  outstandingChangeForCard,
+  type OwedChangeEntry,
+} from '../services/cashuSettlement';
 import {
   cancelCardSession,
   describeCardFailure,
@@ -54,6 +64,53 @@ function isNotAFlashCard(error: unknown): boolean {
 type SessionOutcome = 'routed' | 'cancelled' | 'failed' | 'busy';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const sumSat = (entries: OwedChangeEntry[]) =>
+  entries.reduce((t, e) => t + e.amount, 0);
+
+type BalanceParams = RootStackType['CashuCardBalance'];
+
+/**
+ * Change from an earlier charge that this card is still owed (ENG-630: a
+ * LOAD refused mid-write, a tag lost, a killed app). A card with no PIN
+ * takes it in this very session — LOAD_PROOF is only PIN-gated when a PIN
+ * is set, and the keypad has no pad — and the balance is re-read so the
+ * screen shows the card as it now is. A PIN card is told what is waiting;
+ * the next charge writes it (`executeCharge`, after the PIN verify).
+ *
+ * The owed-change store failing to read is NOT a reason to refuse the
+ * balance read: the summary is still true, the change is still recorded,
+ * and the next charge's `readAndPlan` fails closed on its own.
+ */
+async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
+  let owed: OwedChangeEntry[] = [];
+  try {
+    owed = await outstandingChangeForCard(summary.pubkey);
+  } catch {
+    owed = [];
+  }
+  if (owed.length === 0) {
+    return {summary};
+  }
+  if (summary.info.pinState !== 'unset') {
+    return {summary, owedChangeSat: sumSat(owed)};
+  }
+  const now = Date.now();
+  const statuses = await getSlotStatuses(nfcTransceiver, summary.info.maxSlots);
+  const remaining = await reconcileOwedChange({
+    transceive: nfcTransceiver,
+    cardPubkey: summary.pubkey,
+    statuses,
+    now,
+  });
+  if (remaining.length > 0) {
+    await writeOwedChange({transceive: nfcTransceiver, owed: remaining, now});
+  }
+  return {
+    summary: await readCard(nfcTransceiver),
+    changeAddedSat: sumSat(owed),
+  };
+}
 
 /**
  * The keypad's card reader: tap a Flashcard on the POS home screen and see
@@ -125,9 +182,10 @@ export function useKeypadCardReader() {
         }
         await extendCardTimeout();
         const summary = await readCard(nfcTransceiver);
+        const params = await settleOwedChange(summary);
         // Close the session before the balance screen takes the foreground.
         await cancelCardSession();
-        navigation.navigate('CashuCardBalance', {summary});
+        navigation.navigate('CashuCardBalance', params);
         return 'routed';
       } catch (error) {
         // Our own blur/unmount cancel, or the iOS sheet's Cancel button:

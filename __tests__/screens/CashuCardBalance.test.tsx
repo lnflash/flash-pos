@@ -33,11 +33,18 @@ const SUMMARY: CardSummary = {
   balance: 500,
 };
 
-const renderScreen = (summary: CardSummary = SUMMARY) =>
+const renderScreen = (
+  summary: CardSummary = SUMMARY,
+  extra: {owedChangeSat?: number; changeAddedSat?: number} = {},
+) =>
   render(
     <CashuCardBalance
       navigation={{goBack: mockGoBack} as never}
-      route={{key: 'k', name: 'CashuCardBalance', params: {summary}}}
+      route={{
+        key: 'k',
+        name: 'CashuCardBalance',
+        params: {summary, ...extra},
+      }}
     />,
   );
 
@@ -96,6 +103,30 @@ describe('CashuCardBalance', () => {
 
     expect(getByText('500 sats')).toBeTruthy();
     expect(queryByText('$0.50')).toBeNull();
+  });
+
+  it('says nothing about change when none is owed', () => {
+    const {queryByText} = renderScreen();
+
+    expect(queryByText(/^Change /)).toBeNull();
+  });
+
+  it('shows change waiting for a PIN card, to be added on the next charge (ENG-630)', () => {
+    const {getByText} = renderScreen(SUMMARY, {owedChangeSat: 6});
+
+    expect(
+      getByText('Change waiting · 6 sats — added on the next charge'),
+    ).toBeTruthy();
+  });
+
+  it('shows change the keypad read just added to a PIN-less card (ENG-630)', () => {
+    const {getByText, queryByText} = renderScreen(
+      {...SUMMARY, info: {...SUMMARY.info, pinState: 'unset'}},
+      {changeAddedSat: 1},
+    );
+
+    expect(getByText('Change added · 1 sat')).toBeTruthy();
+    expect(queryByText(/Change waiting/)).toBeNull();
   });
 
   it('"Charge this card" goes back to the keypad', () => {

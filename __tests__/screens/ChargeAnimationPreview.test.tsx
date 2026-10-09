@@ -162,10 +162,11 @@ describe('ChargeAnimationPreview', () => {
     fireEvent.press(getByTestId('scenario-error'));
     advanceTo(6500);
     expect(getByText('The card moved away', visible)).toBeTruthy();
-    // Where the money is, in plain words: paid, change not on the card yet.
+    // Where the money is, in plain words: paid, change recorded for the
+    // card's next tap (ENG-630).
     expect(
       getByText(
-        '12 sats are paid. Hold the card to the phone again to add your 4 sats change.',
+        '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.',
         visible,
       ),
     ).toBeTruthy();

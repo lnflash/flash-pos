@@ -73,6 +73,8 @@ export const PHASE_SETTLING = 'settling payment and minting change';
 export const PHASE_CHANGE = 'writing change to card';
 const BURN_RE = /^burning (\d+) sat \(proof (\d+)\/(\d+)\)$/;
 const RESIGN_RE = /^re-signing recovered (\d+) sat$/;
+/** `writeOwedChange`: change from an earlier charge, written before the burn. */
+const OWED_RE = /^adding (\d+) sat of change owed from an earlier charge$/;
 
 const max = (a: Station, b: Station): Station => (a > b ? a : b);
 
@@ -135,6 +137,12 @@ export function mapPhase(prev: StageState, ev: PhaseEvent): StageState {
     return {...base, event: 'spin', tidying: true};
   }
 
+  if (OWED_RE.test(ev.text)) {
+    // Before the burn, so never station 5 — that would break the monotonic
+    // stepper. The station holds; the stage spins while the slot is written.
+    return {...base, event: 'spin'};
+  }
+
   return {...base, event: 'thump'};
 }
 
@@ -189,6 +197,14 @@ export function friendlyLabel(
         ctx.changeSat && ctx.changeSat > 0
           ? `Putting ${formatSatAmount(ctx.changeSat)} on the card`
           : 'Putting your change on the card',
+    };
+  }
+  const owed = OWED_RE.exec(phase);
+  if (owed) {
+    return {
+      title: `Adding ${formatSatAmount(
+        Number(owed[1]),
+      )} of change from an earlier charge`,
     };
   }
   return {title: phase};

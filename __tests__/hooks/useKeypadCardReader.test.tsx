@@ -19,6 +19,10 @@ const mockNavigate = jest.fn();
 const mockHandleTag = jest.fn();
 const mockSetNfcBusy = jest.fn();
 const mockReadCard = jest.fn();
+const mockGetSlotStatuses = jest.fn();
+const mockReconcileOwedChange = jest.fn();
+const mockWriteOwedChange = jest.fn();
+const mockOutstandingChangeForCard = jest.fn();
 const mockToastShow = jest.fn();
 const mockIsCardReadingSupported = jest.fn();
 const mockExtendCardTimeout = jest.fn();
@@ -67,6 +71,18 @@ jest.mock('../../src/hooks/useFlashcard', () => ({
 jest.mock('../../src/services/cashuCard', () => ({
   ...jest.requireActual('../../src/services/cashuCard'),
   readCard: (...args: unknown[]) => mockReadCard(...args),
+  getSlotStatuses: (...args: unknown[]) => mockGetSlotStatuses(...args),
+}));
+
+jest.mock('../../src/services/cashuCharge', () => ({
+  reconcileOwedChange: (...args: unknown[]) =>
+    mockReconcileOwedChange(...args),
+  writeOwedChange: (...args: unknown[]) => mockWriteOwedChange(...args),
+}));
+
+jest.mock('../../src/services/cashuSettlement', () => ({
+  outstandingChangeForCard: (...args: unknown[]) =>
+    mockOutstandingChangeForCard(...args),
 }));
 
 jest.mock('../../src/services/cashuCardNfc', () => ({
@@ -199,6 +215,10 @@ beforeEach(() => {
   mockIsCardReadingSupported.mockResolvedValue(true);
   mockExtendCardTimeout.mockResolvedValue(undefined);
   mockReadCard.mockResolvedValue(SUMMARY);
+  mockOutstandingChangeForCard.mockResolvedValue([]);
+  mockGetSlotStatuses.mockResolvedValue(['unspent', 'empty']);
+  mockReconcileOwedChange.mockImplementation(async ({owed}) => owed ?? []);
+  mockWriteOwedChange.mockResolvedValue(1);
   mockNfc.getTag.mockResolvedValue(null);
   // Each request is a fresh pending promise, like the native techRequest.
   mockNfc.requestTechnology.mockImplementation(() => {
@@ -494,6 +514,139 @@ describe('useKeypadCardReader on iOS', () => {
     // Settle the abandoned request so it cannot leak into another test.
     await act(async () => {
       pendingRequest()!.reject(new NfcError.UserCancel());
+    });
+  });
+});
+
+describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', () => {
+  beforeEach(() => setPlatform('android'));
+
+  const OWED = [
+    {id: `${SUMMARY.pubkey}:aa`, cardPubkey: SUMMARY.pubkey, amount: 4, nonce: 'aa'},
+    {id: `${SUMMARY.pubkey}:bb`, cardPubkey: SUMMARY.pubkey, amount: 2, nonce: 'bb'},
+  ];
+  const NO_PIN: CardSummary = {
+    ...SUMMARY,
+    info: {...SUMMARY.info, pinState: 'unset'},
+  };
+
+  it('writes the owed change onto a PIN-less card in the same session and re-reads the balance', async () => {
+    const after: CardSummary = {...NO_PIN, balance: 506};
+    mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue([OWED[1]]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockOutstandingChangeForCard).toHaveBeenCalledWith(SUMMARY.pubkey);
+    expect(mockGetSlotStatuses).toHaveBeenCalledWith(
+      expect.any(Function),
+      SUMMARY.info.maxSlots,
+    );
+    expect(mockReconcileOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cardPubkey: SUMMARY.pubkey,
+        statuses: ['unspent', 'empty'],
+      }),
+    );
+    // Only what the card does not already hold is sent.
+    expect(mockWriteOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({owed: [OWED[1]]}),
+    );
+    expect(mockReadCard).toHaveBeenCalledTimes(2);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: after,
+      changeAddedSat: 6,
+    });
+    // The write happened before the session closed.
+    const writeOrder = mockWriteOwedChange.mock.invocationCallOrder[0];
+    const cancelOrder = mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
+    expect(writeOrder).toBeLessThan(cancelOrder);
+  });
+
+  it('sends no LOAD when the card already holds every owed piece', async () => {
+    mockReadCard.mockResolvedValue(NO_PIN);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue([]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+      changeAddedSat: 6,
+    });
+  });
+
+  it('tells a PIN card what is waiting instead of writing — the keypad has no pad', async () => {
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockGetSlotStatuses).not.toHaveBeenCalled();
+    expect(mockReconcileOwedChange).not.toHaveBeenCalled();
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+      owedChangeSat: 6,
+    });
+  });
+
+  it('a card owed nothing opens the balance as before, with no slot read', async () => {
+    mockReadCard.mockResolvedValue(NO_PIN);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockGetSlotStatuses).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+    });
+  });
+
+  it('an unreadable owed-change store does not block the balance read', async () => {
+    mockOutstandingChangeForCard.mockRejectedValue(new Error('keychain locked'));
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+    });
+  });
+
+  it('a write the card refuses is toasted in merchant words and the balance screen is not opened', async () => {
+    mockReadCard.mockResolvedValue(NO_PIN);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockRejectedValue(
+      new CardError(0x6a84, 'LOAD_PROOF'),
+    );
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockToastShow).toHaveBeenCalledWith({
+      message: expect.stringMatching(/card is full/i),
+      type: 'error',
     });
   });
 });
