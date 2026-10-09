@@ -55,7 +55,9 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
         <CardArtV2 />
       </CardFrame>
       <Balance>{summary.balance} sats</Balance>
-      <Fiat>{loading ? ' ' : satsToCurrency(summary.balance).formattedCurrency}</Fiat>
+      <Fiat>
+        {loading ? ' ' : satsToCurrency(summary.balance).formattedCurrency}
+      </Fiat>
 
       <Details>
         <Row>
@@ -69,9 +71,15 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
         <Row>
           <Label>Slots</Label>
           <Value>
-            {info.unspent} used of {info.maxSlots} · {info.empty} free
+            {info.unspent} unspent · {info.spent} spent · {info.empty} free of{' '}
+            {info.maxSlots}
           </Value>
         </Row>
+        {info.spent > 0 && (
+          <Caption>
+            Spent slots are freed by the holder's Flash app once settled.
+          </Caption>
+        )}
         <Row>
           <Label>PIN</Label>
           <Value>{PIN_LABEL[info.pinState] ?? PIN_LABEL.unknown}</Value>
@@ -140,8 +148,24 @@ const Label = styled.Text`
   color: #747474;
 `;
 
+/**
+ * Shrinks and wraps under the row's right edge: Yoga's default flex-shrink is
+ * 0, and the slot count ("14 unspent · 18 spent · 0 free of 32") is wider
+ * than a 375pt phone's Details box leaves beside its label.
+ */
 const Value = styled.Text`
+  flex-shrink: 1;
+  margin-left: 12px;
+  text-align: right;
   font-size: 15px;
   font-family: 'Outfit-SemiBold';
   color: #212121;
+`;
+
+/** Note under the slot row: the POS never clears spent slots itself. */
+const Caption = styled.Text`
+  font-size: 13px;
+  font-family: 'Outfit-Regular';
+  color: #747474;
+  padding: 0 0 6px 0;
 `;

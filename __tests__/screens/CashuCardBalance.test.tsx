@@ -1,4 +1,5 @@
 import React from 'react';
+import {StyleSheet} from 'react-native';
 import {fireEvent, render} from '@testing-library/react-native';
 
 import CashuCardBalance from '../../src/screens/CashuCardBalance';
@@ -73,8 +74,51 @@ describe('CashuCardBalance', () => {
 
     expect(getByText('02c0ffee')).toBeTruthy();
     expect(getByText('1.2')).toBeTruthy();
-    expect(getByText('3 used of 32 · 28 free')).toBeTruthy();
+    expect(getByText('3 unspent · 1 spent · 28 free of 32')).toBeTruthy();
     expect(getByText('Set')).toBeTruthy();
+  });
+
+  it('explains spent slots when the card has any', () => {
+    const {getByText} = renderScreen();
+
+    expect(
+      getByText(
+        "Spent slots are freed by the holder's Flash app once settled.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows a zero spent count without the spent-slot caption', () => {
+    const {getByText, queryByText} = renderScreen({
+      ...SUMMARY,
+      info: {...SUMMARY.info, spent: 0, empty: 29},
+    });
+
+    expect(getByText('3 unspent · 0 spent · 29 free of 32')).toBeTruthy();
+    expect(queryByText(/Spent slots are freed/)).toBeNull();
+  });
+
+  it('counts a full card with no free slots', () => {
+    const {getByText} = renderScreen({
+      ...SUMMARY,
+      info: {...SUMMARY.info, unspent: 14, spent: 18, empty: 0},
+    });
+
+    expect(getByText('14 unspent · 18 spent · 0 free of 32')).toBeTruthy();
+  });
+
+  it('lets a long slot count wrap under the right edge instead of overflowing', () => {
+    // Yoga's default flex-shrink is 0: without it, the full-card string runs
+    // past the Details box on a 375pt phone rather than wrapping.
+    const {getByText} = renderScreen({
+      ...SUMMARY,
+      info: {...SUMMARY.info, unspent: 14, spent: 18, empty: 0},
+    });
+
+    const style = StyleSheet.flatten(
+      getByText('14 unspent · 18 spent · 0 free of 32').props.style,
+    );
+    expect(style).toMatchObject({flexShrink: 1, textAlign: 'right'});
   });
 
   it.each([
