@@ -33,8 +33,7 @@ const mockExtendCardTimeout = jest.fn();
  * the focused screen) and `blur()` runs the cleanup it returned.
  */
 type FocusCallback = () => void | (() => void);
-const mockFocus: {callback?: FocusCallback; cleanup?: void | (() => void)} =
-  {};
+const mockFocus: {callback?: FocusCallback; cleanup?: void | (() => void)} = {};
 
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({navigate: mockNavigate}),
@@ -75,8 +74,7 @@ jest.mock('../../src/services/cashuCard', () => ({
 }));
 
 jest.mock('../../src/services/cashuCharge', () => ({
-  reconcileOwedChange: (...args: unknown[]) =>
-    mockReconcileOwedChange(...args),
+  reconcileOwedChange: (...args: unknown[]) => mockReconcileOwedChange(...args),
   writeOwedChange: (...args: unknown[]) => mockWriteOwedChange(...args),
 }));
 
@@ -522,8 +520,18 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
   beforeEach(() => setPlatform('android'));
 
   const OWED = [
-    {id: `${SUMMARY.pubkey}:aa`, cardPubkey: SUMMARY.pubkey, amount: 4, nonce: 'aa'},
-    {id: `${SUMMARY.pubkey}:bb`, cardPubkey: SUMMARY.pubkey, amount: 2, nonce: 'bb'},
+    {
+      id: `${SUMMARY.pubkey}:aa`,
+      cardPubkey: SUMMARY.pubkey,
+      amount: 4,
+      nonce: 'aa',
+    },
+    {
+      id: `${SUMMARY.pubkey}:bb`,
+      cardPubkey: SUMMARY.pubkey,
+      amount: 2,
+      nonce: 'bb',
+    },
   ];
   const NO_PIN: CardSummary = {
     ...SUMMARY,
@@ -565,7 +573,8 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     });
     // The write happened before the session closed.
     const writeOrder = mockWriteOwedChange.mock.invocationCallOrder[0];
-    const cancelOrder = mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
+    const cancelOrder =
+      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
     expect(writeOrder).toBeLessThan(cancelOrder);
   });
 
@@ -620,7 +629,9 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
   });
 
   it('an unreadable owed-change store does not block the balance read', async () => {
-    mockOutstandingChangeForCard.mockRejectedValue(new Error('keychain locked'));
+    mockOutstandingChangeForCard.mockRejectedValue(
+      new Error('keychain locked'),
+    );
     renderHook(() => useKeypadCardReader());
     focus();
     await flush();
@@ -675,6 +686,57 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
       summary: after,
       owedChangeSat: 2,
     });
+  });
+
+  it('a blur during the write neither opens the balance over the screen the operator left nor toasts', async () => {
+    // Android: the blur's cancelCardSession kills the IsoDep channel under
+    // the in-flight LOAD, which rejects with a transceive error — not
+    // UserCancel — that settleOwedChange swallows. The session must then
+    // end quietly instead of navigating to CashuCardBalance.
+    mockReadCard.mockResolvedValue(NO_PIN);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    const write = deferred<number>();
+    mockWriteOwedChange.mockReturnValue(write.promise);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+    expect(mockWriteOwedChange).toHaveBeenCalledTimes(1);
+
+    blur();
+    await act(async () => {
+      write.reject(new Error('transceive failed: tag connection lost'));
+    });
+    await flush();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockSetNfcBusy).toHaveBeenLastCalledWith(false);
+    // Blurred: no re-arm.
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(1);
+  });
+
+  it('a blur during the balance read that surfaces as a transceive error is silent too', async () => {
+    const read = deferred<CardSummary>();
+    mockReadCard.mockReturnValue(read.promise);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
+
+    blur();
+    await act(async () => {
+      read.reject(new Error('transceive failed: tag connection lost'));
+    });
+    await flush();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(1);
   });
 
   it('a tag lost during the write still opens the balance it read, with the change waiting', async () => {

@@ -60,7 +60,6 @@ function isNotAFlashCard(error: unknown): boolean {
   return /applet not found/i.test(error instanceof Error ? error.message : '');
 }
 
-
 type SessionOutcome = 'routed' | 'cancelled' | 'failed' | 'busy';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -200,6 +199,13 @@ export function useKeypadCardReader() {
       if (armedRef.current) {
         return 'busy';
       }
+      // The focus generation this session belongs to. A blur mid-session
+      // (Android: `cancelCardSession` kills the IsoDep channel under an
+      // in-flight LOAD/GET_PROOF, which then rejects with a transceive
+      // error, not UserCancel) bumps it; a session whose generation is
+      // stale must neither open the balance sheet over the screen the
+      // operator moved to nor toast at them there.
+      const gen = focusGenRef.current;
       armedRef.current = true;
       setNfcBusy(true);
       setReading(true);
@@ -224,12 +230,17 @@ export function useKeypadCardReader() {
         const params = await settleOwedChange(summary);
         // Close the session before the balance screen takes the foreground.
         await cancelCardSession();
+        if (gen !== focusGenRef.current) {
+          return 'cancelled';
+        }
         navigation.navigate('CashuCardBalance', params);
         return 'routed';
       } catch (error) {
         // Our own blur/unmount cancel, or the iOS sheet's Cancel button:
-        // the operator's doing, not a failure.
-        if (isUserCancel(error)) {
+        // the operator's doing, not a failure. The blur's cancel may also
+        // surface as a transceive error from the APDU it cut off — a stale
+        // generation says which it was.
+        if (isUserCancel(error) || gen !== focusGenRef.current) {
           return 'cancelled';
         }
         if (isNotAFlashCard(error)) {

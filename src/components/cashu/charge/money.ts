@@ -90,10 +90,15 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     // in the app clears spent slots yet (ENG-631 adds the top-up that does).
     return 'Nothing was taken from the card. It has no free slot for the change.';
   }
+  const verb = ctx.paidSat === 1 ? 'is' : 'are';
   if (CHANGE_UNRECORDED.test(phase)) {
     // The bill is paid but the change was never recorded and did not land:
-    // it is not saved anywhere, so say only what the card said.
-    return failure.detail || 'The card stopped responding.';
+    // it is not saved anywhere. Say the one thing the customer needs to
+    // hear — the bill is paid — and that the change did not reach the card;
+    // not "saved", not "next time". The card's own words stay on the pill.
+    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+      ctx.changeSat,
+    )} change could not be put on the card.`;
   }
   if (
     /^writing change/i.test(phase) &&
@@ -103,8 +108,9 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     // The mint has settled before the change is written: the bill is paid,
     // and the change is recorded on the terminal — it goes onto the card at
     // its next tap, whether the tag moved or the card ran out of slots.
-    const verb = ctx.paidSat === 1 ? 'is' : 'are';
-    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(ctx.changeSat)} change is saved and will be added the next time this card is charged.`;
+    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+      ctx.changeSat,
+    )} change is saved and will be added the next time this card is charged.`;
   }
   if (!failure.tagLost) {
     return failure.detail || 'The card stopped responding.';

@@ -34,10 +34,7 @@ import {
   type SlotStatus,
   type Transceiver,
 } from './cashuCard';
-import {
-  appendSettledProofsTill,
-  mintChargeChange,
-} from './cashuMint';
+import {appendSettledProofsTill, mintChargeChange} from './cashuMint';
 import {burnPlannedSlot} from './cashuSpend';
 import {
   attachRecoveredWitness,
@@ -77,9 +74,13 @@ export function planPurchase(
   unspent: CardProofSlot[],
   amountSat: number,
 ): PurchasePlan[] {
-  if (amountSat <= 0) {return [];}
+  if (amountSat <= 0) {
+    return [];
+  }
   const total = unspent.reduce((t, p) => t + p.amount, 0);
-  if (total < amountSat) {return [];}
+  if (total < amountSat) {
+    return [];
+  }
 
   const candidates: PurchasePlan[] = [];
 
@@ -119,7 +120,9 @@ export function planPurchase(
   let sum = 0;
   const acc: number[] = [];
   for (const p of ascending) {
-    if (sum >= amountSat) {break;}
+    if (sum >= amountSat) {
+      break;
+    }
     acc.push(p.slot);
     sum += p.amount;
   }
@@ -135,7 +138,9 @@ export function planPurchase(
     )
     .filter(c => {
       const key = [...c.slots].sort((x, y) => x - y).join(',');
-      if (seen.has(key)) {return false;}
+      if (seen.has(key)) {
+        return false;
+      }
       seen.add(key);
       return true;
     })
@@ -202,7 +207,9 @@ export async function reconcileOwedChange({
   }
   for (let slot = 0; slot < statuses.length; slot++) {
     if (statuses[slot] !== 'empty' && !seeded.has(slot)) {
-      const proof = await step('reading card', () => getProof(transceive, slot));
+      const proof = await step('reading card', () =>
+        getProof(transceive, slot),
+      );
       onCard.set(proof.nonce, slot);
     }
   }
@@ -327,7 +334,7 @@ export class PhaseError extends Error {
 
 const makeStep =
   (onPhase: (phase: string) => void) =>
-  async <T,>(phase: string, fn: () => Promise<T>): Promise<T> => {
+  async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
     onPhase(phase);
     try {
       return await fn();
@@ -349,10 +356,12 @@ export interface PreReadCharge {
   pinRequired: boolean;
   /**
    * Change from an earlier charge this card is still owed, does not yet
-   * hold, and has a free slot for. `executeCharge` writes it first, so it
-   * is counted against the card's empty slots when the plan is chosen. Owed
-   * pieces beyond the card's room are NOT here: they stay `owed` on disk
-   * for a later tap, and never block a charge that needs no slot itself.
+   * hold, and has a free slot for AFTER the bill's own change is placed.
+   * `executeCharge` writes it first, so it is counted against the card's
+   * empty slots when the plan is chosen — but the bill wins: when no plan
+   * fits beside the owed pieces, the bill takes the empties and only the
+   * owed pieces with room left are here. The others stay `owed` on disk
+   * for a later tap and never refuse a charge the card can physically take.
    */
   owedChange: OwedChangeEntry[];
   /** Empty slots the card reported, before any owed change is written. */
@@ -384,7 +393,9 @@ export async function readAndPlan({
   const unspent: CardProofSlot[] = [];
   for (let slot = 0; slot < statuses.length; slot++) {
     if (statuses[slot] === 'unspent') {
-      unspent.push(await step('reading card', () => getProof(transceive, slot)));
+      unspent.push(
+        await step('reading card', () => getProof(transceive, slot)),
+      );
     }
   }
   const cardPubkey = await step('reading card', () =>
@@ -394,7 +405,10 @@ export async function readAndPlan({
   const plans = planPurchase(unspent, amountSat);
   if (plans.length === 0) {
     throw new Error(
-      `card holds ${unspent.reduce((t, p) => t + p.amount, 0)} sat; the bill is ${amountSat} sat`,
+      `card holds ${unspent.reduce(
+        (t, p) => t + p.amount,
+        0,
+      )} sat; the bill is ${amountSat} sat`,
     );
   }
 
@@ -412,18 +426,31 @@ export async function readAndPlan({
     now,
     onPhase,
   });
-  // Only what fits is written this tap; the rest stays 'owed' on disk for a
-  // later one. Owed change must never refuse a charge on its own: an exact
-  // bill needs no slot, and the card ENG-630 came from — full, with change
-  // owed — has to be able to pay again.
-  const owedChange = stillOwed.slice(0, emptySlots);
-  const free = emptySlots - owedChange.length;
-  const plan = selectFittingPlan(plans, free);
+  // The bill comes first. Owed change is written this tap only out of the
+  // slots the bill's own change does not need; the rest stays 'owed' on
+  // disk for a later tap. Owed change must never refuse a charge on its
+  // own: a card that reported one empty slot and could physically take the
+  // change must not be declined because an earlier piece wanted that slot
+  // (an exact bill needs no slot, and the card ENG-630 came from — full,
+  // with change owed — has to be able to pay again). So: try the plan with
+  // the owed pieces counted first; when nothing fits, give the bill every
+  // empty slot and write only the owed pieces that still have room.
+  let owedChange = stillOwed.slice(0, emptySlots);
+  let plan = selectFittingPlan(plans, emptySlots - owedChange.length);
   if (!plan) {
-    throw new Error(
-      `this card is full: ${plans[0].changeSat} sat of change needs ${pow2PieceCount(
-        plans[0].changeSat,
-      )} free slots and the card has ${free}`,
+    plan = selectFittingPlan(plans, emptySlots);
+    if (!plan) {
+      throw new Error(
+        `this card is full: ${
+          plans[0].changeSat
+        } sat of change needs ${pow2PieceCount(
+          plans[0].changeSat,
+        )} free slots and the card has ${emptySlots}`,
+      );
+    }
+    owedChange = stillOwed.slice(
+      0,
+      emptySlots - pow2PieceCount(plan.changeSat),
     );
   }
   return {
@@ -458,7 +485,9 @@ export async function chargeCard({
       onPhase,
     });
   if (pinRequired && !pin) {
-    throw new Error('this card has a PIN — ask the customer for it before tapping');
+    throw new Error(
+      'this card has a PIN — ask the customer for it before tapping',
+    );
   }
   return executeCharge({
     transceive,
@@ -474,6 +503,28 @@ export async function chargeCard({
     now,
     onPhase,
   });
+}
+
+/**
+ * The subset of `owedChange` the store still calls `owed` for this card, in
+ * the caller's order. `[]` when the store cannot be read: writing nothing is
+ * the safe side (a later tap reconciles), writing a duplicate is not.
+ */
+async function stillOwedOf(
+  cardPubkey: string,
+  owedChange: OwedChangeEntry[],
+): Promise<OwedChangeEntry[]> {
+  let live: Set<string>;
+  try {
+    live = new Set((await outstandingChangeForCard(cardPubkey)).map(e => e.id));
+  } catch (error) {
+    console.warn(
+      '[charge] owed-change store unreadable; skipping the owed write this tap',
+      error instanceof Error ? error.message : String(error),
+    );
+    return [];
+  }
+  return owedChange.filter(e => live.has(e.id));
 }
 
 export interface ExecuteChargeArgs {
@@ -528,8 +579,17 @@ export async function executeCharge({
 
   // Change owed from an earlier charge goes on first: the PIN is verified,
   // nothing has burned, so a slot the card refuses here is a clean refusal.
+  // Gated on the STORE, not on the caller's snapshot: the PIN flow keeps
+  // `owedChange` across a failed attempt and calls back in with the same
+  // args, and the card does not dedup a LOAD — a piece the first attempt
+  // already landed (marked written as the card answered) must not go on
+  // again as a duplicate proof. One store read, no APDU; if the store will
+  // not read, nothing owed is written this tap and a later one reconciles.
   if (owedChange.length > 0) {
-    await writeOwedChange({transceive, owed: owedChange, now, onPhase});
+    const toWrite = await stillOwedOf(cardPubkey, owedChange);
+    if (toWrite.length > 0) {
+      await writeOwedChange({transceive, owed: toWrite, now, onPhase});
+    }
   }
 
   const burned: SettlementEntry[] = [];
@@ -645,7 +705,11 @@ export async function executeCharge({
       changeLoaded += 1;
       if (changeRecorded) {
         try {
-          await markOwedChangeWritten(owedChangeId(cardPubkey, nonce), slot, now);
+          await markOwedChangeWritten(
+            owedChangeId(cardPubkey, nonce),
+            slot,
+            now,
+          );
         } catch {
           // The piece is on the card. A stale 'owed' record is harmless: the
           // next tap's reconcile finds the nonce in a slot and marks it.
@@ -674,9 +738,7 @@ export async function executeCharge({
     }
   }
 
-  const balanceAfter = await step('reading card', () =>
-    getBalance(transceive),
-  );
+  const balanceAfter = await step('reading card', () => getBalance(transceive));
   return {
     amountSat,
     burned,

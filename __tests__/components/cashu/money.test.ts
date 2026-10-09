@@ -121,7 +121,7 @@ describe('parseFailure', () => {
     expect(parseFailure(null).tagLost).toBe(true);
   });
 
-  it('spots a full card, from the pre-flight and from the card\'s own 6A84', () => {
+  it("spots a full card, from the pre-flight and from the card's own 6A84", () => {
     expect(
       parseFailure(
         '[reading card] this card is full: 6 sat of change needs 2 free slots and the card has 0',
@@ -183,7 +183,10 @@ describe('failureBody', () => {
     const saved =
       '12 sats are paid. Your 4 sats change is saved and will be added the next time this card is charged.';
     expect(
-      failureBody(parseFailure('[writing change to card] Tag was lost.'), ctx()),
+      failureBody(
+        parseFailure('[writing change to card] Tag was lost.'),
+        ctx(),
+      ),
     ).toBe(saved);
     expect(
       failureBody(
@@ -194,28 +197,39 @@ describe('failureBody', () => {
       ),
     ).toBe(saved);
     expect(
-      failureBody(
-        parseFailure('[writing change to card] Tag was lost.'),
-        {...ctx(), paidSat: 1, changeSat: 1},
-      ),
+      failureBody(parseFailure('[writing change to card] Tag was lost.'), {
+        ...ctx(),
+        paidSat: 1,
+        changeSat: 1,
+      }),
     ).toBe(
       '1 sat is paid. Your 1 sat change is saved and will be added the next time this card is charged.',
     );
   });
 
-  it('a change write that died with NO record landed never says the change is saved', () => {
+  it('a change write that died with NO record landed says the bill is paid and the change did not reach the card — never that it is saved', () => {
     const FULL = 'LOAD_PROOF failed: card is full — no free slot (0x6A84)';
     const unrecorded = (reason: string) =>
       failureBody(
         parseFailure(`[writing change to card (unrecorded)] ${reason}`),
         ctx(),
       );
-    expect(unrecorded('Tag was lost.')).toBe('Tag was lost.');
-    expect(unrecorded(FULL)).toBe(FULL);
-    expect(unrecorded('')).toBe('The card stopped responding.');
+    const body =
+      '12 sats are paid. Your 4 sats change could not be put on the card.';
+    expect(unrecorded('Tag was lost.')).toBe(body);
+    expect(unrecorded(FULL)).toBe(body);
+    expect(unrecorded('')).toBe(body);
     for (const reason of ['Tag was lost.', FULL, '']) {
       expect(unrecorded(reason)).not.toMatch(/saved|next time/i);
+      // The raw failure is NFC jargon for the pill, never the body.
+      expect(unrecorded(reason)).not.toMatch(/LOAD_PROOF|0x6A84|Tag was lost/);
     }
+    expect(
+      failureBody(
+        parseFailure('[writing change to card (unrecorded)] Tag was lost.'),
+        {...ctx(), paidSat: 1, changeSat: 1},
+      ),
+    ).toBe('1 sat is paid. Your 1 sat change could not be put on the card.');
     // The title still names the card as full / moved, from the same parse.
     expect(
       parseFailure(`[writing change to card (unrecorded)] ${FULL}`),
@@ -227,13 +241,22 @@ describe('failureBody', () => {
 
   it('keeps the other bodies: a refusal verbatim, a lost tag by where it was', () => {
     expect(
-      failureBody(parseFailure('[verifying PIN] wrong PIN — 2 tries left'), ctx()),
+      failureBody(
+        parseFailure('[verifying PIN] wrong PIN — 2 tries left'),
+        ctx(),
+      ),
     ).toBe('wrong PIN — 2 tries left');
     expect(
-      failureBody(parseFailure('[reading card] Tag was lost.'), ctx({burnsDone: 0})),
+      failureBody(
+        parseFailure('[reading card] Tag was lost.'),
+        ctx({burnsDone: 0}),
+      ),
     ).toBe('Nothing was taken from the card. Hold it to the phone again.');
     expect(
-      failureBody(parseFailure('[burning 16 sat (proof 1/1)] Tag was lost.'), ctx()),
+      failureBody(
+        parseFailure('[burning 16 sat (proof 1/1)] Tag was lost.'),
+        ctx(),
+      ),
     ).toBe('Hold the card to the phone again to finish.');
     expect(failureBody(parseFailure(''), ctx())).toBe(
       'Hold the card to the phone again to finish.',
@@ -242,7 +265,7 @@ describe('failureBody', () => {
 });
 
 describe('pinFailureText', () => {
-  it('turns the card\'s tries-left verdict into one instruction', () => {
+  it("turns the card's tries-left verdict into one instruction", () => {
     expect(pinFailureText('VERIFY_PIN failed: wrong PIN — 2 tries left')).toBe(
       'Wrong PIN — 2 tries left. Try again.',
     );
@@ -252,12 +275,18 @@ describe('pinFailureText', () => {
   });
 
   it('says plainly when the PIN is blocked', () => {
-    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — no tries left')).toMatch(/PIN blocked/);
-    expect(pinFailureText('VERIFY_PIN failed: PIN blocked')).toMatch(/PIN blocked/);
+    expect(
+      pinFailureText('VERIFY_PIN failed: wrong PIN — no tries left'),
+    ).toMatch(/PIN blocked/);
+    expect(pinFailureText('VERIFY_PIN failed: PIN blocked')).toMatch(
+      /PIN blocked/,
+    );
   });
 
   it('drops the APDU name and leaves anything else alone', () => {
-    expect(pinFailureText('VERIFY_PIN failed: wrong length')).toBe('wrong length');
+    expect(pinFailureText('VERIFY_PIN failed: wrong length')).toBe(
+      'wrong length',
+    );
     expect(pinFailureText('Tag was lost.')).toBe('Tag was lost.');
   });
 });

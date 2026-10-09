@@ -184,10 +184,14 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
 - **Slot pre-flight, before the burn.** `readAndPlan` counts the card's empty
   slots and takes the first plan (cheapest change first) whose change fits
   (`selectFittingPlan`). Change still owed from an earlier charge is counted
-  first — as much of it as the card has room for; the rest stays `owed` on
-  disk for a later tap and never refuses a charge on its own (an exact bill
-  needs no slot, and the full-with-change-owed card ENG-630 came from must be
-  able to pay again). A card with no room for the plan's change is refused
+  first — as much of it as the card has room for — but the bill wins: when
+  no plan fits beside the owed pieces, the bill takes the empties and only
+  the owed pieces with room left are written this tap; the rest stays `owed`
+  on disk for a later tap and never refuses a charge the card can physically
+  take (an exact bill needs no slot, and the full-with-change-owed card
+  ENG-630 came from must be able to pay again). `executeCharge` re-checks
+  the store before writing owed change, so a PIN-flow retry never re-sends a
+  piece the first attempt already landed. A card with no room for the plan's change is refused
   with "this card is full: …" before any `SPEND_PROOF`, and the screen says
   nothing was taken — and nothing else: a spend leaves its slot `spent`, not
   free, and nothing in the app clears spent slots yet (ENG-631).
