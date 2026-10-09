@@ -36,12 +36,19 @@ type RootStackType = {
       unspent: unknown[];
       cardPubkey: string;
       pinRequired: boolean;
+      /** Change from an earlier charge the card is still owed (OwedChangeEntry[]). */
+      owedChange: unknown[];
     };
   };
   // A Flashcard v2 tapped on the keypad (hooks/useKeypadCardReader.ts): the
-  // read-only summary the card reported in that session.
+  // read-only summary the card reported in that session. owedChangeSat:
+  // change from an earlier charge still waiting for this card (a PIN card —
+  // the keypad has no pad, so it is written on the next charge).
+  // changeAddedSat: the hook wrote that change in the same session.
   CashuCardBalance: {
     summary: import('../services/cashuCard').CardSummary;
+    owedChangeSat?: number;
+    changeAddedSat?: number;
   };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
