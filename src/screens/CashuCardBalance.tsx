@@ -50,15 +50,17 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
   const {satsToCurrency, loading} = useRealtimePrice();
   const {info} = summary;
 
-  // Change from an earlier charge (ENG-630): either written just now by the
-  // keypad read (PIN-less card) or waiting for the next charge (PIN card).
-  const changeNote = changeAddedSat
-    ? `Change added · ${formatSatAmount(changeAddedSat)}`
-    : owedChangeSat
-    ? `Change waiting · ${formatSatAmount(
-        owedChangeSat,
-      )} — added on the next charge`
-    : null;
+  // Change from an earlier charge (ENG-630): written just now by the keypad
+  // read (PIN-less card), waiting for the next charge (PIN card), or both
+  // when the keypad read put some of it on the card and the rest stayed owed.
+  const changeNotes = [
+    changeAddedSat ? `Change added · ${formatSatAmount(changeAddedSat)}` : null,
+    owedChangeSat
+      ? `Change waiting · ${formatSatAmount(
+          owedChangeSat,
+        )} — added on the next charge`
+      : null,
+  ].filter((note): note is string => note !== null);
 
   const onCharge = useCallback(() => navigation.goBack(), [navigation]);
 
@@ -68,7 +70,9 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
         <CardArtV2 />
       </CardFrame>
       <Balance>{summary.balance} sats</Balance>
-      <Fiat>{loading ? ' ' : satsToCurrency(summary.balance).formattedCurrency}</Fiat>
+      <Fiat>
+        {loading ? ' ' : satsToCurrency(summary.balance).formattedCurrency}
+      </Fiat>
 
       <Details>
         <Row>
@@ -90,7 +94,9 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
           <Value>{PIN_LABEL[info.pinState] ?? PIN_LABEL.unknown}</Value>
         </Row>
       </Details>
-      {changeNote ? <ChangeNote>{changeNote}</ChangeNote> : null}
+      {changeNotes.map(note => (
+        <ChangeNote key={note}>{note}</ChangeNote>
+      ))}
 
       <PrimaryButton
         btnText="Charge this card"

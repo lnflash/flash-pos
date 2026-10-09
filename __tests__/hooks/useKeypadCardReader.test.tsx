@@ -216,7 +216,8 @@ beforeEach(() => {
   mockOutstandingChangeForCard.mockResolvedValue([]);
   mockGetSlotStatuses.mockResolvedValue(['unspent', 'empty']);
   mockReconcileOwedChange.mockImplementation(async ({owed}) => owed ?? []);
-  mockWriteOwedChange.mockResolvedValue(1);
+  // The write resolves with the pieces it put on the card.
+  mockWriteOwedChange.mockImplementation(async ({owed}) => owed);
   mockNfc.getTag.mockResolvedValue(null);
   // Each request is a fresh pending promise, like the native techRequest.
   mockNfc.requestTechnology.mockImplementation(() => {
@@ -576,6 +577,73 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     const cancelOrder =
       mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
     expect(writeOrder).toBeLessThan(cancelOrder);
+  });
+
+  it('a write the store cut short before any LOAD claims nothing added: the screen opens with all of it still waiting', async () => {
+    // `writeOwedChange` resolves short, without throwing, when the keychain
+    // refuses the write-ahead mark: no LOAD went out, the card is unchanged.
+    mockReadCard.mockResolvedValue(NO_PIN);
+    mockOutstandingChangeForCard.mockResolvedValue(OWED);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockResolvedValue([]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockWriteOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({owed: OWED}),
+    );
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: NO_PIN,
+      owedChangeSat: 6,
+    });
+    expect(mockNavigate.mock.calls[0][1]).not.toHaveProperty('changeAddedSat');
+  });
+
+  it('a write the store cut short after one piece reports that piece as added and the rest as waiting', async () => {
+    const after: CardSummary = {...NO_PIN, balance: 504};
+    mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
+    // The store answers the read (what is still owed) but refused the
+    // write-ahead mark for the second piece, so only the first was sent.
+    mockOutstandingChangeForCard
+      .mockResolvedValueOnce(OWED)
+      .mockResolvedValueOnce([OWED[1]]);
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockResolvedValue([OWED[0]]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: after,
+      changeAddedSat: 4,
+      owedChangeSat: 2,
+    });
+  });
+
+  it('a write cut short with the store unreadable afterwards counts the unsent pieces as waiting', async () => {
+    const after: CardSummary = {...NO_PIN, balance: 504};
+    mockReadCard.mockResolvedValueOnce(NO_PIN).mockResolvedValueOnce(after);
+    mockOutstandingChangeForCard
+      .mockResolvedValueOnce(OWED)
+      .mockRejectedValueOnce(new Error('keychain read denied'));
+    mockReconcileOwedChange.mockResolvedValue(OWED);
+    mockWriteOwedChange.mockResolvedValue([OWED[0]]);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: after,
+      changeAddedSat: 4,
+      owedChangeSat: 2,
+    });
   });
 
   it('sends no LOAD when the card already holds every owed piece', async () => {

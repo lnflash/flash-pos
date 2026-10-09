@@ -1542,6 +1542,87 @@ describe('owed change (ENG-630)', () => {
     }
   });
 
+  it('writeOwedChange resolves with exactly the pieces it put on the card', async () => {
+    const [a, b] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({slots: [], maxSlots: 4});
+
+    const written = await writeOwedChange({
+      transceive: card.transceive,
+      owed: [a, b],
+      now: 2000,
+    });
+
+    expect(written.map(e => e.id)).toEqual([a.id, b.id]);
+    expect(card.loads.map(l => l.nonce)).toEqual([a.nonce, b.nonce]);
+  });
+
+  it('writeOwedChange cut short by the store resolves with only what went out, so a caller cannot claim the rest', async () => {
+    const [a, b] = await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The very first write-ahead mark is refused: nothing is sent, and the
+      // result says so — an empty list, not the two pieces it was handed.
+      const card = fakeCard({slots: [], maxSlots: 4});
+      storage.setSecure.mockImplementation(async (k: string, v: string) => {
+        if (k === OWED_CHANGE_KEY) {
+          throw new Error('keychain write denied');
+        }
+        return realSet(k, v);
+      });
+      await expect(
+        writeOwedChange({transceive: card.transceive, owed: [a, b], now: 2000}),
+      ).resolves.toEqual([]);
+      expect(card.loads).toEqual([]);
+      expect(owedStore().map(e => [e.amount, e.status, e.attempts])).toEqual([
+        [4, 'owed', 0],
+        [2, 'owed', 0],
+      ]);
+
+      // The mark for the second piece is refused after the first landed:
+      // the result names the first piece alone.
+      storage.setSecure.mockImplementation(realSet);
+      const card2 = fakeCard({slots: [], maxSlots: 4});
+      let owedWrites = 0;
+      storage.setSecure.mockImplementation(async (k: string, v: string) => {
+        // 1st = a's write-ahead mark, 2nd = a's `written` mark, 3rd = b's
+        // write-ahead mark (refused).
+        if (k === OWED_CHANGE_KEY && ++owedWrites === 3) {
+          throw new Error('keychain write denied');
+        }
+        return realSet(k, v);
+      });
+      const written = await writeOwedChange({
+        transceive: card2.transceive,
+        owed: [a, b],
+        now: 3000,
+      });
+
+      expect(written.map(e => e.id)).toEqual([a.id]);
+      expect(card2.loads.map(l => l.nonce)).toEqual([a.nonce]);
+      expect(owedStore().map(e => [e.amount, e.status, e.attempts])).toEqual([
+        [4, 'written', 1],
+        [2, 'owed', 0],
+      ]);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+      warn.mockRestore();
+    }
+  });
+
   it('a first owed write does not re-read the card', async () => {
     const [owed] = await recordOwedChange(
       CARD_PUBKEY_HEX,
@@ -1576,9 +1657,7 @@ describe('owed change (ENG-630)', () => {
     const session2 = card.sent.slice(apdusAfterRead);
     const firstLoad = session2.findIndex(a => insOf(a) === 0x30);
     expect(firstLoad).toBeGreaterThan(-1);
-    expect(
-      session2.slice(0, firstLoad).map(insOf),
-    ).toEqual([0xa4, 0x40]);
+    expect(session2.slice(0, firstLoad).map(insOf)).toEqual([0xa4, 0x40]);
   });
 
   it('an unreadable owed-change store skips the owed write and the charge still completes', async () => {

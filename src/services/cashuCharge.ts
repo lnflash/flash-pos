@@ -250,6 +250,11 @@ export const PHASE_WRITING_CHANGE_UNRECORDED =
  * recorded, and the error surfaces as a `PhaseError` so the caller can
  * class it. Run after the PIN verify (LOAD_PROOF is PIN-gated) and before
  * any burn, so a failure here is a clean refusal with nothing taken.
+ *
+ * Resolves with the pieces this call put on the card — and ONLY those. It
+ * resolves short, without throwing, when the store refuses the write-ahead
+ * mark: nothing is sent for that piece or the rest. A caller that tells the
+ * customer what was added must read it from the result, never from `owed`.
  */
 export async function writeOwedChange({
   transceive,
@@ -261,8 +266,8 @@ export async function writeOwedChange({
   owed: OwedChangeEntry[];
   now: number;
   onPhase?: (phase: string) => void;
-}): Promise<number> {
-  let written = 0;
+}): Promise<OwedChangeEntry[]> {
+  const written: OwedChangeEntry[] = [];
   for (const entry of owed) {
     const phase = owedChangePhase(entry.amount);
     onPhase(phase);
@@ -307,7 +312,7 @@ export async function writeOwedChange({
       // attempt was counted ahead, so the next try reconciles and finds the
       // nonce in its slot before it could send a duplicate.
     }
-    written += 1;
+    written.push(entry);
   }
   return written;
 }

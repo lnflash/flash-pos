@@ -99,6 +99,7 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
   }
   const now = Date.now();
   let remaining = owed;
+  let written: OwedChangeEntry[] = [];
   try {
     const statuses = await getSlotStatuses(
       nfcTransceiver,
@@ -115,7 +116,11 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
       // was added now, so nothing is said about it.
       return {summary};
     }
-    await writeOwedChange({transceive: nfcTransceiver, owed: remaining, now});
+    written = await writeOwedChange({
+      transceive: nfcTransceiver,
+      owed: remaining,
+      now,
+    });
   } catch {
     // A piece may have landed before the refusal: show the balance as it is
     // now when the card will still answer, the pre-write one when it won't.
@@ -125,12 +130,22 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
       owedChangeSat: await stillOwedSat(summary, remaining),
     };
   }
-  return {
-    summary: await readCard(nfcTransceiver),
-    // Only what this tap put on the card — never the pieces reconcile found
-    // already there.
-    changeAddedSat: sumSat(remaining),
-  };
+  // Only what this tap put on the card — never the pieces reconcile found
+  // already there, and never a piece the write resolved without sending
+  // (the store refusing the write-ahead mark ends the write short, quietly).
+  // Whatever it did not send is still waiting, and the screen says so.
+  const params: BalanceParams = {summary: await readCard(nfcTransceiver)};
+  if (written.length > 0) {
+    params.changeAddedSat = sumSat(written);
+  }
+  if (written.length < remaining.length) {
+    const sent = new Set(written.map(e => e.id));
+    params.owedChangeSat = await stillOwedSat(
+      summary,
+      remaining.filter(e => !sent.has(e.id)),
+    );
+  }
+  return params;
 }
 
 /**

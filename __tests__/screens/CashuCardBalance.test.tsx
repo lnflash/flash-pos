@@ -129,6 +129,18 @@ describe('CashuCardBalance', () => {
     expect(queryByText(/Change waiting/)).toBeNull();
   });
 
+  it('shows both what the keypad read added and what is still waiting when the write stopped short (ENG-630)', () => {
+    const {getByText} = renderScreen(
+      {...SUMMARY, info: {...SUMMARY.info, pinState: 'unset'}},
+      {changeAddedSat: 4, owedChangeSat: 2},
+    );
+
+    expect(getByText('Change added · 4 sats')).toBeTruthy();
+    expect(
+      getByText('Change waiting · 2 sats — added on the next charge'),
+    ).toBeTruthy();
+  });
+
   it('"Charge this card" goes back to the keypad', () => {
     const {getByText} = renderScreen();
 
