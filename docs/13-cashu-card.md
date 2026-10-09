@@ -171,6 +171,42 @@ applet AID for cards that do not support partial selection.
 > resolved and the four read APDUs completed over CoreNFC. App Store
 > submission is still unexercised.
 
+## Owed change (ENG-630)
+
+A charge's swap mints the customer's change as P2PK proofs locked to their
+card and writes them with `LOAD_PROOF`, one slot per power-of-two piece.
+Between the swap and the last load the change exists only in the terminal's
+memory — a `6A84` (no free slot) on the second piece, a tag lost mid-write or
+a killed app would strand mint-signed proofs that only that card can spend.
+Two things stand in that window (`src/services/cashuCharge.ts`,
+`src/services/cashuSettlement.ts`):
+
+- **Slot pre-flight, before the burn.** `readAndPlan` counts the card's empty
+  slots and takes the first plan (cheapest change first) whose change fits
+  (`selectFittingPlan`). Change still owed from an earlier charge is counted
+  first. A card with no room is refused with "this card is full: …" before any
+  `SPEND_PROOF`, and the screen says nothing was taken.
+- **The owed-change store** (`@cashu_owed_change`, a `{v, entries}` envelope
+  separate from the settlement queue). `executeCharge` records every minted
+  change piece as `owed` **before** the first `LOAD_PROOF`, and marks each
+  `written` (with its slot) as the card answers. Whatever is still `owed` is
+  written on the card's next tap: `reconcileOwedChange` first reads every
+  non-empty slot (spent ones too — a lost LOAD answer leaves the piece on the
+  card, and the card does not dedup) and marks any piece already there, then
+  `writeOwedChange` loads the rest. In a charge that happens after the PIN
+  verify and before the burn (`LOAD_PROOF` is PIN-gated when a PIN is set); on
+  the keypad's balance read a PIN-less card takes it in the same session and a
+  PIN card is told what is waiting (`CashuCardBalance`).
+
+The store is the customer's money, not the merchant's: `pendingExposure`,
+`hasUnsettledForCard` and the settlement banner ignore it by design. It reads
+fail-closed like the queue (an unreadable or corrupt store throws rather than
+answering "nothing owed", and corrupt bytes are quarantined under
+`@cashu_owed_change_corrupt:<hash>`), only `written` entries are ever evicted,
+and unknown fields from a newer build ride through a write untouched. P2PK
+change for a card that never returns stays in the store; nothing else can
+spend it.
+
 ## Known gaps
 
 - **Spending is not implemented.** `SPEND_PROOF` (`0xB0 0x20`) burns a slot
