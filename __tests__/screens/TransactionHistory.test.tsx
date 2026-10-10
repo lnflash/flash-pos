@@ -1,4 +1,5 @@
 import React from 'react';
+import {FlatList} from 'react-native';
 import {render, fireEvent} from '@testing-library/react-native';
 import {Provider} from 'react-redux';
 import {NavigationContainer} from '@react-navigation/native';
@@ -119,6 +120,77 @@ describe('TransactionHistory Screen', () => {
       expect(getByText(NOTE)).toBeTruthy();
       // The sale row still renders below it
       expect(getByText('$ 10.00')).toBeTruthy();
+    });
+
+    it('renders the note as the list header so it scrolls with the rows', () => {
+      const initialState = {
+        transactionHistory: {
+          transactions: [mockTransaction],
+          lastTransaction: mockTransaction,
+          maxTransactions: 50,
+        },
+      };
+
+      const {UNSAFE_getByType} = renderWithProviders(
+        <TransactionHistoryScreen />,
+        initialState,
+      );
+
+      // The note must live inside the FlatList (ListHeaderComponent), not as
+      // fixed chrome stacked under the filter bar that never scrolls away.
+      const list = UNSAFE_getByType(FlatList);
+      expect(list.props.ListHeaderComponent).toBeTruthy();
+      expect(list.props.ListHeaderComponent.props.testID).toBe(
+        'history-paycode-note',
+      );
+    });
+
+    it('withholds the list header while the list is empty so the note shows once', () => {
+      const {UNSAFE_getByType, getAllByTestId} = renderWithProviders(
+        <TransactionHistoryScreen />,
+      );
+
+      const list = UNSAFE_getByType(FlatList);
+      expect(list.props.ListHeaderComponent).toBeNull();
+      // Only the empty-state copy of the note renders
+      expect(getAllByTestId('history-paycode-note')).toHaveLength(1);
+    });
+
+    it('resets to the All filter on Clear History so the note is not stranded behind a filter', () => {
+      const mockRefund: TransactionData = {
+        ...mockTransaction,
+        id: 'refund-tx-1',
+        transactionType: 'refund',
+        refundOf: mockTransaction.id,
+        amount: {
+          ...mockTransaction.amount,
+          satAmount: -400,
+          displayAmount: '4.00',
+        },
+        invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+        memo: 'Refund',
+      };
+      const initialState = {
+        transactionHistory: {
+          transactions: [mockRefund, mockTransaction],
+          lastTransaction: mockRefund,
+          maxTransactions: 50,
+        },
+      };
+
+      const {getByText, getByTestId, queryByText, queryByTestId} =
+        renderWithProviders(<TransactionHistoryScreen />, initialState);
+
+      fireEvent.press(getByText(/Refunds \(1\)/));
+      expect(queryByTestId('history-paycode-note')).toBeNull();
+
+      fireEvent.press(getByText('Clear History'));
+
+      // Filter chips are gone (no transactions), so the screen must not be
+      // stuck on the refund empty state with no way back to All.
+      expect(queryByText('No refund transactions found')).toBeNull();
+      expect(getByText('No transactions found')).toBeTruthy();
+      expect(getByTestId('history-paycode-note')).toBeTruthy();
     });
 
     it('hides the note once a filter other than All is active', () => {

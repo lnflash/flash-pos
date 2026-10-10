@@ -63,6 +63,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
   const onClearHistory = () => {
     dispatch(clearTransactionHistory());
+    // The filter chips disappear with the history (statistics.total hits 0),
+    // so a non-All filter would strand the screen on "No <type> transactions
+    // found" with no way back — and hide the PayCode note in exactly the
+    // state where a merchant just wiped history and is looking for a sale.
+    setActiveFilter('all');
   };
 
   const onReprintTransaction = (transaction: TransactionData) => {
@@ -374,21 +379,24 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
         {/* History is device-local: receives that bypass the POS (PayCode,
             Flash username, BTCPay) are never recorded here (issue #45).
-            Shown once above the list on the All view; the empty state
-            carries its own copy of the note. */}
-        {statistics.total > 0 && activeFilter === 'all' && (
-          <EmptySubtext
-            testID="history-paycode-note"
-            style={{paddingHorizontal: scale(16), marginBottom: scale(4)}}>
-            {PAYCODE_HISTORY_NOTE}
-          </EmptySubtext>
-        )}
-
+            Rendered as the list header on the All view so it scrolls away
+            with the rows instead of sitting as fixed chrome under the filter
+            bar; the empty state carries its own copy of the note, and the
+            header is withheld while the list is empty so it shows once. */}
         <StyledFlatList
           data={filteredTransactions}
           renderItem={renderTransactionItem}
           keyExtractor={(item: TransactionData) => item.id}
           showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            statistics.total > 0 && activeFilter === 'all' ? (
+              <EmptySubtext
+                testID="history-paycode-note"
+                style={{paddingHorizontal: scale(16), marginBottom: scale(4)}}>
+                {PAYCODE_HISTORY_NOTE}
+              </EmptySubtext>
+            ) : null
+          }
           ListEmptyComponent={renderEmptyState}
           refreshControl={
             <RefreshControl
