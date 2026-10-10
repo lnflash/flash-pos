@@ -102,7 +102,7 @@ describe('useSupportChat', () => {
     expect(mockSaveSession).not.toHaveBeenCalled();
   });
 
-  it('re-announces the device line on a legacy session with no appVersion', async () => {
+  it('sends nothing on mount for a legacy session with no appVersion', async () => {
     mockLoadSession.mockResolvedValue(SESSION);
 
     const {result} = renderHook(() => useSupportChat());
@@ -114,51 +114,88 @@ describe('useSupportChat', () => {
       ),
     );
 
+    // Opening the tab must not wake the conversation: Chatwoot reopens a
+    // resolved ticket on any incoming contact message.
     expect(mockInitSession).not.toHaveBeenCalled();
-    expect(mockSendMessage).toHaveBeenCalledTimes(1);
-
-    const [conversationId, authToken, content] = mockSendMessage.mock
-      .calls[0] as [number, string, string];
-    expect(conversationId).toBe(SESSION.conversationId);
-    expect(authToken).toBe(SESSION.authToken);
-    expect(content).toContain(`Flash POS v${pkg.version}`);
-    expect(content).not.toContain('v0.3.1');
-
-    expect(mockSaveSession).toHaveBeenCalledTimes(1);
-    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockSaveSession).not.toHaveBeenCalled();
     expect(result.current.error).toBeNull();
   });
 
-  it('re-announces the device line when the stored appVersion is older', async () => {
+  it('sends nothing on mount when the stored appVersion is older', async () => {
     mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
 
-    renderHook(() =>
+    renderHook(() => useSupportChat());
+
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    expect(mockInitSession).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockSaveSession).not.toHaveBeenCalled();
+  });
+
+  it('announces the current version right before the first message on a stale session', async () => {
+    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
+
+    const {result} = renderHook(() =>
       useSupportChat({
         userIdentifier: 'alice',
         userDisplayName: 'POS — alice',
       }),
     );
 
-    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+    expect(mockSendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.sendMessage('hello');
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
 
     const [conversationId, authToken, content] = mockSendMessage.mock
       .calls[0] as [number, string, string];
     expect(conversationId).toBe(SESSION.conversationId);
     expect(authToken).toBe(SESSION.authToken);
+    expect(content).toContain('🔄 App updated');
     expect(content).toContain('Merchant: POS — alice\n');
     expect(content).toContain(`Flash POS v${pkg.version}`);
     expect(content).not.toContain('v0.3.1');
 
-    await waitFor(() =>
-      expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION),
+    expect(mockSendMessage).toHaveBeenLastCalledWith(
+      SESSION.conversationId,
+      SESSION.authToken,
+      'hello',
     );
-    expect(mockInitSession).not.toHaveBeenCalled();
+    expect(mockSaveSession).toHaveBeenCalledTimes(1);
+    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
+    expect(result.current.error).toBeNull();
+
+    // Stamp is now current: the next message goes out alone.
+    await act(async () => {
+      await result.current.sendMessage('again');
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(3);
+    expect(mockSendMessage).toHaveBeenLastCalledWith(
+      SESSION.conversationId,
+      SESSION.authToken,
+      'again',
+    );
     expect(mockSaveSession).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the old appVersion and stays usable when the re-announce fails', async () => {
-    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
-    mockSendMessage.mockRejectedValueOnce(new Error('Network request failed'));
+  it('announces before the first message on a legacy session with no appVersion', async () => {
+    mockLoadSession.mockResolvedValue(SESSION);
 
     const {result} = renderHook(() => useSupportChat());
 
@@ -169,33 +206,131 @@ describe('useSupportChat', () => {
       ),
     );
 
-    expect(mockSendMessage).toHaveBeenCalledTimes(1);
-    expect(mockSaveSession).not.toHaveBeenCalled();
-    expect(mockClearSession).not.toHaveBeenCalled();
-    expect(result.current.error).toBeNull();
-    expect(result.current.connectionStatus).not.toBe('error');
-
-    // The chat is live: a user message still goes out on the conversation.
     await act(async () => {
       await result.current.sendMessage('hello');
     });
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    const [, , content] = mockSendMessage.mock.calls[0] as [
+      number,
+      string,
+      string,
+    ];
+    expect(content).toContain(`Flash POS v${pkg.version}`);
     expect(mockSendMessage).toHaveBeenLastCalledWith(
       SESSION.conversationId,
       SESSION.authToken,
       'hello',
     );
+    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
   });
 
-  it('clears the session when the re-announce hits an auth error', async () => {
+  it('does not announce on a session already stamped with the current version', async () => {
+    mockLoadSession.mockResolvedValue(CURRENT_SESSION);
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage('hello');
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      SESSION.conversationId,
+      SESSION.authToken,
+      'hello',
+    );
+    expect(mockSaveSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old appVersion and still sends the message when the announce fails', async () => {
+    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
+    mockSendMessage
+      .mockRejectedValueOnce(new Error('Network request failed'))
+      .mockResolvedValueOnce(SENT_MESSAGE);
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage('hello');
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendMessage).toHaveBeenLastCalledWith(
+      SESSION.conversationId,
+      SESSION.authToken,
+      'hello',
+    );
+    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockClearSession).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(result.current.messages).toEqual([SENT_MESSAGE]);
+
+    // Old stamp kept: the next send retries the announce.
+    await act(async () => {
+      await result.current.sendMessage('again');
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(4);
+    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
+  });
+
+  it('surfaces an auth error from the announce without sending the message', async () => {
     mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
     mockSendMessage.mockRejectedValueOnce(new Error('Chatwoot API 401: nope'));
 
     const {result} = renderHook(() => useSupportChat());
 
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage('hello');
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(result.current.error).toBe('Chatwoot API 401: nope');
+    expect(result.current.isSending).toBe(false);
+  });
+
+  it('clears the session when history load hits an auth error', async () => {
+    mockLoadSession.mockResolvedValue(CURRENT_SESSION);
+    mockGetMessages.mockRejectedValueOnce(new Error('Chatwoot API 404: gone'));
+
+    const {result} = renderHook(() => useSupportChat());
+
     await waitFor(() => expect(mockClearSession).toHaveBeenCalledTimes(1));
 
-    expect(mockSaveSession).not.toHaveBeenCalled();
-    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
     expect(result.current.connectionStatus).toBe('error');
+  });
+
+  it('does not clear the session on a non-auth history failure', async () => {
+    mockLoadSession.mockResolvedValue(CURRENT_SESSION);
+    mockGetMessages.mockRejectedValueOnce(new Error('Network request failed'));
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() => expect(result.current.connectionStatus).toBe('error'));
+
+    expect(mockClearSession).not.toHaveBeenCalled();
   });
 });

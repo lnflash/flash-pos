@@ -22,43 +22,17 @@ describe('fastlane release commits stage package.json', () => {
     'utf8',
   );
 
-  // Returns the argument text of each `name(...)` call, balancing nested
-  // parens (the release message embeds `get_version_number(...)`).
-  const callsOf = (name: string): string[] => {
-    const calls: string[] = [];
-    const re = new RegExp(`\\b${name}\\(`, 'g');
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(fastfile)) !== null) {
-      let depth = 1;
-      let i = m.index + m[0].length;
-      const start = i;
-      while (i < fastfile.length && depth > 0) {
-        if (fastfile[i] === '(') {
-          depth++;
-        } else if (fastfile[i] === ')') {
-          depth--;
-        }
-        i++;
-      }
-      calls.push(fastfile.slice(start, i - 1));
-    }
-    return calls;
-  };
-
-  it('has the expected number of version commits', () => {
-    expect(callsOf('commit_version_bump')).toHaveLength(2);
-    expect(callsOf('git_commit')).toHaveLength(2);
-  });
-
   it('every commit_version_bump includes package.json', () => {
-    for (const call of callsOf('commit_version_bump')) {
-      expect(call).toMatch(/include:\s*\[[^\]]*"package\.json"/);
-    }
+    expect(fastfile.match(/commit_version_bump\(/g)).toHaveLength(2);
+    expect(fastfile.match(/include: \["package\.json"\]/g)).toHaveLength(2);
   });
 
   it('every git_commit stages package.json', () => {
-    for (const call of callsOf('git_commit')) {
-      expect(call).toMatch(/path:\s*\[[^\]]*"package\.json"/);
-    }
+    expect(fastfile.match(/git_commit\(/g)).toHaveLength(2);
+    expect(
+      fastfile.match(
+        /path: \["android\/app\/build\.gradle", "package\.json"\]/g,
+      ),
+    ).toHaveLength(2);
   });
 });
