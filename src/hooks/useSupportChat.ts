@@ -2,7 +2,11 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {Platform} from 'react-native';
 
 import * as chatwootApi from '../services/chatwoot/api';
-import {loadSession, saveSession, clearSession} from '../services/chatwoot/storage';
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+} from '../services/chatwoot/storage';
 import {ChatwootSocket} from '../services/chatwoot/socket';
 import type {
   ChatwootMessage,
@@ -20,8 +24,6 @@ export type ConnectionStatus =
 type UseSupportChatOptions = {
   userIdentifier?: string;
   userDisplayName?: string;
-  /** App version string, e.g. from package.json or native build */
-  appVersion?: string;
 };
 
 type UseSupportChatResult = {
@@ -72,9 +74,7 @@ export const useSupportChat = (
       let session: ChatwootSession | null = await loadSession();
 
       if (!session) {
-        const contactName =
-          userDisplayName ||
-          `Flash POS (${Platform.OS})`;
+        const contactName = userDisplayName || `Flash POS (${Platform.OS})`;
 
         const osVersion =
           typeof Platform.Version === 'number'
@@ -82,9 +82,11 @@ export const useSupportChat = (
             : String(Platform.Version ?? 'unknown');
 
         const deviceInfo = [
-          `Flash POS v${options.appVersion ?? APP_VERSION}`,
+          `Flash POS v${APP_VERSION}`,
           Platform.OS === 'ios' ? 'iOS' : 'Android',
-          Platform.OS === 'ios' ? `iOS ${osVersion}` : `Android API ${osVersion}`,
+          Platform.OS === 'ios'
+            ? `iOS ${osVersion}`
+            : `Android API ${osVersion}`,
         ].join(' • ');
 
         const userLine = userDisplayName
@@ -120,7 +122,10 @@ export const useSupportChat = (
       }
 
       setMessages(sortMessages(dedupeById(history)));
-      chatwootApi.updateLastSeen(activeSession.conversationId, activeSession.authToken);
+      chatwootApi.updateLastSeen(
+        activeSession.conversationId,
+        activeSession.authToken,
+      );
 
       // 3. Connect WebSocket for real-time updates
       const socket = new ChatwootSocket(activeSession.authToken, {
@@ -142,9 +147,7 @@ export const useSupportChat = (
           if (event.type === 'message_created') {
             const msg = event.data?.message;
             if (msg) {
-              setMessages(prev =>
-                sortMessages(dedupeById([...prev, msg])),
-              );
+              setMessages(prev => sortMessages(dedupeById([...prev, msg])));
             }
           }
         },
@@ -168,7 +171,7 @@ export const useSupportChat = (
       setError(message);
       setConnectionStatus('error');
     }
-  }, [userDisplayName, options.appVersion]);
+  }, [userDisplayName]);
 
   const sendMessage = useCallback(async (content: string) => {
     const trimmed = content.trim();

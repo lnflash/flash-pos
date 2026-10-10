@@ -15,7 +15,6 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useAppSelector} from '../store/hooks';
 import {useSupportChat} from '../hooks/useSupportChat';
 import type {ChatwootMessage} from '../services/chatwoot/types';
-import {APP_VERSION} from '../utils/appVersion';
 
 const BUBBLE_OUTGOING = '#41AC48';
 const BUBBLE_INCOMING = '#F0F2F5';
@@ -28,8 +27,7 @@ type RenderMessageProps = {
   item: ChatwootMessage;
 };
 
-const isOutgoing = (item: ChatwootMessage) =>
-  item.message_type === 0; // 0 = from contact (user), 1 = from agent
+const isOutgoing = (item: ChatwootMessage) => item.message_type === 0; // 0 = from contact (user), 1 = from agent
 
 const formatTime = (timestamp: number): string => {
   const date = new Date(timestamp * 1000);
@@ -82,7 +80,11 @@ const ConnectionBanner = ({
 
   const config = {
     connecting: {text: 'Connecting...', color: '#8a8a8a', bg: '#f5f5f5'},
-    disconnected: {text: 'Disconnected — retrying...', color: '#8a6d3b', bg: '#fcf8e3'},
+    disconnected: {
+      text: 'Disconnected — retrying...',
+      color: '#8a6d3b',
+      bg: '#fcf8e3',
+    },
     error: {text: 'Connection error', color: '#a94442', bg: '#f2dede'},
   }[status];
 
@@ -102,7 +104,6 @@ const SupportChat = () => {
     useSupportChat({
       userIdentifier: username,
       userDisplayName: username ? `POS — ${username}` : undefined,
-      appVersion: APP_VERSION,
     });
 
   const [inputText, setInputText] = useState('');
@@ -185,8 +186,7 @@ const SupportChat = () => {
         />
 
         {/* Input bar */}
-        <View
-          style={[styles.inputBar, {paddingBottom: insets.bottom || 8}]}>
+        <View style={[styles.inputBar, {paddingBottom: insets.bottom || 8}]}>
           <TextInput
             style={styles.textInput}
             placeholder="Type a message..."

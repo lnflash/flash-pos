@@ -30,7 +30,9 @@ end
 def update_package_json_version(version)
   pkg_path = "../package.json"
   pkg = File.read(pkg_path)
-  File.write(pkg_path, pkg.sub(/"version":\s*"[^"]+"/, "\"version\": \"#{version}\""))
+  re = /^(\s*"version":\s*)"[^"]+"/
+  UI.user_error!("package.json has no top-level version") unless pkg =~ re
+  File.write(pkg_path, pkg.sub(re, "\\1\"#{version}\""))
 end
 
 def update_ios_version_from_tag
