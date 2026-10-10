@@ -132,6 +132,7 @@ platform :ios do
     commit_version_bump(
       message: "Bump iOS build number [skip ci]",
       xcodeproj: "ios/flash_pos.xcodeproj",
+      include: ["package.json"],
       force: true
     )
 
