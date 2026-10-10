@@ -64,6 +64,10 @@ const Paycode = () => {
         your phone to be taken to a webpage where you can create a fresh invoice
         for paying from any Lightning wallet.
       </Description>
+      <Description testID="paycode-history-note">
+        Payments to this QR code are credited to your Flash account and appear
+        in the Flash app. They are not listed in this app's Transaction History.
+      </Description>
       <PrimaryButton
         icon="print"
         btnText="Print QR code"

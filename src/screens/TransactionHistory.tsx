@@ -35,6 +35,12 @@ const {width: screenWidth} = Dimensions.get('window');
 const scale = (size: number) => (screenWidth / 375) * size;
 const isLargeDevice = screenWidth > 414;
 
+// Transaction History is a device-local record of sales this POS settled
+// itself. A PayCode (LNURL-pay) or other direct receive is settled server-side
+// and never reaches this list — see flash-pos#45.
+const PAYCODE_HISTORY_NOTE =
+  'PayCode and other direct payments to your Flash account show in the Flash app, not here.';
+
 type Props = StackScreenProps<RootStackType, 'TransactionHistory'>;
 type NavigationProp = StackNavigationProp<RootStackType>;
 
@@ -57,6 +63,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
 
   const onClearHistory = () => {
     dispatch(clearTransactionHistory());
+    // The filter chips disappear with the history (statistics.total hits 0),
+    // so a non-All filter would strand the screen on "No <type> transactions
+    // found" with no way back — and hide the PayCode note in exactly the
+    // state where a merchant just wiped history and is looking for a sale.
+    setActiveFilter('all');
   };
 
   const onReprintTransaction = (transaction: TransactionData) => {
@@ -271,6 +282,11 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           ? 'Completed transactions will appear here'
           : 'Matching transactions will appear here'}
       </EmptySubtext>
+      {activeFilter === 'all' && (
+        <EmptySubtext testID="history-paycode-note">
+          {PAYCODE_HISTORY_NOTE}
+        </EmptySubtext>
+      )}
     </EmptyContainer>
   );
 
@@ -361,11 +377,26 @@ const TransactionHistory: React.FC<Props> = ({navigation: _navigation}) => {
           </FilterContainer>
         )}
 
+        {/* History is device-local: receives that bypass the POS (PayCode,
+            Flash username, BTCPay) are never recorded here (issue #45).
+            Rendered as the list header on the All view so it scrolls away
+            with the rows instead of sitting as fixed chrome under the filter
+            bar; the empty state carries its own copy of the note, and the
+            header is withheld while the list is empty so it shows once. */}
         <StyledFlatList
           data={filteredTransactions}
           renderItem={renderTransactionItem}
           keyExtractor={(item: TransactionData) => item.id}
           showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            statistics.total > 0 && activeFilter === 'all' ? (
+              <EmptySubtext
+                testID="history-paycode-note"
+                style={{paddingHorizontal: scale(16), marginBottom: scale(4)}}>
+                {PAYCODE_HISTORY_NOTE}
+              </EmptySubtext>
+            ) : null
+          }
           ListEmptyComponent={renderEmptyState}
           refreshControl={
             <RefreshControl
