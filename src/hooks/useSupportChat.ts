@@ -9,6 +9,7 @@ import type {
   ChatwootSession,
   ChatwootWsEvent,
 } from '../services/chatwoot/types';
+import {APP_VERSION} from '../utils/appVersion';
 
 export type ConnectionStatus =
   | 'connecting'
@@ -81,7 +82,7 @@ export const useSupportChat = (
             : String(Platform.Version ?? 'unknown');
 
         const deviceInfo = [
-          `Flash POS v${options.appVersion ?? '0.3.1'}`,
+          `Flash POS v${options.appVersion ?? APP_VERSION}`,
           Platform.OS === 'ios' ? 'iOS' : 'Android',
           Platform.OS === 'ios' ? `iOS ${osVersion}` : `Android API ${osVersion}`,
         ].join(' • ');

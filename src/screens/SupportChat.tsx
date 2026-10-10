@@ -15,6 +15,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useAppSelector} from '../store/hooks';
 import {useSupportChat} from '../hooks/useSupportChat';
 import type {ChatwootMessage} from '../services/chatwoot/types';
+import {APP_VERSION} from '../utils/appVersion';
 
 const BUBBLE_OUTGOING = '#41AC48';
 const BUBBLE_INCOMING = '#F0F2F5';
@@ -22,7 +23,6 @@ const TEXT_OUTGOING = '#FFFFFF';
 const TEXT_INCOMING = '#1A1A1A';
 const TIME_OUTGOING = 'rgba(255,255,255,0.7)';
 const TIME_INCOMING = '#888888';
-const APP_VERSION = '0.3.1';
 
 type RenderMessageProps = {
   item: ChatwootMessage;
