@@ -25,6 +25,16 @@ def version_from_git_tag(platform)
 end
 
 # Set iOS version from git tag if available
+# Keep package.json's version in step with the native version strings: the
+# app reads it (src/utils/appVersion.ts) for the support chat's device line.
+def update_package_json_version(version)
+  pkg_path = "../package.json"
+  pkg = File.read(pkg_path)
+  re = /^(\s*"version":\s*)"[^"]+"/
+  UI.user_error!("package.json has no top-level version") unless pkg =~ re
+  File.write(pkg_path, pkg.sub(re, "\\1\"#{version}\""))
+end
+
 def update_ios_version_from_tag
   version = version_from_git_tag("ios")
   if version
@@ -33,6 +43,7 @@ def update_ios_version_from_tag
       xcodeproj: "ios/flash_pos.xcodeproj",
       version_number: version
     )
+    update_package_json_version(version)
   else
     UI.message "ℹ️  No git tag found, keeping current version"
   end
@@ -47,6 +58,7 @@ def update_android_version_from_tag
     gradle_file = File.read("../android/app/build.gradle")
     new_gradle = gradle_file.gsub(/versionName\s+"[\d.]+"/, "versionName \"#{version}\"")
     File.write("../android/app/build.gradle", new_gradle)
+    update_package_json_version(version)
   else
     UI.message "ℹ️  No git tag found, keeping current version"
   end
@@ -120,6 +132,7 @@ platform :ios do
     commit_version_bump(
       message: "Bump iOS build number [skip ci]",
       xcodeproj: "ios/flash_pos.xcodeproj",
+      include: ["package.json"],
       force: true
     )
 
@@ -183,6 +196,7 @@ platform :ios do
     commit_version_bump(
       message: "Release iOS v#{get_version_number(xcodeproj: 'ios/flash_pos.xcodeproj')} [skip ci]",
       xcodeproj: "ios/flash_pos.xcodeproj",
+      include: ["package.json"],
       force: true
     )
 
@@ -248,7 +262,7 @@ platform :android do
 
     # Commit version bump
     git_commit(
-      path: ["android/app/build.gradle"],
+      path: ["android/app/build.gradle", "package.json"],
       message: "Bump Android version code [skip ci]"
     )
 
@@ -297,7 +311,7 @@ platform :android do
       gradle_file_path: "android/app/build.gradle"
     )
     git_commit(
-      path: ["android/app/build.gradle"],
+      path: ["android/app/build.gradle", "package.json"],
       message: "Release Android v#{version_name} [skip ci]"
     )
 

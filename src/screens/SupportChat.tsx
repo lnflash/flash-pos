@@ -22,14 +22,12 @@ const TEXT_OUTGOING = '#FFFFFF';
 const TEXT_INCOMING = '#1A1A1A';
 const TIME_OUTGOING = 'rgba(255,255,255,0.7)';
 const TIME_INCOMING = '#888888';
-const APP_VERSION = '0.3.1';
 
 type RenderMessageProps = {
   item: ChatwootMessage;
 };
 
-const isOutgoing = (item: ChatwootMessage) =>
-  item.message_type === 0; // 0 = from contact (user), 1 = from agent
+const isOutgoing = (item: ChatwootMessage) => item.message_type === 0; // 0 = from contact (user), 1 = from agent
 
 const formatTime = (timestamp: number): string => {
   const date = new Date(timestamp * 1000);
@@ -82,7 +80,11 @@ const ConnectionBanner = ({
 
   const config = {
     connecting: {text: 'Connecting...', color: '#8a8a8a', bg: '#f5f5f5'},
-    disconnected: {text: 'Disconnected — retrying...', color: '#8a6d3b', bg: '#fcf8e3'},
+    disconnected: {
+      text: 'Disconnected — retrying...',
+      color: '#8a6d3b',
+      bg: '#fcf8e3',
+    },
     error: {text: 'Connection error', color: '#a94442', bg: '#f2dede'},
   }[status];
 
@@ -102,7 +104,6 @@ const SupportChat = () => {
     useSupportChat({
       userIdentifier: username,
       userDisplayName: username ? `POS — ${username}` : undefined,
-      appVersion: APP_VERSION,
     });
 
   const [inputText, setInputText] = useState('');
@@ -185,8 +186,7 @@ const SupportChat = () => {
         />
 
         {/* Input bar */}
-        <View
-          style={[styles.inputBar, {paddingBottom: insets.bottom || 8}]}>
+        <View style={[styles.inputBar, {paddingBottom: insets.bottom || 8}]}>
           <TextInput
             style={styles.textInput}
             placeholder="Type a message..."

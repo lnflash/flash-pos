@@ -5,6 +5,7 @@ import {Provider} from 'react-redux';
 import {configureStore} from '@reduxjs/toolkit';
 import SupportChat from '../../src/screens/SupportChat';
 import rootReducer from '../../src/store/reducers';
+import {setUserData} from '../../src/store/slices/userSlice';
 
 // --- Mock the hook so screen tests don't need to orchestrate the full async chain ---
 
@@ -60,7 +61,9 @@ describe('SupportChat (native)', () => {
 
     expect(getByText('No messages yet')).toBeTruthy();
     expect(
-      getByText('Send a message to start a conversation with our support team.'),
+      getByText(
+        'Send a message to start a conversation with our support team.',
+      ),
     ).toBeTruthy();
   });
 
@@ -75,6 +78,25 @@ describe('SupportChat (native)', () => {
 
     expect(getByText('Unable to load support chat')).toBeTruthy();
     expect(getByText('Network error')).toBeTruthy();
+  });
+
+  it('hands the hook the merchant display name and nothing else', () => {
+    seedHook({connectionStatus: 'connected', messages: []});
+    const store = configureStore({reducer: rootReducer});
+    store.dispatch(setUserData({username: 'app_review'}));
+
+    render(
+      <Provider store={store}>
+        <SupportChat />
+      </Provider>,
+    );
+
+    // The version is the hook's business (src/utils/appVersion.ts): the screen
+    // must not pass its own copy that could drift from package.json again.
+    expect(mockUseSupportChat).toHaveBeenCalledWith({
+      userIdentifier: 'app_review',
+      userDisplayName: 'POS — app_review',
+    });
   });
 
   it('renders the retry button on error and calls retry on press', () => {

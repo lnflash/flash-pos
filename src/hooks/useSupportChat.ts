@@ -2,13 +2,18 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {Platform} from 'react-native';
 
 import * as chatwootApi from '../services/chatwoot/api';
-import {loadSession, saveSession, clearSession} from '../services/chatwoot/storage';
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+} from '../services/chatwoot/storage';
 import {ChatwootSocket} from '../services/chatwoot/socket';
 import type {
   ChatwootMessage,
   ChatwootSession,
   ChatwootWsEvent,
 } from '../services/chatwoot/types';
+import {APP_VERSION} from '../utils/appVersion';
 
 export type ConnectionStatus =
   | 'connecting'
@@ -19,8 +24,6 @@ export type ConnectionStatus =
 type UseSupportChatOptions = {
   userIdentifier?: string;
   userDisplayName?: string;
-  /** App version string, e.g. from package.json or native build */
-  appVersion?: string;
 };
 
 type UseSupportChatResult = {
@@ -31,6 +34,27 @@ type UseSupportChatResult = {
   retry: () => void;
   isSending: boolean;
 };
+
+const isAuthError = (err: unknown): boolean =>
+  err instanceof Error && /\b(401|404)\b/.test(err.message);
+
+// "Flash POS v2.4.0 • iOS • iOS 17.4" — the line support reads to know what
+// build they are talking to.
+const buildDeviceInfo = (): string => {
+  const osVersion =
+    typeof Platform.Version === 'number'
+      ? Platform.Version.toString()
+      : String(Platform.Version ?? 'unknown');
+
+  return [
+    `Flash POS v${APP_VERSION}`,
+    Platform.OS === 'ios' ? 'iOS' : 'Android',
+    Platform.OS === 'ios' ? `iOS ${osVersion}` : `Android API ${osVersion}`,
+  ].join(' • ');
+};
+
+const buildUserLine = (userDisplayName?: string): string =>
+  userDisplayName ? `Merchant: ${userDisplayName}\n` : '';
 
 const sortMessages = (list: ChatwootMessage[]): ChatwootMessage[] =>
   [...list].sort((a, b) => a.created_at - b.created_at);
@@ -67,32 +91,24 @@ export const useSupportChat = (
     setConnectionStatus('connecting');
 
     try {
-      // 1. Load or create session
+      // 1. Load or create session. The device line goes out on session
+      //    creation only; an existing conversation is never woken here
+      //    (Chatwoot reopens resolved tickets on any incoming contact
+      //    message). A stale appVersion stamp is caught up in sendMessage,
+      //    right before the merchant's first real message.
       let session: ChatwootSession | null = await loadSession();
 
       if (!session) {
-        const contactName =
-          userDisplayName ||
-          `Flash POS (${Platform.OS})`;
+        const contactName = userDisplayName || `Flash POS (${Platform.OS})`;
+        const initialMessage = `💬 Support session started\n${buildUserLine(
+          userDisplayName,
+        )}${buildDeviceInfo()}`;
 
-        const osVersion =
-          typeof Platform.Version === 'number'
-            ? Platform.Version.toString()
-            : String(Platform.Version ?? 'unknown');
-
-        const deviceInfo = [
-          `Flash POS v${options.appVersion ?? '0.3.1'}`,
-          Platform.OS === 'ios' ? 'iOS' : 'Android',
-          Platform.OS === 'ios' ? `iOS ${osVersion}` : `Android API ${osVersion}`,
-        ].join(' • ');
-
-        const userLine = userDisplayName
-          ? `Merchant: ${userDisplayName}\n`
-          : '';
-
-        const initialMessage = `💬 Support session started\n${userLine}${deviceInfo}`;
-
-        session = await chatwootApi.initSession(contactName, initialMessage);
+        const created = await chatwootApi.initSession(
+          contactName,
+          initialMessage,
+        );
+        session = {...created, appVersion: APP_VERSION};
         await saveSession(session);
       }
 
@@ -119,7 +135,10 @@ export const useSupportChat = (
       }
 
       setMessages(sortMessages(dedupeById(history)));
-      chatwootApi.updateLastSeen(activeSession.conversationId, activeSession.authToken);
+      chatwootApi.updateLastSeen(
+        activeSession.conversationId,
+        activeSession.authToken,
+      );
 
       // 3. Connect WebSocket for real-time updates
       const socket = new ChatwootSocket(activeSession.authToken, {
@@ -141,9 +160,7 @@ export const useSupportChat = (
           if (event.type === 'message_created') {
             const msg = event.data?.message;
             if (msg) {
-              setMessages(prev =>
-                sortMessages(dedupeById([...prev, msg])),
-              );
+              setMessages(prev => sortMessages(dedupeById([...prev, msg])));
             }
           }
         },
@@ -160,40 +177,71 @@ export const useSupportChat = (
       const message =
         err instanceof Error ? err.message : 'Failed to connect to support';
 
-      if (message.includes('401') || message.includes('404')) {
+      if (isAuthError(err)) {
         await clearSession();
       }
 
       setError(message);
       setConnectionStatus('error');
     }
-  }, [userDisplayName, options.appVersion]);
+  }, [userDisplayName]);
 
-  const sendMessage = useCallback(async (content: string) => {
-    const trimmed = content.trim();
+  const sendMessage = useCallback(
+    async (content: string) => {
+      const trimmed = content.trim();
+      const session = sessionRef.current;
 
-    if (!trimmed || !sessionRef.current) {
-      return;
-    }
+      if (!trimmed || !session) {
+        return;
+      }
 
-    setIsSending(true);
+      setIsSending(true);
 
-    try {
-      const sent = await chatwootApi.sendMessage(
-        sessionRef.current.conversationId,
-        sessionRef.current.authToken,
-        trimmed,
-      );
+      try {
+        // A stored session last announced by a different build (or one that
+        // predates the stamp) gets the current device line right before the
+        // merchant's own message, so support reads the right version without
+        // the conversation ever being reopened by an announce alone. On a
+        // transport failure keep the old stamp so the next send retries; an
+        // auth error is surfaced like any other send failure.
+        if (session.appVersion !== APP_VERSION) {
+          const updateMessage = `🔄 App updated\n${buildUserLine(
+            userDisplayName,
+          )}${buildDeviceInfo()}`;
 
-      setMessages(prev => sortMessages(dedupeById([...prev, sent])));
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to send message';
-      setError(message);
-    } finally {
-      setIsSending(false);
-    }
-  }, []);
+          try {
+            await chatwootApi.sendMessage(
+              session.conversationId,
+              session.authToken,
+              updateMessage,
+            );
+            const stamped = {...session, appVersion: APP_VERSION};
+            sessionRef.current = stamped;
+            await saveSession(stamped);
+          } catch (err) {
+            if (isAuthError(err)) {
+              throw err;
+            }
+          }
+        }
+
+        const sent = await chatwootApi.sendMessage(
+          session.conversationId,
+          session.authToken,
+          trimmed,
+        );
+
+        setMessages(prev => sortMessages(dedupeById([...prev, sent])));
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to send message';
+        setError(message);
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [userDisplayName],
+  );
 
   const retry = useCallback(() => {
     if (socketRef.current) {
