@@ -117,6 +117,16 @@ const initialRouteName = username ? 'Home' : 'Auth';
 - Static payment code display
 - Customer scanning interface
 
+**Transaction History limitation**: Transaction History is a device-local
+record (`transactionHistorySlice`, persisted on the phone) of sales the POS
+settled itself through its own `lnInvoicePaymentStatus` subscription. A
+PayCode payment is an LNURL-pay settled server-side against the merchant's
+Flash account, so the POS has nothing to watch and the sale is never recorded.
+The same applies to any receive that bypasses the POS (a Flash username
+payment, a BTCPay invoice). These payments appear in the Flash app only; the
+Paycode screen and the Transaction History screen both say so. See
+[flash-pos#45](https://github.com/lnflash/flash-pos/issues/45).
+
 ### 5. Profile Screen
 
 **File**: `src/screens/Profile.tsx`  
