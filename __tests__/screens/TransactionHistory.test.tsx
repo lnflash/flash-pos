@@ -86,6 +86,78 @@ describe('TransactionHistory Screen', () => {
     expect(getByText('Completed transactions will appear here')).toBeTruthy();
   });
 
+  describe('PayCode history note (issue #45)', () => {
+    const NOTE =
+      'PayCode and other direct payments to your Flash account show in the Flash app, not here.';
+
+    it('shows the note in the empty state alongside the existing subtext', () => {
+      const {getByTestId, getByText} = renderWithProviders(
+        <TransactionHistoryScreen />,
+      );
+
+      expect(getByTestId('history-paycode-note')).toBeTruthy();
+      expect(getByText(NOTE)).toBeTruthy();
+      // The pre-existing empty-state copy stays untouched beside the note
+      expect(getByText('Completed transactions will appear here')).toBeTruthy();
+    });
+
+    it('shows the note exactly once above a non-empty list', () => {
+      const initialState = {
+        transactionHistory: {
+          transactions: [mockTransaction],
+          lastTransaction: mockTransaction,
+          maxTransactions: 50,
+        },
+      };
+
+      const {getAllByTestId, getByText} = renderWithProviders(
+        <TransactionHistoryScreen />,
+        initialState,
+      );
+
+      expect(getAllByTestId('history-paycode-note')).toHaveLength(1);
+      expect(getByText(NOTE)).toBeTruthy();
+      // The sale row still renders below it
+      expect(getByText('$ 10.00')).toBeTruthy();
+    });
+
+    it('hides the note once a filter other than All is active', () => {
+      const mockRefund: TransactionData = {
+        ...mockTransaction,
+        id: 'refund-tx-1',
+        transactionType: 'refund',
+        refundOf: mockTransaction.id,
+        amount: {
+          ...mockTransaction.amount,
+          satAmount: -400,
+          displayAmount: '4.00',
+        },
+        invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+        memo: 'Refund',
+      };
+      const initialState = {
+        transactionHistory: {
+          transactions: [mockRefund, mockTransaction],
+          lastTransaction: mockRefund,
+          maxTransactions: 50,
+        },
+      };
+
+      const {getByText, queryByTestId} = renderWithProviders(
+        <TransactionHistoryScreen />,
+        initialState,
+      );
+
+      expect(queryByTestId('history-paycode-note')).toBeTruthy();
+
+      fireEvent.press(getByText(/Refunds \(1\)/));
+      expect(queryByTestId('history-paycode-note')).toBeNull();
+
+      fireEvent.press(getByText(/All \(2\)/));
+      expect(queryByTestId('history-paycode-note')).toBeTruthy();
+    });
+  });
+
   it('should render transaction list when transactions exist', () => {
     const initialState = {
       transactionHistory: {
