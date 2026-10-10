@@ -70,33 +70,65 @@ export const useSupportChat = (
     setConnectionStatus('connecting');
 
     try {
-      // 1. Load or create session
+      // 1. Build the device line. It goes out on session creation and again
+      //    whenever a stored session was last announced by a different build,
+      //    so a long-lived conversation never keeps reporting a stale version.
+      const osVersion =
+        typeof Platform.Version === 'number'
+          ? Platform.Version.toString()
+          : String(Platform.Version ?? 'unknown');
+
+      const deviceInfo = [
+        `Flash POS v${APP_VERSION}`,
+        Platform.OS === 'ios' ? 'iOS' : 'Android',
+        Platform.OS === 'ios'
+          ? `iOS ${osVersion}`
+          : `Android API ${osVersion}`,
+      ].join(' • ');
+
+      const userLine = userDisplayName
+        ? `Merchant: ${userDisplayName}\n`
+        : '';
+
+      // 2. Load or create session
       let session: ChatwootSession | null = await loadSession();
 
       if (!session) {
         const contactName = userDisplayName || `Flash POS (${Platform.OS})`;
-
-        const osVersion =
-          typeof Platform.Version === 'number'
-            ? Platform.Version.toString()
-            : String(Platform.Version ?? 'unknown');
-
-        const deviceInfo = [
-          `Flash POS v${APP_VERSION}`,
-          Platform.OS === 'ios' ? 'iOS' : 'Android',
-          Platform.OS === 'ios'
-            ? `iOS ${osVersion}`
-            : `Android API ${osVersion}`,
-        ].join(' • ');
-
-        const userLine = userDisplayName
-          ? `Merchant: ${userDisplayName}\n`
-          : '';
-
         const initialMessage = `💬 Support session started\n${userLine}${deviceInfo}`;
 
-        session = await chatwootApi.initSession(contactName, initialMessage);
+        const created = await chatwootApi.initSession(
+          contactName,
+          initialMessage,
+        );
+        session = {...created, appVersion: APP_VERSION};
         await saveSession(session);
+      } else if (session.appVersion !== APP_VERSION) {
+        // Stored session predates this build (or the field itself). Announce
+        // the current version on the existing conversation. On failure keep
+        // the old stamp so the next initialize retries; a 401/404 propagates
+        // to the catch below and clears the session like any other auth error.
+        const updateMessage = `🔄 App updated\n${userLine}${deviceInfo}`;
+
+        let announced = false;
+        try {
+          await chatwootApi.sendMessage(
+            session.conversationId,
+            session.authToken,
+            updateMessage,
+          );
+          announced = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : '';
+          if (message.includes('401') || message.includes('404')) {
+            throw err;
+          }
+        }
+
+        if (announced) {
+          session = {...session, appVersion: APP_VERSION};
+          await saveSession(session);
+        }
       }
 
       if (token !== initToken.current) {
@@ -110,7 +142,7 @@ export const useSupportChat = (
 
       sessionRef.current = session;
 
-      // 2. Load message history
+      // 3. Load message history
       const activeSession: ChatwootSession = session;
       const history = await chatwootApi.getMessages(
         activeSession.conversationId,
@@ -127,7 +159,7 @@ export const useSupportChat = (
         activeSession.authToken,
       );
 
-      // 3. Connect WebSocket for real-time updates
+      // 4. Connect WebSocket for real-time updates
       const socket = new ChatwootSocket(activeSession.authToken, {
         onConnect: () => {
           if (token === initToken.current) {

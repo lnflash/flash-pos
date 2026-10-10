@@ -30,6 +30,13 @@ export type ChatwootConversation = {
 export type ChatwootSession = {
   authToken: string;
   conversationId: number;
+  /**
+   * The APP_VERSION that last announced itself on this conversation.
+   * Absent on sessions persisted before this field existed; a missing or
+   * different value makes the hook re-send the device line so support
+   * always sees the version the merchant is actually running.
+   */
+  appVersion?: string;
 };
 
 // WebSocket message types

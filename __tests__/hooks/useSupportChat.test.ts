@@ -1,5 +1,5 @@
 import {Platform} from 'react-native';
-import {renderHook, waitFor} from '@testing-library/react-native';
+import {act, renderHook, waitFor} from '@testing-library/react-native';
 
 import {useSupportChat} from '../../src/hooks/useSupportChat';
 import pkg from '../../package.json';
@@ -35,6 +35,8 @@ jest.mock('../../src/services/chatwoot/socket', () => ({
 }));
 
 const SESSION = {authToken: 'tok', conversationId: 42};
+const CURRENT_SESSION = {...SESSION, appVersion: pkg.version};
+const SENT_MESSAGE = {id: 7, content: 'x', message_type: 0, created_at: 1};
 
 describe('useSupportChat', () => {
   beforeEach(() => {
@@ -44,6 +46,7 @@ describe('useSupportChat', () => {
     mockClearSession.mockResolvedValue(undefined);
     mockInitSession.mockResolvedValue(SESSION);
     mockGetMessages.mockResolvedValue([]);
+    mockSendMessage.mockResolvedValue(SENT_MESSAGE);
     mockUpdateLastSeen.mockResolvedValue(undefined);
   });
 
@@ -59,7 +62,8 @@ describe('useSupportChat', () => {
     expect(contactName).toBe(`Flash POS (${Platform.OS})`);
     expect(initialMessage).toContain(`Flash POS v${pkg.version}`);
     expect(initialMessage).not.toContain('v0.3.1');
-    expect(mockSaveSession).toHaveBeenCalledWith(SESSION);
+    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
+    expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
   it('prefixes the device line with the merchant when a display name is given', async () => {
@@ -82,7 +86,7 @@ describe('useSupportChat', () => {
   });
 
   it('reuses a stored session without re-sending the device line', async () => {
-    mockLoadSession.mockResolvedValue(SESSION);
+    mockLoadSession.mockResolvedValue(CURRENT_SESSION);
 
     renderHook(() => useSupportChat());
 
@@ -94,6 +98,104 @@ describe('useSupportChat', () => {
     );
 
     expect(mockInitSession).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
     expect(mockSaveSession).not.toHaveBeenCalled();
+  });
+
+  it('re-announces the device line on a legacy session with no appVersion', async () => {
+    mockLoadSession.mockResolvedValue(SESSION);
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    expect(mockInitSession).not.toHaveBeenCalled();
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+
+    const [conversationId, authToken, content] = mockSendMessage.mock
+      .calls[0] as [number, string, string];
+    expect(conversationId).toBe(SESSION.conversationId);
+    expect(authToken).toBe(SESSION.authToken);
+    expect(content).toContain(`Flash POS v${pkg.version}`);
+    expect(content).not.toContain('v0.3.1');
+
+    expect(mockSaveSession).toHaveBeenCalledTimes(1);
+    expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('re-announces the device line when the stored appVersion is older', async () => {
+    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
+
+    renderHook(() =>
+      useSupportChat({
+        userIdentifier: 'alice',
+        userDisplayName: 'POS — alice',
+      }),
+    );
+
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+
+    const [conversationId, authToken, content] = mockSendMessage.mock
+      .calls[0] as [number, string, string];
+    expect(conversationId).toBe(SESSION.conversationId);
+    expect(authToken).toBe(SESSION.authToken);
+    expect(content).toContain('Merchant: POS — alice\n');
+    expect(content).toContain(`Flash POS v${pkg.version}`);
+    expect(content).not.toContain('v0.3.1');
+
+    await waitFor(() =>
+      expect(mockSaveSession).toHaveBeenCalledWith(CURRENT_SESSION),
+    );
+    expect(mockInitSession).not.toHaveBeenCalled();
+    expect(mockSaveSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the old appVersion and stays usable when the re-announce fails', async () => {
+    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
+    mockSendMessage.mockRejectedValueOnce(new Error('Network request failed'));
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() =>
+      expect(mockGetMessages).toHaveBeenCalledWith(
+        SESSION.conversationId,
+        SESSION.authToken,
+      ),
+    );
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockClearSession).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(result.current.connectionStatus).not.toBe('error');
+
+    // The chat is live: a user message still goes out on the conversation.
+    await act(async () => {
+      await result.current.sendMessage('hello');
+    });
+    expect(mockSendMessage).toHaveBeenLastCalledWith(
+      SESSION.conversationId,
+      SESSION.authToken,
+      'hello',
+    );
+  });
+
+  it('clears the session when the re-announce hits an auth error', async () => {
+    mockLoadSession.mockResolvedValue({...SESSION, appVersion: '0.3.1'});
+    mockSendMessage.mockRejectedValueOnce(new Error('Chatwoot API 401: nope'));
+
+    const {result} = renderHook(() => useSupportChat());
+
+    await waitFor(() => expect(mockClearSession).toHaveBeenCalledTimes(1));
+
+    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(result.current.connectionStatus).toBe('error');
   });
 });
