@@ -236,6 +236,47 @@ describe('errors', () => {
     update({mode: 'error', error: '[verifying PIN] wrong PIN'});
     expect(getByText('Charge didn’t finish', visible)).toBeTruthy();
   });
+
+  it('names a full card, before the burn and during the change write (ENG-630)', () => {
+    const {getByText, update} = setup();
+    update({mode: 'running', stage: feed(['reading card'])});
+    update({
+      mode: 'error',
+      error:
+        '[reading card] this card is full: 6 sat of change needs 2 free slots and the card has 0',
+    });
+    expect(getByText('The card is full', visible)).toBeTruthy();
+    expect(
+      getByText(
+        'Nothing was taken from the card. It has no free slot for the change.',
+        visible,
+      ),
+    ).toBeTruthy();
+
+    const late = setup();
+    late.update({
+      mode: 'running',
+      stage: feed([
+        'reading card',
+        'verifying PIN',
+        'burning 16 sat (proof 1/1)',
+        'settling payment and minting change',
+        'writing change to card',
+      ]),
+    });
+    late.update({
+      mode: 'error',
+      error:
+        '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+    });
+    expect(late.getByText('The card is full', visible)).toBeTruthy();
+    expect(
+      late.getByText(
+        '12 sats are paid. Your 4 sats change is saved on this terminal and will be added once the card has a free slot.',
+        visible,
+      ),
+    ).toBeTruthy();
+  });
 });
 
 describe('reduce motion', () => {

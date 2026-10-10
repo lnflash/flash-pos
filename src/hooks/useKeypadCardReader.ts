@@ -8,7 +8,17 @@ import NfcManager, {NfcTech} from 'react-native-nfc-manager';
 import {useFlashcard} from './useFlashcard';
 
 // services
-import {CardError, readCard} from '../services/cashuCard';
+import {
+  CardError,
+  getSlotStatuses,
+  readCard,
+  type CardSummary,
+} from '../services/cashuCard';
+import {reconcileOwedChange, writeOwedChange} from '../services/cashuCharge';
+import {
+  outstandingChangeForCard,
+  type OwedChangeEntry,
+} from '../services/cashuSettlement';
 import {
   cancelCardSession,
   describeCardFailure,
@@ -50,10 +60,143 @@ function isNotAFlashCard(error: unknown): boolean {
   return /applet not found/i.test(error instanceof Error ? error.message : '');
 }
 
-
 type SessionOutcome = 'routed' | 'cancelled' | 'failed' | 'busy';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const sumSat = (entries: OwedChangeEntry[]) =>
+  entries.reduce((t, e) => t + e.amount, 0);
+
+type BalanceParams = RootStackType['CashuCardBalance'];
+
+/**
+ * Change from an earlier charge that this card is still owed (ENG-630: a
+ * LOAD refused mid-write, a tag lost, a killed app). A card with no PIN
+ * takes it in this very session — LOAD_PROOF is only PIN-gated when a PIN
+ * is set, and the keypad has no pad — and the balance is re-read so the
+ * screen shows the card as it now is. A PIN card is told what is waiting —
+ * after the same read-only reconcile, so a piece already on the card is
+ * not counted — and the next charge writes it (`executeCharge`, after the
+ * PIN verify).
+ *
+ * A balance tap is a READ. The write is opportunistic, and nothing it does
+ * may veto the read: the owed-change store failing, a slot read failing, or
+ * the card refusing a LOAD (6A84 — full, with change owed, is exactly the
+ * field case) all leave the summary true and the change recorded, and the
+ * screen opens with what is still waiting. The next charge's `readAndPlan`
+ * fails closed on its own.
+ */
+async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
+  let owed: OwedChangeEntry[] = [];
+  try {
+    owed = await outstandingChangeForCard(summary.pubkey);
+  } catch {
+    owed = [];
+  }
+  if (owed.length === 0) {
+    return {summary};
+  }
+  const now = Date.now();
+  if (summary.info.pinState !== 'unset') {
+    // The write waits for the next charge (after the PIN verify), but the
+    // read-only reconcile does not: GET_PROOF is never PIN-gated (the applet
+    // guards writes only), and a piece whose LOAD landed with its answer
+    // lost is on the card AND 'owed' on disk at once. Told `sumSat(owed)`
+    // straight from the store, the screen would show a balance that already
+    // holds that piece plus "Change waiting — added on the next charge",
+    // and the next charge would reconcile it away and add nothing. So count
+    // only what the card does not hold. A failed reconcile still may not
+    // veto the read: it falls back to what the store says.
+    let remaining = owed;
+    try {
+      const statuses = await getSlotStatuses(
+        nfcTransceiver,
+        summary.info.maxSlots,
+      );
+      remaining = await reconcileOwedChange({
+        transceive: nfcTransceiver,
+        cardPubkey: summary.pubkey,
+        statuses,
+        now,
+      });
+    } catch {
+      remaining = owed;
+    }
+    return remaining.length === 0
+      ? {summary}
+      : {summary, owedChangeSat: sumSat(remaining)};
+  }
+  let remaining = owed;
+  let written: OwedChangeEntry[] = [];
+  try {
+    const statuses = await getSlotStatuses(
+      nfcTransceiver,
+      summary.info.maxSlots,
+    );
+    remaining = await reconcileOwedChange({
+      transceive: nfcTransceiver,
+      cardPubkey: summary.pubkey,
+      statuses,
+      now,
+    });
+    if (remaining.length === 0) {
+      // Every piece was already on the card (a lost LOAD answer): nothing
+      // was added now, so nothing is said about it.
+      return {summary};
+    }
+    written = await writeOwedChange({
+      transceive: nfcTransceiver,
+      owed: remaining,
+      now,
+    });
+  } catch {
+    // A piece may have landed before the refusal: show the balance as it is
+    // now when the card will still answer, the pre-write one when it won't.
+    const latest = await readCard(nfcTransceiver).catch(() => summary);
+    return {
+      summary: latest,
+      owedChangeSat: await stillOwedSat(summary, remaining, new Set()),
+    };
+  }
+  // Only what this tap put on the card — never the pieces reconcile found
+  // already there, and never a piece the write resolved without sending
+  // (the store refusing the write-ahead mark ends the write short, quietly).
+  // Whatever it did not send is still waiting, and the screen says so.
+  const params: BalanceParams = {summary: await readCard(nfcTransceiver)};
+  if (written.length > 0) {
+    params.changeAddedSat = sumSat(written);
+  }
+  if (written.length < remaining.length) {
+    const sent = new Set(written.map(e => e.id));
+    params.owedChangeSat = await stillOwedSat(
+      summary,
+      remaining.filter(e => !sent.has(e.id)),
+      sent,
+    );
+  }
+  return params;
+}
+
+/**
+ * What the card is still owed after a write that did not finish.
+ * `writeOwedChange` marks each piece as the card answers, so the store is
+ * the truth when it reads; `fallback` (what the write was sent) when it
+ * does not. A piece in `sent` is on the card whatever the store says: the
+ * write reports it even when the store refused its `written` mark, and
+ * counting it as waiting as well would promise it twice on the screen.
+ */
+async function stillOwedSat(
+  summary: CardSummary,
+  fallback: OwedChangeEntry[],
+  sent: ReadonlySet<string>,
+): Promise<number> {
+  try {
+    const owed = await outstandingChangeForCard(summary.pubkey);
+    return sumSat(owed.filter(e => !sent.has(e.id)));
+  } catch {
+    return sumSat(fallback);
+  }
+}
 
 /**
  * The keypad's card reader: tap a Flashcard on the POS home screen and see
@@ -104,6 +247,13 @@ export function useKeypadCardReader() {
       if (armedRef.current) {
         return 'busy';
       }
+      // The focus generation this session belongs to. A blur mid-session
+      // (Android: `cancelCardSession` kills the IsoDep channel under an
+      // in-flight LOAD/GET_PROOF, which then rejects with a transceive
+      // error, not UserCancel) bumps it; a session whose generation is
+      // stale must neither open the balance sheet over the screen the
+      // operator moved to nor toast at them there.
+      const gen = focusGenRef.current;
       armedRef.current = true;
       setNfcBusy(true);
       setReading(true);
@@ -125,14 +275,20 @@ export function useKeypadCardReader() {
         }
         await extendCardTimeout();
         const summary = await readCard(nfcTransceiver);
+        const params = await settleOwedChange(summary);
         // Close the session before the balance screen takes the foreground.
         await cancelCardSession();
-        navigation.navigate('CashuCardBalance', {summary});
+        if (gen !== focusGenRef.current) {
+          return 'cancelled';
+        }
+        navigation.navigate('CashuCardBalance', params);
         return 'routed';
       } catch (error) {
         // Our own blur/unmount cancel, or the iOS sheet's Cancel button:
-        // the operator's doing, not a failure.
-        if (isUserCancel(error)) {
+        // the operator's doing, not a failure. The blur's cancel may also
+        // surface as a transceive error from the APDU it cut off — a stale
+        // generation says which it was.
+        if (isUserCancel(error) || gen !== focusGenRef.current) {
           return 'cancelled';
         }
         if (isNotAFlashCard(error)) {

@@ -482,6 +482,27 @@ describe('CashuCardCharge', () => {
     expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
   });
 
+  it('hands the owed change the router read on to executeCharge (ENG-630)', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    const owedChange = [
+      {id: 'card:aa', cardPubkey: PLAN.cardPubkey, amount: 4, nonce: 'aa'},
+    ];
+    const {getByLabelText} = await renderScreen({
+      preRead: {...PLAN, pinRequired: true, owedChange},
+    });
+    for (const digit of ['1', '9', '8', '4']) {
+      fireEvent.press(getByLabelText(digit));
+    }
+    await act(async () => {
+      jest.advanceTimersByTime(700);
+    });
+    expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    expect(mockExecuteCharge.mock.calls[0][0]).toMatchObject({
+      pin: '1984',
+      owedChange,
+    });
+  });
+
   it('keeps the PIN pose on a failed attempt: reason in the sheet, PIN cleared, no auto-retry', async () => {
     jest.useFakeTimers(FAKE_TIMERS);
     mockExecuteCharge.mockRejectedValue(

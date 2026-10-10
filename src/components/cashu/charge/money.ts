@@ -28,6 +28,21 @@ export function last4FromPubkey(hex: string | null | undefined): string | null {
 const TAG_LOST =
   /tag (was )?lost|left the field|not connected|stopped responding/i;
 
+/**
+ * The card has no free slot for the change: the pre-flight refusal in
+ * `readAndPlan` ("this card is full: …") and the card's own 6A84 on a LOAD
+ * (`describeStatusWord`: "card is full — no free slot") both say so.
+ */
+const CARD_FULL = /card is full/i;
+
+/**
+ * `executeCharge` reports a change write that failed AFTER the owed-change
+ * record itself failed to land under this phase (`cashuCharge.ts`,
+ * `PHASE_WRITING_CHANGE_UNRECORDED`). The change is then nowhere but the
+ * dead process; the body must not say it is saved.
+ */
+const CHANGE_UNRECORDED = /^writing change to card \(unrecorded\)$/i;
+
 export interface Failure {
   /** The phase the charge died on, from executeCharge's "[phase] …" prefix. */
   phase: string | null;
@@ -35,6 +50,8 @@ export interface Failure {
   detail: string;
   /** The card left the antenna (vs a card or mint refusal). */
   tagLost: boolean;
+  /** The card has no free slot for the change (vs any other refusal). */
+  cardFull: boolean;
 }
 
 export function parseFailure(message: string | null | undefined): Failure {
@@ -42,7 +59,12 @@ export function parseFailure(message: string | null | undefined): Failure {
   const match = /^\[([^\]]+)\]\s*([\s\S]*)$/.exec(text);
   const phase = match ? match[1] : null;
   const detail = (match ? match[2] : text).trim();
-  return {phase, detail, tagLost: detail === '' || TAG_LOST.test(detail)};
+  return {
+    phase,
+    detail,
+    tagLost: detail === '' || TAG_LOST.test(detail),
+    cardFull: CARD_FULL.test(detail),
+  };
 }
 
 export interface FailureContext {
@@ -61,15 +83,45 @@ export interface FailureContext {
  * repeats the title. A card or mint refusal keeps its own reason.
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
-  if (!failure.tagLost) {
-    return failure.detail || 'The card stopped responding.';
-  }
   const phase = failure.phase ?? '';
+  if (failure.cardFull && ctx.burnsDone === 0) {
+    // The pre-flight (or a LOAD of earlier change) refused before any burn.
+    // No instruction: a spend leaves its slot 'spent', not free, and nothing
+    // in the app clears spent slots yet (ENG-631 adds the top-up that does).
+    return 'Nothing was taken from the card. It has no free slot for the change.';
+  }
+  const verb = ctx.paidSat === 1 ? 'is' : 'are';
+  if (CHANGE_UNRECORDED.test(phase)) {
+    // The bill is paid but the change was never recorded and did not land:
+    // it is not saved anywhere. Say the one thing the customer needs to
+    // hear — the bill is paid — and that the change did not reach the card;
+    // not "saved", not "next time". The card's own words stay on the pill.
+    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+      ctx.changeSat,
+    )} change could not be put on the card.`;
+  }
   if (/^writing change/i.test(phase) && ctx.changeSat > 0) {
     // The mint has settled before the change is written: the bill is paid,
-    // only the change is not on the card yet.
-    const verb = ctx.paidSat === 1 ? 'is' : 'are';
-    return `${ctx.fmt(ctx.paidSat)} ${verb} paid. Hold the card to the phone again to add your ${ctx.fmt(ctx.changeSat)} change.`;
+    // and the change is recorded on the terminal — WHATEVER the card said
+    // to the LOAD (the unrecorded case has its own phase above). A 6982
+    // security-status refusal, a 6A80 wrong-data, a protocol error: all of
+    // them leave the money exactly where a lost tag does, and a body that
+    // showed the raw APDU text instead would send the merchant to Retry,
+    // which burns the card for the same bill a second time. A tag that
+    // moved goes onto the card at its next tap. A card that ran out of
+    // slots does not: the next tap gives the owed piece no slot either (a
+    // spend leaves its slot 'spent', not free, and nothing in the app
+    // clears spent slots until ENG-631) — so promise only what is true: it
+    // is saved here and goes on once the card has room.
+    const saved = `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+      ctx.changeSat,
+    )} change is saved on this terminal`;
+    return failure.cardFull
+      ? `${saved} and will be added once the card has a free slot.`
+      : `${saved} and will be added the next time this card is charged.`;
+  }
+  if (!failure.tagLost) {
+    return failure.detail || 'The card stopped responding.';
   }
   // "Nothing was taken" only when no money phase was ever reached — not
   // even the one it died on.

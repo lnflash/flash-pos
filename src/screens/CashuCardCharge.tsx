@@ -64,6 +64,8 @@ type Planned = {
   unspent: unknown[];
   cardPubkey: string;
   pinRequired: boolean;
+  /** Change from an earlier charge, written onto the card before the burn. */
+  owedChange: unknown[];
 };
 
 type PreRead = NonNullable<NonNullable<Props['route']['params']>['preRead']>;
@@ -75,6 +77,7 @@ function planFromPreRead(preRead: PreRead | undefined): Planned | null {
         unspent: preRead.unspent,
         cardPubkey: preRead.cardPubkey,
         pinRequired: preRead.pinRequired,
+        owedChange: preRead.owedChange ?? [],
       }
     : null;
 }
@@ -197,6 +200,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
             cardPubkey: planned.cardPubkey,
             pin: customerPin,
             pinRequired: planned.pinRequired,
+            owedChange: planned.owedChange as never,
             mintUrl: FLASH_CASHU_MINT_URL,
             onPhase,
           }),

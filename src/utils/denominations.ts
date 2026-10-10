@@ -21,3 +21,7 @@ export function splitPow2(amountSat: number): number[] {
   }
   return pieces;
 }
+
+/** How many card slots `sat` of change takes: one per power-of-two piece. */
+export const pow2PieceCount = (sat: number): number =>
+  sat > 0 ? splitPow2(sat).length : 0;

@@ -148,6 +148,11 @@ export function describeStatusWord(sw: number): string {
       return 'proof already spent';
     case 0x6a83:
       return 'slot index out of range';
+    case 0x6a84:
+      // ISO 7816 "not enough memory space": LOAD_PROOF found no free slot.
+      // The charge UI classes a full card by this wording (and the
+      // pre-flight's "this card is full") — `money.ts`, CARD_FULL.
+      return 'card is full — no free slot';
     case 0x6a88:
       return 'slot is empty';
     case 0x6a86:
