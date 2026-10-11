@@ -1,0 +1,40 @@
+# The first change LOAD reaches the card but its answer is lost (deep link
+# dropLoad=1: the bridge forwards the APDU, then reports the tag lost).
+# The 4-sat piece is ON the card and still "owed" on disk; the balance read
+# must count it once and show only the 1 sat still waiting, and nothing
+# may load it a second time.
+appId: com.flash.pos
+name: 'eCash card: a lost LOAD answer is reconciled, never duplicated'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- runFlow: common/enter-pin.yaml
+# The change write died on a lost tag, after the swap: the PIN sheet's
+# line says so in plain words (the phase carries no detail).
+- extendedWaitUntil:
+    visible:
+      id: 'pin-error-text'
+      text: 'The card stopped responding.'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'
+- runFlow: common/leave-charge.yaml
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '4'
+- assertVisible:
+    id: 'balance-owed'
+    text: 'Change waiting · 1 sat — added on the next charge'
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'

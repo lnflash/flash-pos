@@ -1,0 +1,10 @@
+# Keypad "Card balance" → CashuCardBalance, asserting the sats shown.
+# env: SATS — the balance the screen must show
+appId: com.flash.pos
+---
+- tapOn: '.*Card balance'
+- extendedWaitUntil:
+    visible:
+      id: 'balance-sat'
+      text: '${SATS} sats'
+    timeout: 30000

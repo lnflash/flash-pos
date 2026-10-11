@@ -1,0 +1,15 @@
+# The PIN sheet: four digits auto-commit after 700 ms (CashuCardCharge.tsx).
+appId: com.flash.pos
+---
+- extendedWaitUntil:
+    visible:
+      id: 'pin-sheet'
+    timeout: 30000
+- tapOn:
+    id: 'pin-key-1'
+- tapOn:
+    id: 'pin-key-2'
+- tapOn:
+    id: 'pin-key-3'
+- tapOn:
+    id: 'pin-key-4'

@@ -1,0 +1,13 @@
+# Back from the card charge to the keypad. The header's back arrow sits in
+# the status-bar band on notched iPhones (the charge screen draws edge to
+# edge), where a tap goes to the system, so this uses the stack's
+# edge-swipe-back gesture instead.
+appId: com.flash.pos
+---
+- swipe:
+    start: '1%, 50%'
+    end: '90%, 50%'
+    duration: 400
+- extendedWaitUntil:
+    visible: '.*Card balance'
+    timeout: 15000

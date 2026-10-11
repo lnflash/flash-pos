@@ -1,0 +1,30 @@
+# Fresh install → card bridge on → merchant logged in on SAT → keypad.
+# env: BRIDGE_LINK, FLASH_USERNAME (a TEST-instance merchant, never prod)
+appId: com.flash.pos
+---
+- launchApp:
+    clearState: true
+    # The owed-change store lives in the keychain, keyed by card pubkey, and
+    # cardsim's key is the same on every reset: start every flow clean.
+    clearKeychain: true
+- extendedWaitUntil:
+    visible: 'Enter your flash username'
+    timeout: 120000
+# After JS is up, so the Linking listener is there to hear it.
+- openLink: ${BRIDGE_LINK}
+# iOS asks before an app opens its own custom-scheme link.
+- tapOn:
+    text: 'Open'
+    optional: true
+- tapOn:
+    id: 'auth-username'
+- inputText: ${FLASH_USERNAME}
+- tapOn: 'flash POS'
+# The picker button reads "JMD" plus its caret glyph.
+- tapOn: 'JMD.*'
+- tapOn:
+    id: 'currency-SAT'
+- tapOn: 'Start'
+- extendedWaitUntil:
+    visible: '.*Card balance'
+    timeout: 60000

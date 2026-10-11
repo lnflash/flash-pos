@@ -1,0 +1,20 @@
+# Keypad → bill → Next → the card charge → "Tap card to charge".
+# A sub-cent SAT bill skips the invoice (Keypad.tsx) and lands on
+# CashuCardCharge directly. With the bridge set the tap is implicit.
+# env: D1, D2 — the bill's digits (D2 may be empty)
+appId: com.flash.pos
+---
+- tapOn:
+    id: 'numpad-${D1}'
+- runFlow:
+    when:
+      true: ${D2}
+    commands:
+      - tapOn:
+          id: 'numpad-${D2}'
+- tapOn: 'Next'
+- extendedWaitUntil:
+    visible:
+      id: 'charge-view'
+    timeout: 30000
+- tapOn: 'Tap card to charge'
