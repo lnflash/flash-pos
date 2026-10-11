@@ -24,9 +24,12 @@ tags:
     env:
       FIXTURE: ${FIXTURE_FULL}
 - runFlow: common/enter-pin.yaml
-# The money moved and the change could not land. A PIN card's charge
-# fails back into the PIN pose, so the reason shows on the sheet's line:
-# the card's own 6A84 refusal.
+# The money moved and the change could not land.
+# KNOWN BUG ENG-642: pins today's wrong behaviour. A PIN card's charge falls
+# back into the PIN pad after the swap settled, shows the raw 6A84 refusal
+# on the sheet's line and invites a PIN re-entry that re-runs the charge.
+# The fix flips this to error-body "…saved on this terminal…" (plan
+# ENG-634-flash-pos.md:69).
 - extendedWaitUntil:
     visible:
       id: 'pin-error-text'

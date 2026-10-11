@@ -15,8 +15,11 @@ tags:
       D1: '3'
       D2: ''
 - runFlow: common/enter-pin.yaml
-# The change write died on a lost tag, after the swap: the PIN sheet's
-# line says so in plain words (the phase carries no detail).
+# The change write died on a lost tag, after the swap.
+# KNOWN BUG ENG-642: pins today's wrong behaviour. A PIN card's charge falls
+# back into the PIN pad after the swap settled and invites a PIN re-entry
+# that re-runs the charge. The fix flips this to error-body "…will be added
+# the next time this card is charged." (plan ENG-634-flash-pos.md:67).
 - extendedWaitUntil:
     visible:
       id: 'pin-error-text'

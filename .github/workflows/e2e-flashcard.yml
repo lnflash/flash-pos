@@ -24,6 +24,7 @@ on:
       - '.maestro/**'
       - 'scripts/e2e-flashcard.mjs'
       - 'scripts/e2e-flashcard/**'
+      - '.env.example'
       - '.github/workflows/e2e-flashcard.yml'
   schedule:
     - cron: '23 6 * * *'
@@ -48,6 +49,13 @@ jobs:
     name: eCash card flows (iOS simulator)
     runs-on: macos-15
     timeout-minutes: 45
+    # An explicit `shell: bash` runs as `bash --noprofile --norc -eo
+    # pipefail {0}`; the implicit default is `bash -e {0}`, under which
+    # `xcodebuild … | tail` and `curl … | head` exit 0 when the left side
+    # fails.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -88,7 +96,10 @@ jobs:
             curl -sf "$CARDSIM_URL/state" > /dev/null && break
             sleep 1
           done
-          curl -sf "$CARDSIM_URL/state" | head -c 200; echo
+          # Not `curl | head -c`: under pipefail head's early exit would
+          # fail curl with EPIPE on a healthy bridge.
+          state=$(curl -sf "$CARDSIM_URL/state")
+          echo "${state:0:200}"
 
       # ---- the mint: Nutshell on FakeWallet -------------------------------
       - name: Set up Python
@@ -146,18 +157,10 @@ jobs:
       - name: Point the app at TEST and the local mint
         run: |
           cp .env.example .env
-          sed -i '' \
-            -e 's#^FLASH_GRAPHQL_URI=.*#FLASH_GRAPHQL_URI=https://api.test.flashapp.me/graphql#' \
-            -e 's#^FLASH_GRAPHQL_WS_URI=.*#FLASH_GRAPHQL_WS_URI=wss://ws.test.flashapp.me/graphql#' \
-            -e 's#^FLASH_LN_ADDRESS_URL=.*#FLASH_LN_ADDRESS_URL=https://test.flashapp.me#' \
-            -e 's#^FLASH_LN_ADDRESS=.*#FLASH_LN_ADDRESS=test.flashapp.me#' \
-            -e "s#^FLASH_CASHU_MINT_URL=.*#FLASH_CASHU_MINT_URL=$MINT_URL#" \
-            .env
-          # Never production: refuse to go on if any flashapp.me host but TEST is left.
-          if grep -E '^FLASH_[A-Z_]+=.*(//|^)(api|ws)\.flashapp\.me' .env; then
-            echo "::error::.env still points at production"
-            exit 1
-          fi
+          # Rewrites the TEST hosts, the local mint and BTC_PAY_SERVER (to an
+          # unroutable .invalid host), then fails if any flashapp.me host
+          # but TEST is left on any key.
+          scripts/e2e-flashcard/point-env-at-test.sh .env "$MINT_URL"
 
       - name: Install CocoaPods
         run: |
@@ -222,6 +225,7 @@ jobs:
         run: |
           node scripts/e2e-flashcard.mjs \
             --username "$FLASH_POS_E2E_USERNAME" \
+            --cardsim-client cardsim/tools/cardsim/client.cjs \
             --bridge "$CARDSIM_URL" \
             --mint "$MINT_URL" \
             --device "$SIM_ID"

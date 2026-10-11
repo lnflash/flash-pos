@@ -1,8 +1,9 @@
 'use strict';
 /**
  * Pure helpers for the simulator e2e runner (scripts/e2e-flashcard.mjs):
- * the card's P2PK secret, hex, and the fixture each Maestro flow starts from.
- * No network, no dependencies — jest pins it (__tests__/scripts/e2eLib.test.ts).
+ * the card's P2PK secret, hex, the fixture each Maestro flow starts from,
+ * and where the cardsim client is. No network, no dependencies (fs and
+ * require are passed in) — jest pins it (__tests__/scripts/e2eLib.test.ts).
  */
 
 /** The PIN every PIN-card flow sets and types. */
@@ -172,6 +173,75 @@ function bridgeLink(bridgeUrl, flow) {
   return `flashpos://dev/card-bridge?${params.join('&')}`;
 }
 
+/**
+ * Where the cardsim client lives in a lnflash/cashu-javacard checkout. The
+ * runner talks to the bridge only through that client (tools/cardsim/
+ * client.cjs at the pinned ref): its 5 s per-request deadline is what turns
+ * a bridge wedged on its single card thread into a failed flow instead of a
+ * run that hangs until the job timeout, and its `validateFixture` refuses a
+ * malformed stage in the runner's own stack before the bridge answers 400.
+ */
+const CARDSIM_CLIENT_IN_CHECKOUT = 'tools/cardsim/client.cjs';
+
+/**
+ * The client path, first match wins: `--cardsim-client`, then the
+ * CARDSIM_CLIENT env var, then the e2e workflow's checkout (`cardsim/` in the
+ * repo root), then a sibling cashu-javacard checkout. `exists` is injected
+ * (fs.existsSync in the runner) so jest can pin the order. Returns null when
+ * nothing is found; an explicit flag or env path is returned as given, so a
+ * typo fails loudly in `loadCardSim` instead of falling through.
+ */
+function resolveCardSimClient({flag, env, root, exists}) {
+  if (flag) {
+    return flag;
+  }
+  if (env) {
+    return env;
+  }
+  const candidates = [
+    `${root}/cardsim/${CARDSIM_CLIENT_IN_CHECKOUT}`,
+    `${root}/../cashu-javacard/${CARDSIM_CLIENT_IN_CHECKOUT}`,
+  ];
+  return candidates.find(candidate => exists(candidate)) || null;
+}
+
+/**
+ * Loads the reference client and returns a `CardSim` on `bridgeUrl`. Throws
+ * when the path is missing or the module is not the cardsim client (no
+ * `CardSim` with reset/fixture/state). `options` go to the CardSim
+ * constructor ({fetch, timeoutMs}).
+ */
+function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
+  if (!clientPath) {
+    throw new Error(
+      'no cardsim client: pass --cardsim-client <cashu-javacard>/' +
+        `${CARDSIM_CLIENT_IN_CHECKOUT} (or set CARDSIM_CLIENT), at the ref ` +
+        'pinned in .github/workflows/e2e-flashcard.yml',
+    );
+  }
+  let mod;
+  try {
+    mod = requireFn(clientPath);
+  } catch (error) {
+    throw new Error(
+      `cannot load the cardsim client at ${clientPath}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+  }
+  const CardSim = mod && mod.CardSim;
+  const proto = CardSim && CardSim.prototype;
+  if (
+    typeof CardSim !== 'function' ||
+    !['reset', 'fixture', 'state'].every(m => typeof proto[m] === 'function')
+  ) {
+    throw new Error(
+      `${clientPath} is not the cardsim client (no CardSim with reset/fixture/state)`,
+    );
+  }
+  return new CardSim(bridgeUrl, options);
+}
+
 module.exports = {
   BILL_SAT,
   CARD_SAT,
@@ -183,6 +253,8 @@ module.exports = {
   bridgeLink,
   buildFixture,
   cardSecret,
+  loadCardSim,
   placeholderProofs,
+  resolveCardSimClient,
   toHex,
 };

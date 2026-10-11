@@ -453,11 +453,17 @@ cannot.
 | `owed-change-next-tap` | 8, then full, then 4 | the change LOAD answers 6A84 after the swap; the 5 sats are kept on the terminal and written first on the next charge (4 + 1, then the 4-sat proof pays the bill exactly) |
 | `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance shows 4 sats + "Change waiting · 1 sat" |
 
-A PIN card whose change write fails after the swap falls back into the PIN
-pose, so those two flows read the reason from the PIN sheet's line
-(`pin-error-text`), not the error body. They leave the charge with the stack's
-edge swipe: on notched iPhones the header's back arrow sits in the status-bar
-band, where a tap goes to the system.
+**Known bug (ENG-642):** a PIN card whose change write fails after the swap
+falls back into the PIN pad, though the money has moved, and a PIN re-entry
+re-runs the charge. Until it is fixed, `owed-change-next-tap` and
+`lost-load-answer` pin that wrong behaviour on the PIN sheet's line
+(`pin-error-text`), each marked `# KNOWN BUG ENG-642`. The fix flips them to
+`error-body` with the "saved on this terminal" copy the plan asked for; a
+failure there after the fix is the flow catching up, not a regression.
+
+The flows leave the charge with the stack's edge swipe: on notched iPhones the
+header's back arrow sits in the status-bar band, where a tap goes to the
+system.
 
 `dropLoad=n` makes the bridge forward the n-th LOAD_PROOF and then report the
 tag lost: the transport twin of `loseAnswerOnLoad` in
@@ -483,12 +489,11 @@ FAKEWALLET_DELAY_OUTGOING_PAYMENT=0
 ENV
 /tmp/nutshell/bin/mint
 
-# 3. The app, against TEST (never production) and the local mint: in .env set
-#    FLASH_GRAPHQL_URI=https://api.test.flashapp.me/graphql
-#    FLASH_GRAPHQL_WS_URI=wss://ws.test.flashapp.me/graphql
-#    FLASH_LN_ADDRESS_URL=https://test.flashapp.me
-#    FLASH_LN_ADDRESS=test.flashapp.me
-#    FLASH_CASHU_MINT_URL=http://127.0.0.1:3338
+# 3. The app, against TEST (never production) and the local mint. The script
+#    rewrites the TEST hosts, the mint and BTC_PAY_SERVER (to btcpay.invalid),
+#    then fails if any flashapp.me host but TEST is left.
+cp .env.example .env
+scripts/e2e-flashcard/point-env-at-test.sh .env http://127.0.0.1:3338
 cd ios && pod install && cd ..
 xcodebuild -workspace ios/flash_pos.xcworkspace -scheme flash_pos \
   -configuration Debug -sdk iphonesimulator \
@@ -497,7 +502,9 @@ xcodebuild -workspace ios/flash_pos.xcworkspace -scheme flash_pos \
   PROVISIONING_PROFILE_SPECIFIER= FORCE_BUNDLING=1
 xcrun simctl install booted "ios/build/Build/Products/Debug-iphonesimulator/Flash POS.app"
 
-# 4. The flows (maestro 2.10.0 on PATH)
+# 4. The flows (maestro 2.10.0 on PATH). The runner reaches cardsim only through
+#    its reference client, tools/cardsim/client.cjs: found in ../cashu-javacard
+#    or ./cardsim, else pass --cardsim-client <path> (or CARDSIM_CLIENT).
 yarn e2e:flashcard --username <TEST merchant>             # all six
 yarn e2e:flashcard --username <TEST merchant> --flow charge-with-change
 yarn e2e:flashcard --dry-run                              # the plan, no network
@@ -517,6 +524,9 @@ byte-identity is pinned in `__tests__/scripts/e2eLib.test.ts`), resets the
 card (its key survives `/reset`, which the runner checks), posts the starting
 fixture, and hands later fixtures to the flow (`FIXTURE_FULL`,
 `FIXTURE_AFTER`). Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
+Every bridge call goes through cashu-javacard's `client.cjs` (5 s per request,
+fixtures validated before they are posted), so a wedged bridge fails the flow
+instead of hanging the run.
 
 ### CI
 

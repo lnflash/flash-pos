@@ -133,3 +133,197 @@ describe('bridgeLink', () => {
     });
   });
 });
+
+describe('the cardsim client', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  describe('resolveCardSimClient', () => {
+    const none = () => false;
+
+    it('takes --cardsim-client first, then CARDSIM_CLIENT, as given', () => {
+      expect(
+        lib.resolveCardSimClient({
+          flag: '/a/client.cjs',
+          env: '/b/client.cjs',
+          root: '/r',
+          exists: none,
+        }),
+      ).toBe('/a/client.cjs');
+      expect(
+        lib.resolveCardSimClient({
+          env: '/b/client.cjs',
+          root: '/r',
+          exists: none,
+        }),
+      ).toBe('/b/client.cjs');
+    });
+
+    it("then the workflow's cardsim/ checkout, then a sibling cashu-javacard", () => {
+      const ci = '/r/cardsim/tools/cardsim/client.cjs';
+      const sibling = '/r/../cashu-javacard/tools/cardsim/client.cjs';
+      expect(lib.resolveCardSimClient({root: '/r', exists: () => true})).toBe(
+        ci,
+      );
+      expect(
+        lib.resolveCardSimClient({
+          root: '/r',
+          exists: (p: string) => p === sibling,
+        }),
+      ).toBe(sibling);
+      expect(lib.resolveCardSimClient({root: '/r', exists: none})).toBeNull();
+    });
+
+    it('the workflow passes the path its cashu-javacard checkout puts it at', () => {
+      const workflow = fs.readFileSync(
+        path.join(__dirname, '../../.github/workflows/e2e-flashcard.yml'),
+        'utf8',
+      );
+      expect(workflow).toMatch(/^\s+path: cardsim$/m);
+      expect(workflow).toContain(
+        '--cardsim-client cardsim/tools/cardsim/client.cjs',
+      );
+    });
+  });
+
+  describe('loadCardSim', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cardsim-client-'));
+    });
+    afterEach(() => fs.rmSync(dir, {recursive: true, force: true}));
+
+    const write = (name: string, body: string) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, body);
+      return file;
+    };
+
+    it('says how to point at the client when none was found', () => {
+      expect(() =>
+        lib.loadCardSim(null, 'http://127.0.0.1:9876', require),
+      ).toThrow(/--cardsim-client .*tools\/cardsim\/client\.cjs/);
+    });
+
+    it('fails loudly on a path that is not there (no silent fallback)', () => {
+      expect(() =>
+        lib.loadCardSim(
+          path.join(dir, 'missing.cjs'),
+          'http://127.0.0.1:9876',
+          require,
+        ),
+      ).toThrow(/cannot load the cardsim client at .*missing\.cjs/);
+    });
+
+    it('refuses a module that is not the cardsim client', () => {
+      const file = write('other.cjs', 'module.exports = {CardSim: class {}};');
+      expect(() =>
+        lib.loadCardSim(file, 'http://127.0.0.1:9876', require),
+      ).toThrow(/is not the cardsim client/);
+    });
+
+    it("builds the client's CardSim on the bridge URL with the options", () => {
+      const file = write(
+        'client.cjs',
+        `class CardSim {
+           constructor(url, opts) { this.url = url; this.opts = opts; }
+           reset() {} fixture() {} state() {}
+         }
+         module.exports = {CardSim};`,
+      );
+      const sim = lib.loadCardSim(file, 'http://127.0.0.1:9876', require, {
+        timeoutMs: 1234,
+      });
+      expect(sim.url).toBe('http://127.0.0.1:9876');
+      expect(sim.opts).toEqual({timeoutMs: 1234});
+    });
+  });
+
+  // The reference client itself, when a cashu-javacard checkout is next to
+  // this repo (locally) or in cardsim/ (the e2e workflow). The plain jest CI
+  // job has neither and skips this.
+  const real = lib.resolveCardSimClient({
+    root: path.join(__dirname, '../..'),
+    exists: fs.existsSync,
+  });
+  (real ? describe : describe.skip)('through the reference client', () => {
+    it('a bridge that stops answering fails the call instead of hanging', async () => {
+      const wedged = (_url: string, init: {signal: AbortSignal}) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(new Error('aborted by the deadline')),
+          );
+        });
+      const sim = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
+        fetch: wedged,
+        timeoutMs: 50,
+      });
+      await expect(sim.reset()).rejects.toThrow('aborted by the deadline');
+      await expect(sim.state()).rejects.toThrow('aborted by the deadline');
+    });
+
+    it('refuses a malformed fixture before anything is posted', async () => {
+      const fetch = jest.fn();
+      const sim = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
+        fetch,
+      });
+      expect(() =>
+        sim.fixture({proofs: [{keysetId: 'zz', amount: 1, nonce: '', C: ''}]}),
+      ).toThrow(/keysetId must be 8 bytes/);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts every stage the flows post', () => {
+      const {validateFixture} = require(real);
+      for (const flow of lib.FLOW_NAMES) {
+        for (const spec of Object.values(lib.FLOWS[flow].stages)) {
+          expect(() =>
+            validateFixture(
+              lib.buildFixture(spec, lib.placeholderProofs(flow)),
+            ),
+          ).not.toThrow();
+        }
+      }
+    });
+  });
+});
+
+describe('flows that pin a known bug', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(__dirname, '../../.maestro/flashcard');
+
+  // A PIN card whose change write fails after the swap falls back into the
+  // PIN pad (ENG-642). Every flow that asserts that pad line after a PIN
+  // must say it pins a bug, so the fix reads as a fix, not a regression.
+  it.each(['owed-change-next-tap', 'lost-load-answer'])(
+    '%s marks its pin-error-text assertion KNOWN BUG ENG-642',
+    flow => {
+      const text: string = fs.readFileSync(
+        path.join(dir, `${flow}.yaml`),
+        'utf8',
+      );
+      const at = text.indexOf("id: 'pin-error-text'");
+      expect(at).toBeGreaterThan(-1);
+      expect(text.slice(0, at)).toMatch(
+        /# KNOWN BUG ENG-642: pins today's wrong behaviour[\s\S]*error-body/,
+      );
+    },
+  );
+
+  it('no other flow asserts the PIN pad line', () => {
+    const others = fs
+      .readdirSync(dir)
+      .filter((f: string) => f.endsWith('.yaml'))
+      .filter(
+        (f: string) =>
+          !['owed-change-next-tap.yaml', 'lost-load-answer.yaml'].includes(f),
+      );
+    for (const f of others) {
+      expect(fs.readFileSync(path.join(dir, f), 'utf8')).not.toContain(
+        'pin-error-text',
+      );
+    }
+  });
+});

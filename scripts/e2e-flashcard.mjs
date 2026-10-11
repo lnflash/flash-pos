@@ -18,15 +18,16 @@
  *
  *   node scripts/e2e-flashcard.mjs --username <TEST merchant> [--flow a,b]
  *       [--bridge http://127.0.0.1:9876] [--mint http://127.0.0.1:3338]
- *       [--device <simulator id>]
+ *       [--device <simulator id>] [--cardsim-client <path to client.cjs>]
  *   node scripts/e2e-flashcard.mjs --dry-run      # plan only, no network
  *
  * Exit 0 only when every selected flow passed. Run book: docs/10-testing.md.
  */
 import {spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
+import {existsSync} from 'node:fs';
 import {createRequire} from 'node:module';
-import {dirname, join} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const require = createRequire(import.meta.url);
@@ -41,6 +42,9 @@ const USAGE = `usage: node scripts/e2e-flashcard.mjs [options]
   --bridge <url>      cardsim bridge (default http://127.0.0.1:9876)
   --mint <url>        FakeWallet mint (default http://127.0.0.1:3338)
   --device <id>       simulator for Maestro (when more than one is booted)
+  --cardsim-client <path>
+                      lnflash/cashu-javacard tools/cardsim/client.cjs (or
+                      CARDSIM_CLIENT; default: ./cardsim/ or ../cashu-javacard/)
   --dry-run           print the plan with placeholder proofs; no network, no Maestro
   --help`;
 
@@ -51,6 +55,7 @@ function parseArgs(argv) {
     username: process.env.FLASH_USERNAME || '',
     flows: [],
     device: '',
+    cardsimClient: '',
     dryRun: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -78,6 +83,9 @@ function parseArgs(argv) {
         break;
       case '--device':
         opts.device = value();
+        break;
+      case '--cardsim-client':
+        opts.cardsimClient = value();
         break;
       case '--flow':
         opts.flows.push(...value().split(',').filter(Boolean));
@@ -114,31 +122,25 @@ function parseArgs(argv) {
 
 // ---------------------------------------------------------------- cardsim
 
-async function bridgeCall(base, method, path, body) {
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: body ? {'Content-Type': 'application/json'} : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+/**
+ * The bridge, through the merged reference client (lnflash/cashu-javacard
+ * tools/cardsim/client.cjs): every request has its 5 s deadline, and a
+ * fixture is validated locally before it is posted. A 409 (a fixture step
+ * the applet refused) arrives as its CardSimError naming the step.
+ */
+function openCardSim(opts) {
+  const clientPath = lib.resolveCardSimClient({
+    flag: opts.cardsimClient && resolve(opts.cardsimClient),
+    env: process.env.CARDSIM_CLIENT && resolve(process.env.CARDSIM_CLIENT),
+    root: ROOT,
+    exists: existsSync,
   });
-  const text = await response.text();
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = {raw: text};
-  }
-  if (!response.ok) {
-    // 409 = a fixture step the applet refused; the body names the step.
-    throw new Error(
-      `cardsim ${method} ${path} answered ${response.status}: ${text}`,
-    );
-  }
-  return json;
+  return lib.loadCardSim(clientPath, opts.bridge, require);
 }
 
 /** /reset, then prove the card key survived it (minted proofs depend on it). */
-async function resetCard(base, expectedPubkey) {
-  const state = await bridgeCall(base, 'POST', '/reset');
+async function resetCard(sim, expectedPubkey) {
+  const state = await sim.reset();
   if (!state.deterministicKey) {
     throw new Error('cardsim no longer promises a deterministic key');
   }
@@ -316,7 +318,8 @@ async function main() {
     return 0;
   }
 
-  const first = await bridgeCall(opts.bridge, 'GET', '/state');
+  const sim = openCardSim(opts);
+  const first = await sim.state();
   const pubkey = first.pubkey;
   console.log(
     `cardsim ${opts.bridge}: card ${pubkey.slice(0, 16)}… (applet ${
@@ -333,13 +336,8 @@ async function main() {
       const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
       const fixtures = fixturesFor(flow, minted);
       // The flow starts on this card; later stages are its own to post.
-      await resetCard(opts.bridge, pubkey);
-      const state = await bridgeCall(
-        opts.bridge,
-        'POST',
-        '/fixture',
-        fixtures.INITIAL,
-      );
+      await resetCard(sim, pubkey);
+      const state = await sim.fixture(fixtures.INITIAL);
       console.log(
         `card: ${state.balance} sat, ${state.counts.unspent} unspent / ${state.counts.spent} spent / ${state.counts.empty} empty`,
       );
