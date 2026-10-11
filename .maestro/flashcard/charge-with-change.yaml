@@ -1,0 +1,28 @@
+# A PIN card pays a 3-sat bill from its 8-sat proof: read → PIN → burn →
+# swap → change 4 + 1 written back. The balance and the card both show 5.
+appId: com.flash.pos
+name: 'eCash card: charge with change'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- runFlow: common/enter-pin.yaml
+- extendedWaitUntil:
+    visible: 'Charged 3 sats — paid by eCash card'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'
+- tapOn: 'Done'
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '5'
+- assertNotVisible:
+    id: 'balance-owed'

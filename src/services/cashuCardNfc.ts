@@ -31,9 +31,14 @@
  * see `cancelCardSession`, which screens call on unmount.
  */
 import {Platform} from 'react-native';
-import NfcManager, {NfcError, NfcTech} from 'react-native-nfc-manager';
+import NfcManager, {
+  NfcError,
+  NfcTech,
+  type TagEvent,
+} from 'react-native-nfc-manager';
 
 import {nowMs, resetApduTimings, summarizeApduTimings} from './apduTiming';
+import {BRIDGE_TAG, bridgeTransceiver, getCardBridge} from './cardBridge'; // __DEV__-gated: null in release
 import {
   CardError,
   readCard,
@@ -136,6 +141,72 @@ export function setCardSessionMessage(message: string): void {
   }
 }
 
+/** One card session: an armed tag, its APDU channel and its teardown. */
+export interface CardSession {
+  /** APDUs to the card in the field (or to the cardsim bridge). */
+  transceive: Transceiver;
+  /** The tag that answered the request; `null` when the stack lost it. */
+  getTag(): Promise<TagEvent | null>;
+  /** Ends the session. Never throws. */
+  close(): Promise<void>;
+}
+
+export interface OpenCardSessionOptions extends CardSessionOptions {
+  /** The technologies to request; one IsoDep by default. */
+  techs?: NfcTech[];
+}
+
+/**
+ * True when card sessions go to the cardsim bridge instead of NFC (dev
+ * builds only; see services/cardBridge.ts). Callers use it to skip what
+ * the simulator cannot do, such as `NfcManager.start()`.
+ */
+export function usingCardBridge(): boolean {
+  return getCardBridge() !== null;
+}
+
+/**
+ * The single seam between the card protocol and its transport.
+ *
+ * NFC: arms a technology request — pending until a card enters the field,
+ * so this resolves on the tap — then raises the transceive timeout
+ * (`extendCardTimeout`). The caller owns the teardown: `close()` in a
+ * `finally`, exactly like `withCardSession`, or the pending request
+ * swallows every BoltCard tap app-wide (see the header of this file).
+ *
+ * Bridge (dev builds, `setCardBridge`): resolves at once — the tap is
+ * implicit — with APDUs posted to cardsim and `BRIDGE_TAG` as the tag. The
+ * radio is never touched.
+ *
+ * The request is issued synchronously, before the first await, so a blur
+ * that lands right after the call always finds a request to cancel.
+ */
+export async function openCardSession({
+  techs = [NfcTech.IsoDep],
+  alertMessage,
+}: OpenCardSessionOptions = {}): Promise<CardSession> {
+  const bridge = getCardBridge();
+  if (bridge) {
+    return {
+      transceive: bridgeTransceiver(bridge),
+      getTag: async () => BRIDGE_TAG,
+      close: async () => {},
+    };
+  }
+  const tech = techs.length === 1 ? techs[0] : techs;
+  if (alertMessage) {
+    await NfcManager.requestTechnology(tech, {alertMessage});
+  } else {
+    await NfcManager.requestTechnology(tech);
+  }
+  await extendCardTimeout();
+  return {
+    transceive: nfcTransceiver,
+    getTag: async () => (await NfcManager.getTag()) ?? null,
+    close: cancelCardSession,
+  };
+}
+
 /**
  * Runs `fn` inside an IsoDep session, always tearing the session down.
  *
@@ -150,20 +221,19 @@ export async function withCardSession<T>(
   resetApduTimings();
   console.log('[card-session] arming IsoDep request');
   const armedAt = nowMs();
-  await NfcManager.requestTechnology(NfcTech.IsoDep, {alertMessage});
+  const session = await openCardSession({alertMessage});
   const connectedAt = nowMs();
   console.log('[card-session] tag connected');
   try {
-    await extendCardTimeout();
-    return await fn(nfcTransceiver);
+    return await fn(session.transceive);
   } catch (error) {
     console.log('[card-session] session fn failed', String(error));
     throw error;
   } finally {
     // Never let a failed read strand the session — a pending techRequest
     // swallows every subsequent tap app-wide, including BoltCard payments.
-    // cancelCardSession never throws, so it cannot mask the original error.
-    await cancelCardSession();
+    // close() never throws, so it cannot mask the original error.
+    await session.close();
     // "tap wait" is arm → tag connected: the user's reach plus field
     // discovery, which cannot be separated here. "session" is tag connected →
     // closed, and the APDU figures inside it are the card's own answer time.
@@ -190,6 +260,10 @@ export async function readCardOverNfc(
 
 /** True when the device can actually do this — check before offering card payment. */
 export async function isCardReadingSupported(): Promise<boolean> {
+  if (usingCardBridge()) {
+    // The bridge is the card reader; the simulator's radio is irrelevant.
+    return true;
+  }
   try {
     return (await NfcManager.isSupported()) && (await NfcManager.isEnabled());
   } catch {

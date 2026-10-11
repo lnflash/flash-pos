@@ -14,6 +14,9 @@ import {
   useKeypadCardReader,
 } from '../../src/hooks/useKeypadCardReader';
 import {CardError, type CardSummary} from '../../src/services/cashuCard';
+import {BRIDGE_TAG, setCardBridge} from '../../src/services/cardBridge';
+
+const actualNfc = jest.requireActual('../../src/services/cashuCardNfc');
 
 const mockNavigate = jest.fn();
 const mockHandleTag = jest.fn();
@@ -26,6 +29,8 @@ const mockOutstandingChangeForCard = jest.fn();
 const mockToastShow = jest.fn();
 const mockIsCardReadingSupported = jest.fn();
 const mockExtendCardTimeout = jest.fn();
+const mockOpenCardSession = jest.fn();
+const mockSessionTransceive = jest.fn();
 
 /**
  * The navigation focus hook, under test control: `focus()` runs the latest
@@ -85,11 +90,11 @@ jest.mock('../../src/services/cashuSettlement', () => ({
 
 jest.mock('../../src/services/cashuCardNfc', () => ({
   // Real: cancelCardSession (so NfcManager.cancelTechnologyRequest is what we
-  // observe), describeCardFailure (its text is asserted) and isUserCancel.
+  // observe), describeCardFailure (its text is asserted), isUserCancel and
+  // usingCardBridge (driven by the real card-bridge module).
   ...jest.requireActual('../../src/services/cashuCardNfc'),
-  extendCardTimeout: () => mockExtendCardTimeout(),
   isCardReadingSupported: () => mockIsCardReadingSupported(),
-  nfcTransceiver: jest.fn(),
+  openCardSession: (options: unknown) => mockOpenCardSession(options),
 }));
 
 jest.mock('../../src/utils/toast', () => ({
@@ -212,6 +217,31 @@ beforeEach(() => {
   mockFocus.cleanup = undefined;
   mockIsCardReadingSupported.mockResolvedValue(true);
   mockExtendCardTimeout.mockResolvedValue(undefined);
+  setCardBridge(null);
+  // The seam's NFC branch, with its timeout knob observable: the request as
+  // the hook asked for it (alert message only when given), the timeout
+  // raised once the tag connects, the session's teardown the real cancel.
+  mockOpenCardSession.mockImplementation(
+    async ({
+      techs,
+      alertMessage,
+    }: {
+      techs: NfcTech[];
+      alertMessage?: string;
+    }) => {
+      if (alertMessage) {
+        await mockNfc.requestTechnology(techs, {alertMessage});
+      } else {
+        await mockNfc.requestTechnology(techs);
+      }
+      await mockExtendCardTimeout();
+      return {
+        transceive: mockSessionTransceive,
+        getTag: () => mockNfc.getTag(),
+        close: actualNfc.cancelCardSession,
+      };
+    },
+  );
   mockReadCard.mockResolvedValue(SUMMARY);
   mockOutstandingChangeForCard.mockResolvedValue([]);
   mockGetSlotStatuses.mockResolvedValue(['unspent', 'empty']);
@@ -931,6 +961,132 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: NO_PIN,
       owedChangeSat: 6,
+    });
+  });
+});
+
+describe('useKeypadCardReader: the session channel (ENG-634)', () => {
+  beforeEach(() => setPlatform('android'));
+
+  it('reads and writes owed change over the session it opened, never a module-level transceiver', async () => {
+    const noPin: CardSummary = {
+      ...SUMMARY,
+      info: {...SUMMARY.info, pinState: 'unset'},
+    };
+    const owed = [
+      {
+        id: `${SUMMARY.pubkey}:aa`,
+        cardPubkey: SUMMARY.pubkey,
+        amount: 2,
+        nonce: 'aa',
+      },
+    ];
+    mockReadCard.mockResolvedValue(noPin);
+    mockOutstandingChangeForCard.mockResolvedValue(owed);
+    mockReconcileOwedChange.mockResolvedValue(owed);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockOpenCardSession).toHaveBeenCalledWith({
+      techs: KEYPAD_CARD_TECHS,
+      alertMessage: undefined,
+    });
+    for (const [transceive] of mockReadCard.mock.calls) {
+      expect(transceive).toBe(mockSessionTransceive);
+    }
+    expect(mockGetSlotStatuses).toHaveBeenCalledWith(
+      mockSessionTransceive,
+      SUMMARY.info.maxSlots,
+    );
+    expect(mockReconcileOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({transceive: mockSessionTransceive}),
+    );
+    expect(mockWriteOwedChange).toHaveBeenCalledWith(
+      expect.objectContaining({transceive: mockSessionTransceive}),
+    );
+  });
+});
+
+describe('useKeypadCardReader on the dev card bridge (ENG-634)', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    setPlatform('ios');
+    // The real seam: with the bridge set it never reaches the radio.
+    mockOpenCardSession.mockImplementation(actualNfc.openCardSession);
+    fetchMock = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({hex: '9000', sw: '9000'}),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    setCardBridge({url: 'http://127.0.0.1:9876'});
+  });
+
+  afterEach(() => {
+    setCardBridge(null);
+    global.fetch = realFetch;
+  });
+
+  it('readOnce skips NfcManager.start and the technology request, and reads the bridge tag as a Cashu card', async () => {
+    mockReadCard.mockImplementation(async transceive => {
+      // SELECT, as readCard opens every session.
+      await transceive([0x00, 0xa4, 0x04, 0x00]);
+      return SUMMARY;
+    });
+    const {result} = renderHook(() => useKeypadCardReader());
+
+    await act(async () => {
+      await result.current.readOnce();
+    });
+
+    expect(mockNfc.start).not.toHaveBeenCalled();
+    expect(mockNfc.requestTechnology).not.toHaveBeenCalled();
+    expect(mockNfc.getTag).not.toHaveBeenCalled();
+    // BRIDGE_TAG is ISO-DEP with no lnurlw record: the Cashu branch, not
+    // the BoltCard handler.
+    expect(mockHandleTag).not.toHaveBeenCalled();
+    expect(BRIDGE_TAG.techTypes).toEqual(['IsoDep']);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:9876/apdu',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({hex: '00A40400'}),
+      }),
+    );
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+    });
+    expect(mockToastShow).not.toHaveBeenCalled();
+  });
+
+  it('still calls NfcManager.start on a real device once the bridge is cleared', async () => {
+    setCardBridge(null);
+    mockOpenCardSession.mockImplementation(
+      async ({alertMessage}: {alertMessage?: string}) => {
+        await mockNfc.requestTechnology(KEYPAD_CARD_TECHS, {alertMessage});
+        return {
+          transceive: mockSessionTransceive,
+          getTag: () => mockNfc.getTag(),
+          close: actualNfc.cancelCardSession,
+        };
+      },
+    );
+    const {result} = renderHook(() => useKeypadCardReader());
+
+    act(() => {
+      result.current.readOnce();
+    });
+    await flush();
+
+    expect(mockNfc.start).toHaveBeenCalledTimes(1);
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      pendingRequest()!.reject(new NfcError.UserCancel());
     });
   });
 });

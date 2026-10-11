@@ -39,6 +39,7 @@ const PinPad = ({
   const key = (d: string, onPress?: () => void, node?: React.ReactNode, label?: string) => (
     <NumBtn
       key={d}
+      testID={`pin-key-${d}`}
       $h={rowH}
       accessibilityRole="button"
       accessibilityLabel={label ?? d}

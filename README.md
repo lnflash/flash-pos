@@ -48,7 +48,15 @@ yarn typecheck      # Run TypeScript checks
 yarn lint           # Run ESLint
 yarn aab-android    # Build Android release AAB
 yarn apk-android    # Build Android release APK
+yarn e2e:flashcard  # eCash card flows on the iOS simulator (Maestro + cardsim)
 ```
+
+`yarn e2e:flashcard` drives the card charge, balance and owed-change paths on
+an iOS simulator against a simulated card and a local mint; the run book is in
+[docs/10-testing.md](docs/10-testing.md#e2e-testing-ecash-card-on-the-ios-simulator).
+It is iOS-only: on Android the keypad keeps a card session armed while it is
+focused, and with the card bridge every "tap" succeeds at once, so that loop
+would spin.
 
 ## Architecture
 

@@ -106,6 +106,7 @@ function PinSheet({
             {opacity: n.errHelper},
           ]}>
           <Text
+            testID="pin-error-text"
             style={[TYPE.helper, styles.errorText]}
             maxFontSizeMultiplier={MAX_FONT_SCALE}
             numberOfLines={1}>
