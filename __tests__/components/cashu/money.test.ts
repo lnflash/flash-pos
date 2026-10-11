@@ -1,5 +1,6 @@
 import {
   changePieces,
+  failedAfterSwap,
   failureBody,
   last4FromPubkey,
   parseFailure,
@@ -142,6 +143,35 @@ describe('parseFailure', () => {
       tagLost: false,
     });
     expect(parseFailure('[verifying PIN] wrong PIN').cardFull).toBe(false);
+  });
+});
+
+describe('failedAfterSwap (ENG-642)', () => {
+  it('is true only for the change write, recorded or not: the swap has settled the bill', () => {
+    for (const message of [
+      '[writing change to card] Tag was lost.',
+      '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      '[writing change to card] ',
+      '[writing change to card (unrecorded)] Tag was lost.',
+    ]) {
+      expect(failedAfterSwap(parseFailure(message))).toBe(true);
+    }
+  });
+
+  it('is false for every phase before the swap, owed change from an earlier charge included', () => {
+    for (const message of [
+      '[reading card] Tag was lost.',
+      '[verifying PIN] wrong PIN — 2 tries left',
+      '[adding 4 sat of change owed from an earlier charge] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      '[burning 16 sat (proof 1/2)] tag lost',
+      '[settling payment and minting change] mint unreachable',
+      'this card is full: 6 sat of change needs 2 free slots and the card has 0',
+      'writing change to card',
+      '',
+      null,
+    ]) {
+      expect(failedAfterSwap(parseFailure(message))).toBe(false);
+    }
   });
 });
 

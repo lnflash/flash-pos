@@ -25,7 +25,11 @@ import {PIN_MAX_LENGTH, PIN_MIN_LENGTH} from '../components/cashu/PinPad';
 import ChargeView, {
   type PlanSummary,
 } from '../components/cashu/charge/ChargeView';
-import {last4FromPubkey} from '../components/cashu/charge/money';
+import {
+  failedAfterSwap,
+  last4FromPubkey,
+  parseFailure,
+} from '../components/cashu/charge/money';
 import {
   INITIAL_STAGE,
   friendlyLabel,
@@ -132,6 +136,11 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   const [error, setError] = useState<string | null>(null);
   // The money moved: tell the customer to lift the card before settlement.
   const [complete, setComplete] = useState(false);
+  // The charge failed AFTER the mint swap settled the bill (ENG-642): it is
+  // over and paid. The ref is the hard stop — no path may run the charge
+  // again for this bill, whatever the UI shows.
+  const [settled, setSettled] = useState(false);
+  const settledRef = useRef(false);
 
   const chargingRef = useRef(false);
   const cancelledRef = useRef(false);
@@ -188,6 +197,49 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     setComplete(false);
   }, []);
 
+  /**
+   * The paid bill's bookkeeping, the same the lightning path does on
+   * payment: history entry and a cleared invoice (the QR screen must not
+   * resurrect a paid bill).
+   */
+  const recordPaid = useCallback(() => {
+    dispatch(
+      addTransaction({
+        id: `cashu_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        transactionType: 'ecash',
+        paymentMethod: 'card',
+        amount: {
+          satAmount,
+          displayAmount: displayAmount || '0',
+          currency,
+          isPrimaryAmountSats: isPrimaryAmountSats || false,
+        },
+        merchant: {username: username || 'Unknown'},
+        invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
+        memo,
+        status: 'completed',
+      }),
+    );
+    dispatch(resetInvoice());
+  }, [
+    dispatch,
+    satAmount,
+    displayAmount,
+    currency,
+    isPrimaryAmountSats,
+    username,
+    memo,
+  ]);
+
+  // Settlement is the merchant's business, not the customer's wait: the
+  // drain retries on its own cadence and the banner reports it.
+  const startSettlement = useCallback(() => {
+    if (username) {
+      runAutoSettlement(username).catch(() => {});
+    }
+  }, [username]);
+
   const finish = useCallback(
     async (planned: Planned, customerPin?: string) => {
       await withCardSession(
@@ -213,67 +265,57 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       // JS burst cannot delay the finale's first frame (the finale itself
       // runs on the native driver).
       setComplete(true);
-      requestAnimationFrame(() => {
-        // Same bookkeeping the lightning path does on payment: history
-        // entry and a cleared invoice (the QR screen must not resurrect a
-        // paid bill).
-        dispatch(
-          addTransaction({
-            id: `cashu_${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            transactionType: 'ecash',
-            paymentMethod: 'card',
-            amount: {
-              satAmount,
-              displayAmount: displayAmount || '0',
-              currency,
-              isPrimaryAmountSats: isPrimaryAmountSats || false,
-            },
-            merchant: {username: username || 'Unknown'},
-            invoice: {paymentHash: '', paymentRequest: '', paymentSecret: ''},
-            memo,
-            status: 'completed',
-          }),
-        );
-        dispatch(resetInvoice());
-      });
+      requestAnimationFrame(recordPaid);
       await sleep(LIFT_HOLD_MS);
-      // Settlement is the merchant's business, not the customer's wait: the
-      // drain retries on its own cadence and the banner reports it. It
-      // starts once Success is up, so its JS burst never meets the hand-off.
-      const settle = () => {
-        if (username) {
-          runAutoSettlement(username).catch(() => {});
-        }
-      };
-      // The record above survives either way; only the navigation is
-      // conditional on this screen still being mounted.
+      // Settlement starts once Success is up, so its JS burst never meets
+      // the hand-off. The record above survives either way; only the
+      // navigation is conditional on this screen still being mounted.
       if (unmountedRef.current) {
-        settle();
+        startSettlement();
         return;
       }
       handOffToSuccess(navigation, {
         title: `Charged ${formatSatAmount(satAmount)} — paid by eCash card`,
       });
-      setTimeout(settle, SETTLE_AFTER_HANDOFF_MS);
+      setTimeout(startSettlement, SETTLE_AFTER_HANDOFF_MS);
     },
-    [
-      satAmount,
-      username,
-      navigation,
-      dispatch,
-      displayAmount,
-      currency,
-      isPrimaryAmountSats,
-      memo,
-      onPhase,
-    ],
+    [satAmount, navigation, onPhase, recordPaid, startSettlement],
+  );
+
+  /**
+   * A charge that died writing the change onto the card died AFTER the mint
+   * swap settled the bill (ENG-642): the customer has paid, and the change
+   * is recorded owed on this terminal for the card's next tap. Ending here
+   * as paid is the only safe answer — the PIN pad (which auto-commits on
+   * four digits) or "Tap card again" would run the charge again and burn
+   * the card a second time for the same bill. The error body says where the
+   * money is (`failureBody`); the one way out is Done. Returns false for
+   * any failure before the swap, which the caller handles as today.
+   */
+  const endPaid = useCallback(
+    (err: unknown): boolean => {
+      const message = describeCardFailure(err);
+      if (!failedAfterSwap(parseFailure(message))) {
+        return false;
+      }
+      settledRef.current = true;
+      setSettled(true);
+      setFlow('done');
+      setPin('');
+      // A Cancel pressed during the change write does not hide this: the
+      // money moved whoever closed the session.
+      setError(message);
+      recordPaid();
+      startSettlement();
+      return true;
+    },
+    [recordPaid, startSettlement],
   );
 
   // Session 1: the silent read + plan. A PIN-less card completes in this one
   // tap; a PIN card hands off to the pad and re-taps (session 2).
   const onCharge = useCallback(async () => {
-    if (chargingRef.current || satAmount <= 0) {
+    if (chargingRef.current || settledRef.current || satAmount <= 0) {
       return;
     }
     chargingRef.current = true;
@@ -304,6 +346,9 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       // again for session 2.
       setFlow('pin');
     } catch (err) {
+      if (endPaid(err)) {
+        return;
+      }
       if (!cancelledRef.current && !isUserCancel(err)) {
         setError(describeCardFailure(err));
       }
@@ -311,7 +356,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       chargingRef.current = false;
       setCharging(false);
     }
-  }, [satAmount, finish, onPhase, armStage]);
+  }, [satAmount, finish, onPhase, armStage, endPaid]);
 
   // The payment router read and planned the card in its own NFC session and
   // handed the result over: skip session 1 entirely. A PIN card lands straight
@@ -336,6 +381,9 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     armStage();
     finish(planned)
       .catch((err: unknown) => {
+        if (endPaid(err)) {
+          return;
+        }
         setFlow('tap');
         if (!cancelledRef.current && !isUserCancel(err)) {
           setError(describeCardFailure(err));
@@ -345,7 +393,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         chargingRef.current = false;
         setCharging(false);
       });
-  }, [preRead, finish, navigation, armStage]);
+  }, [preRead, finish, navigation, armStage, endPaid]);
 
   const onPinConfirm = useCallback(async () => {
     console.log(
@@ -356,7 +404,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         pinLen: pin.length,
       }),
     );
-    if (chargingRef.current || !plan) {
+    if (chargingRef.current || settledRef.current || !plan) {
       return;
     }
     if (pin.length < PIN_MIN_LENGTH) {
@@ -374,6 +422,12 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       setFlow('done');
       setPin('');
     } catch (err) {
+      // After the swap the bill is paid: never back to the pad, whose
+      // re-entered PIN would run the charge again (ENG-642).
+      if (endPaid(err)) {
+        return;
+      }
+      // Before it, the pad is the retry.
       setFlow('pin');
       if (!cancelledRef.current && !isUserCancel(err)) {
         // The pad is the retry: the reason shows in the sheet and the PIN is
@@ -385,7 +439,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       chargingRef.current = false;
       setCharging(false);
     }
-  }, [plan, pin, finish, armStage]);
+  }, [plan, pin, finish, armStage, endPaid]);
 
   // Auto-commit: pilot cards carry 4-digit PINs, so a full 4-digit entry with
   // a short settle pause opens session 2 on its own. Typing past four digits
@@ -406,6 +460,10 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   }, [flow, pin, error, onPinConfirm]);
 
   const onCancel = useCallback(() => {
+    if (settledRef.current) {
+      // Paid: there is no charge left to cancel or to clear back to.
+      return;
+    }
     if (error) {
       setError(null);
       if (flow === 'pin') {
@@ -423,6 +481,15 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     setError(null);
     onCharge();
   }, [onCharge]);
+
+  // The paid-after-swap error's one way out: the bill is settled, so back to
+  // a fresh keypad (it clears the amount on focus), as Success's Done does.
+  // Home is the existing route object (same key), so it does not remount.
+  const onDone = useCallback(() => {
+    const routes = navigation.getState?.()?.routes ?? [];
+    const home = routes.find(r => r.name === 'Home') ?? {name: 'Home'};
+    navigation.reset({index: 0, routes: [home as never]});
+  }, [navigation]);
 
   const onPinDigit = useCallback((d: string) => {
     // The first digit after a failed attempt starts a new one.
@@ -489,6 +556,8 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       onPinClear={onPinClear}
       onPinConfirm={onPinConfirm}
       onOpenNfcSettings={onOpenNfcSettings}
+      settled={settled}
+      onDone={onDone}
     />
   );
 };

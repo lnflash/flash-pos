@@ -67,6 +67,26 @@ export function parseFailure(message: string | null | undefined): Failure {
   };
 }
 
+/**
+ * Both change-write phases `executeCharge` reports a failure under
+ * (`PHASE_WRITING_CHANGE` and its "(unrecorded)" variant). Nothing else
+ * starts this way: owed change from an earlier charge is written under its
+ * own phase, before the PIN-gated burn.
+ */
+const CHANGE_WRITE = /^writing change to card/i;
+
+/**
+ * The charge died AFTER the mint swap settled the bill: the burned proofs
+ * are spent at the mint, the merchant's take is in the till, and only the
+ * change had still to reach the card (it is recorded owed on the terminal,
+ * unless the phase says otherwise — see `failureBody`). The bill is PAID:
+ * nothing may run the charge again for it, neither a PIN re-entry nor a
+ * "Tap card again", which would burn the card a second time (ENG-642).
+ */
+export function failedAfterSwap(failure: Failure): boolean {
+  return CHANGE_WRITE.test(failure.phase ?? '');
+}
+
 export interface FailureContext {
   /** Burns the charge had started when it failed (stage.burnsDone). */
   burnsDone: number;
@@ -100,7 +120,7 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
       ctx.changeSat,
     )} change could not be put on the card.`;
   }
-  if (/^writing change/i.test(phase) && ctx.changeSat > 0) {
+  if (failedAfterSwap(failure) && ctx.changeSat > 0) {
     // The mint has settled before the change is written: the bill is paid,
     // and the change is recorded on the terminal — WHATEVER the card said
     // to the LOAD (the unrecorded case has its own phase above). A 6982

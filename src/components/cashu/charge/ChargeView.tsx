@@ -76,6 +76,14 @@ export interface ChargeViewProps {
   onPinClear: () => void;
   onPinConfirm: () => void;
   onOpenNfcSettings?: () => void;
+  /**
+   * The error came AFTER the mint swap settled the bill (`failedAfterSwap`):
+   * the charge is over and paid, so the error state offers only `onDone` —
+   * no "Tap card again" and no Cancel back to a fresh charge for the same
+   * bill (ENG-642). Needs `onDone`; without it the usual pair shows.
+   */
+  settled?: boolean;
+  onDone?: () => void;
   onHeaderLongPress?: () => void;
   /** Overrides the system setting (the preview's toggle). */
   reduceMotion?: boolean;
@@ -311,23 +319,29 @@ const ChargeView = (props: ChargeViewProps) => {
       </Pressable>
     </View>
   );
-  // Two equal buttons, symmetric about the screen's one centred axis.
-  const errorAction = (
-    <View style={styles.errorRow}>
-      <View style={styles.errorHalf}>
-        <PrimaryButton
-          btnText="Cancel"
-          onPress={props.onCancel}
-          btnStyle={styles.secondaryBtn}
-          textStyle={styles.secondaryText}
-        />
+  // Two equal buttons, symmetric about the screen's one centred axis — or,
+  // once the bill is paid, the one way out.
+  const errorAction =
+    props.settled && props.onDone ? (
+      <View style={styles.primarySlot} testID="charge-done">
+        <PrimaryButton btnText="Done" onPress={props.onDone} />
       </View>
-      <View style={styles.errorGap} />
-      <View style={styles.errorHalf}>
-        <PrimaryButton btnText="Tap card again" onPress={props.onRetry} />
+    ) : (
+      <View style={styles.errorRow}>
+        <View style={styles.errorHalf}>
+          <PrimaryButton
+            btnText="Cancel"
+            onPress={props.onCancel}
+            btnStyle={styles.secondaryBtn}
+            textStyle={styles.secondaryText}
+          />
+        </View>
+        <View style={styles.errorGap} />
+        <View style={styles.errorHalf}>
+          <PrimaryButton btnText="Tap card again" onPress={props.onRetry} />
+        </View>
       </View>
-    </View>
-  );
+    );
 
   const pinErrorText = pinError
     ? pinFailureText(parseFailure(error).detail) || 'The card stopped responding.'

@@ -545,6 +545,271 @@ describe('CashuCardCharge', () => {
     );
   });
 
+  describe('a failure after the mint swap ends the charge as paid (ENG-642)', () => {
+    /** Phases up to the change write, then the card's answer. */
+    const failsWritingChange =
+      (message: string) =>
+      async ({onPhase}: {onPhase: (p: string) => void}) => {
+        onPhase('reading card');
+        onPhase('verifying PIN');
+        onPhase('burning 16 sat (proof 1/2)');
+        onPhase('burning 8 sat (proof 2/2)');
+        onPhase('settling payment and minting change');
+        onPhase('writing change to card');
+        throw new Error(message);
+      };
+
+    const enterPin = async (
+      getByLabelText: (label: string) => any,
+      digits = ['1', '9', '8', '4'],
+    ) => {
+      for (const digit of digits) {
+        fireEvent.press(getByLabelText(digit));
+      }
+      await act(async () => {
+        jest.advanceTimersByTime(700);
+      });
+    };
+
+    /** Paid, change saved, no way to run the charge again. */
+    const expectPaidNoRetry = async (
+      utils: Awaited<ReturnType<typeof renderScreen>>,
+      body: string,
+    ) => {
+      const {getByTestId, getByText, queryByTestId, queryByText} = utils;
+      expect(getByTestId('error-body').props.children).toBe(body);
+      expect(getByText(body, visible)).toBeTruthy();
+      // No PIN pad to re-enter a PIN into, no "Tap card again", no Cancel
+      // back to a fresh charge for the same bill: Done is the one way out.
+      expect(queryByTestId('pin-sheet', all)).toBeNull();
+      expect(queryByTestId('pin-error-text', all)).toBeNull();
+      expect(queryByText('Enter the card PIN', visible)).toBeNull();
+      expect(queryByText('Tap card again', all)).toBeNull();
+      expect(queryByText('Cancel', visible)).toBeNull();
+      expect(getByText('Done', visible)).toBeTruthy();
+      // The ledger stays on the paid bill.
+      expect(getByTestId('ledger')).toBeTruthy();
+      expect(getByTestId('chip-paid')).toBeTruthy();
+    };
+
+    it('a PIN card whose change LOAD answers 6A84: no PIN pad, change saved on the terminal, executeCharge runs once', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        failsWritingChange(
+          '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        ),
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      const {getByLabelText, getByText, queryByLabelText, store, navigation} =
+        utils;
+      await enterPin(getByLabelText);
+
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      expect(getByText('The card is full', visible)).toBeTruthy();
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added once the card has a free slot.',
+      );
+
+      // The customer tries the PIN again: there is no pad to type it into,
+      // and nothing re-runs the charge on its own.
+      expect(queryByLabelText('1')).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      expect(mockReadAndPlan).not.toHaveBeenCalled();
+
+      // Ended as paid: the bill is in the history and the invoice is gone.
+      expect(store.getState().transactionHistory.transactions).toHaveLength(1);
+      expect(store.getState().transactionHistory.transactions[0]).toMatchObject(
+        {
+          transactionType: 'ecash',
+          paymentMethod: 'card',
+          amount: {satAmount: 16},
+          status: 'completed',
+        },
+      );
+      expect(mockRunAutoSettlement).toHaveBeenCalledWith('merchant');
+      // Never the Success hand-off: the change did not land.
+      expect(navigation.reset).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fireEvent.press(getByText('Done', visible));
+      });
+      expect(navigation.reset).toHaveBeenCalledTimes(1);
+      const [{index, routes}] = navigation.reset.mock.calls[0];
+      expect(index).toBe(0);
+      expect(routes).toEqual([HOME]);
+      expect(routes[0]).toBe(HOME);
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a PIN card that loses the tag during the change write: no PIN pad, change added on the next charge', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        failsWritingChange('[writing change to card] Tag was lost.'),
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+
+      expect(utils.getByText('The card moved away', visible)).toBeTruthy();
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+      expect(
+        within(utils.getByTestId('error-pill')).getByText(
+          '[writing change to card] Tag was lost.',
+        ),
+      ).toBeTruthy();
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a change write whose record did not land: paid, change not promised, still no PIN pad', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        failsWritingChange(
+          '[writing change to card (unrecorded)] Tag was lost.',
+        ),
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change could not be put on the card.',
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a Cancel pressed during the change write still ends as paid', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      let fail!: () => void;
+      mockExecuteCharge.mockImplementation(
+        ({onPhase}: {onPhase: (p: string) => void}) => {
+          onPhase('reading card');
+          onPhase('burning 16 sat (proof 1/2)');
+          onPhase('settling payment and minting change');
+          onPhase('writing change to card');
+          return new Promise((_, reject) => {
+            fail = () =>
+              reject(new Error('[writing change to card] Tag was lost.'));
+          });
+        },
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+      fireEvent.press(utils.getByText('Cancel', visible));
+      expect(mockCancelCardSession).toHaveBeenCalled();
+      await act(async () => {
+        fail();
+      });
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+    });
+
+    it('a PIN-less card whose change write fails: the same paid body, and no "Tap card again"', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockReadAndPlan.mockResolvedValue(PLAN);
+      mockExecuteCharge.mockImplementation(
+        failsWritingChange('[writing change to card] Tag was lost.'),
+      );
+      const utils = await renderScreen();
+      await act(async () => {
+        fireEvent.press(utils.getByText('Tap card to charge'));
+      });
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockReadAndPlan).toHaveBeenCalledTimes(1);
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a PIN-less card the router pre-read: the same paid end, never back to "Tap card to charge"', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        failsWritingChange(
+          '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        ),
+      );
+      const utils = await renderScreen({preRead: PLAN});
+      await act(async () => {});
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added once the card has a free slot.',
+      );
+      expect(utils.queryByText('Tap card to charge', visible)).toBeNull();
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failure BEFORE the burn still returns to the PIN pad, and the re-entered PIN re-runs the charge', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge
+        .mockRejectedValueOnce(
+          new Error('[verifying PIN] wrong PIN — 2 tries left'),
+        )
+        .mockRejectedValueOnce(new Error('[reading card] Tag was lost.'))
+        .mockRejectedValueOnce(
+          new Error(
+            '[adding 4 sat of change owed from an earlier charge] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+          ),
+        )
+        .mockResolvedValueOnce({
+          amountSat: 16,
+          burned: [],
+          changeSat: 8,
+          changeLoaded: 1,
+          balanceAfter: 8,
+        });
+      const {getByLabelText, getByTestId, getByText, queryByText} =
+        await renderScreen({preRead: {...PLAN, pinRequired: true}});
+
+      await enterPin(getByLabelText, ['1', '2', '3', '4']);
+      expect(getByTestId('pin-sheet')).toBeTruthy();
+      expect(getByTestId('pin-error-text').props.children).toBe(
+        'Wrong PIN — 2 tries left. Try again.',
+      );
+      expect(queryByText('Done', all)).toBeNull();
+
+      await enterPin(getByLabelText);
+      expect(getByTestId('pin-sheet')).toBeTruthy();
+      expect(getByTestId('pin-error-text').props.children).toBe(
+        'Tag was lost.',
+      );
+
+      await enterPin(getByLabelText);
+      expect(getByTestId('pin-sheet')).toBeTruthy();
+      expect(getByTestId('pin-error-text').props.children).toBe(
+        'LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      );
+      expect(queryByText('Done', all)).toBeNull();
+
+      await enterPin(getByLabelText);
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(4);
+      expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
+    });
+  });
+
   it('cancels the NFC session on Cancel and on unmount', async () => {
     mockWithCardSession.mockImplementation(() => new Promise(() => {}));
     const {getByText, unmount} = await renderScreen();
