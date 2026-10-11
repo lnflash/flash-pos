@@ -14,8 +14,7 @@ appId: com.flash.pos
 - openLink: ${BRIDGE_LINK}
 # iOS asks before an app opens its own custom-scheme link. The prompt can
 # take several seconds on a cold CI simulator: wait for it, not the few
-# seconds an optional tap looks for. A prompt left up covers the app for
-# this flow and every later one (it survives the next launchApp).
+# seconds an optional tap looks for. A prompt left up covers the app.
 - extendedWaitUntil:
     visible: 'Open'
     timeout: 30000
@@ -26,6 +25,15 @@ appId: com.flash.pos
 - extendedWaitUntil:
     notVisible: 'Open'
     timeout: 10000
+# Once more, now iOS remembers the choice and opens it with no prompt. On
+# the hosted runner the first link, through the prompt, did not set the
+# bridge: LogBox stayed on, and its toast over Start took the tap. Setting
+# the bridge twice is harmless (same config, LOAD count from zero, nothing
+# sent yet).
+- openLink: ${BRIDGE_LINK}
+- tapOn:
+    text: 'Open'
+    optional: true
 - tapOn:
     id: 'auth-username'
 - inputText: ${FLASH_USERNAME}

@@ -265,6 +265,86 @@ describe('the cardsim client', () => {
     });
   });
 
+  // A cold cardsim JVM missed the app's 5 s deadline on the first card read
+  // of the hosted run: the runner pays that start-up before any flow.
+  describe('warmCardSim', () => {
+    class CardError extends Error {}
+    const client = {CardError};
+    const recordingSim = (signImpl?: () => Promise<unknown>) => {
+      const calls: string[] = [];
+      const step = (name: string) => async () => {
+        calls.push(name);
+        return null;
+      };
+      return {
+        calls,
+        sim: {
+          select: step('select'),
+          getInfo: step('getInfo'),
+          getPubkey: step('getPubkey'),
+          getBalance: step('getBalance'),
+          getSlotStatus: step('getSlotStatus'),
+          sign: async (message: Buffer) => {
+            calls.push(`sign:${message.length}`);
+            return signImpl ? signImpl() : null;
+          },
+        },
+      };
+    };
+
+    it("runs the app's read path, then the signing path, in order", async () => {
+      const {sim, calls} = recordingSim();
+      await lib.warmCardSim(sim, client);
+      expect(calls).toEqual([
+        'select',
+        'getInfo',
+        'getPubkey',
+        'getBalance',
+        'getSlotStatus',
+        'sign:32',
+      ]);
+    });
+
+    it('returns the elapsed time', async () => {
+      const {sim} = recordingSim();
+      const ticks = [1000, 8500];
+      await expect(
+        lib.warmCardSim(sim, client, () => ticks.shift()),
+      ).resolves.toBe(7500);
+    });
+
+    it('takes a card that refuses SIGN_ARBITRARY with a status word as warm', async () => {
+      const {sim} = recordingSim(() =>
+        Promise.reject(new CardError('SIGN_ARBITRARY: 6982')),
+      );
+      await expect(lib.warmCardSim(sim, client)).resolves.toEqual(
+        expect.any(Number),
+      );
+    });
+
+    it('fails on a transport error, even on the signing step', async () => {
+      const {sim} = recordingSim(() =>
+        Promise.reject(new Error('The operation was aborted due to timeout')),
+      );
+      await expect(lib.warmCardSim(sim, client)).rejects.toThrow(/timeout/);
+    });
+
+    it('fails on a transport error on the read path, before signing', async () => {
+      const {sim, calls} = recordingSim();
+      sim.select = async () => {
+        throw new Error('fetch failed');
+      };
+      await expect(lib.warmCardSim(sim, client)).rejects.toThrow(
+        'fetch failed',
+      );
+      expect(calls).toEqual([]);
+    });
+
+    it('gives each warm-up APDU far more than the 5 s flow deadline', () => {
+      expect(lib.WARM_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
+    });
+  });
+
   // FULL and AFTER are posted mid-flow by post-fixture.js through Maestro's
   // http, never through the client; the runner's validateFlows is the only
   // check they get. Runs in plain CI with a recording stand-in.

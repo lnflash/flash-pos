@@ -259,6 +259,37 @@ function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
   return {client, sim: new client.CardSim(bridgeUrl, options)};
 }
 
+/** How long the warm-up gives each APDU: a cold JVM, not a wedged bridge. */
+const WARM_TIMEOUT_MS = 60_000;
+
+/**
+ * Runs the applet's read and signing paths once on `sim` (a CardSim built
+ * with WARM_TIMEOUT_MS), before any flow. A fresh cardsim JVM answers its
+ * first APDUs slowly (class loading, the first secp256k1 operations), and
+ * on a hosted runner that is past the app's 5 s bridge deadline: the
+ * flow's first card read then fails as "no answer". SIGN_ARBITRARY runs the
+ * signing code SPEND_PROOF uses without spending a slot; a card that
+ * refuses it (a status word, e.g. a PIN first) is still warm. A transport
+ * failure is not tolerated. Leaves no state a flow depends on: every flow
+ * starts with /reset. Returns the elapsed milliseconds.
+ */
+async function warmCardSim(sim, client, now = Date.now) {
+  const start = now();
+  await sim.select();
+  await sim.getInfo();
+  await sim.getPubkey();
+  await sim.getBalance();
+  await sim.getSlotStatus();
+  try {
+    await sim.sign(Buffer.alloc(32));
+  } catch (error) {
+    if (!(error instanceof client.CardError)) {
+      throw error;
+    }
+  }
+  return now() - start;
+}
+
 /**
  * Every stage of a flow through the client's `validateFixture`. Only the
  * runner's INITIAL stage is posted through the client (`sim.fixture`); FULL
@@ -316,4 +347,6 @@ module.exports = {
   toHex,
   validateFlows,
   validateStages,
+  WARM_TIMEOUT_MS,
+  warmCardSim,
 };

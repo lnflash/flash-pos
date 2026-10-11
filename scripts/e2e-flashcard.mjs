@@ -349,6 +349,16 @@ async function main() {
       first.realVersion
     })`,
   );
+  // The first APDUs on a fresh cardsim JVM are slow; pay that here, not
+  // against the app's 5 s deadline in the first flow's card read.
+  const {sim: warmSim} = lib.loadCardSim(
+    cardSimClientPath(opts),
+    opts.bridge,
+    require,
+    {timeoutMs: lib.WARM_TIMEOUT_MS},
+  );
+  const warmMs = await lib.warmCardSim(warmSim, client);
+  console.log(`cardsim warmed in ${(warmMs / 1000).toFixed(1)} s`);
   const mint = await loadMint(opts.mint);
   console.log(`mint ${opts.mint}: keyset ${mint.keyset.id}`);
 
