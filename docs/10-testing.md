@@ -456,7 +456,8 @@ cannot.
 **A change write that fails after the swap ends the charge as paid
 (ENG-642).** The swap has settled the bill by then, so `owed-change-next-tap`
 and `lost-load-answer` assert `error-body` with the "saved on this terminal"
-copy and that neither the PIN sheet nor "Tap card again" is on screen: a PIN
+copy, the paid headline (`error-title` "Paid — change not on card", never
+"The card is full" or "The card moved away" over a paid body), and that neither the PIN sheet nor "Tap card again" is on screen: a PIN
 re-entry or a retry there would burn the card a second time for the same
 bill. Done (`charge-done`) takes the merchant back to the keypad, and so
 does every other exit from the paid state (header back, hardware Back, the

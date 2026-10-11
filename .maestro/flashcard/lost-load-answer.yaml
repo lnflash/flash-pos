@@ -23,6 +23,10 @@ tags:
       id: 'error-body'
       text: '3 sats are paid. Your 5 sats change is saved on this terminal and will be added the next time this card is charged.'
     timeout: 60000
+- assertVisible:
+    id: 'error-title'
+    text: 'Paid — change not on card'
+- assertNotVisible: 'The card moved away'
 - assertNotVisible:
     id: 'pin-sheet'
 - assertNotVisible: 'Tap card again'

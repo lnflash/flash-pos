@@ -765,17 +765,25 @@ export async function executeCharge({
           error instanceof Error ? error.message : String(error),
         );
       }
-      // The swap consumed the burned proofs: mark the entries settled.
-      await recordingPayment(() =>
-        markEntriesSettled(
-          burned.map(e => e.id),
-          now,
-        ),
-      );
-      // The merchant's take joins the till (the sweep melts it above the
-      // float reserve to the account address).
+      // The post-swap bookkeeping. Both writes always run, and the first
+      // failure is thrown after both have been tried, so neither depends on
+      // the other succeeding:
+      //  - The merchant's take joins the till FIRST (the sweep melts it
+      //    above the float reserve to the account address). Like the change,
+      //    it exists only in this process until it is written: a settlement
+      //    queue that refuses the write below must not drop it.
+      //  - The swap consumed the burned proofs: mark the entries settled.
       const till = minted.till;
-      await recordingPayment(() => appendSettledProofsTill(till));
+      await recordingPayment(() =>
+        allAttempted([
+          () => appendSettledProofsTill(till),
+          () =>
+            markEntriesSettled(
+              burned.map(e => e.id),
+              now,
+            ),
+        ]),
+      );
 
       for (const proof of minted.change) {
         const nonce = nonceFromSecret(proof.secret);
@@ -862,6 +870,27 @@ export async function executeCharge({
       throw error;
     }
     throw new PhaseError(PHASE_AFTER_SWAP, error, {paid: true});
+  }
+}
+
+/**
+ * Run every write in order, each whether or not an earlier one failed, then
+ * throw the first failure. For bookkeeping where one write refusing must not
+ * cost the record another write would have kept.
+ */
+async function allAttempted(writes: Array<() => Promise<unknown>>) {
+  let first: {error: unknown} | null = null;
+  for (const write of writes) {
+    try {
+      await write();
+    } catch (error) {
+      if (!first) {
+        first = {error};
+      }
+    }
+  }
+  if (first) {
+    throw first.error;
   }
 }
 

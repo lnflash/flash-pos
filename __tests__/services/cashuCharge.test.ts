@@ -11,7 +11,10 @@ import {
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
-import {buildCardP2PKSecret} from '../../src/services/cashuMint';
+import {
+  buildCardP2PKSecret,
+  listSettledProofs,
+} from '../../src/services/cashuMint';
 import {
   chargeCard,
   executeCharge,
@@ -2076,12 +2079,15 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     expect(card.burnCount).toBe(1);
   });
 
-  it('the settlement store refusing markEntriesSettled after the swap: flagged paid under its own phase', async () => {
+  it('the settlement store refusing markEntriesSettled after the swap: flagged paid under its own phase, the till still written', async () => {
     const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
     let swapped = false;
+    // The merchant's take: it exists only in this process until the till
+    // write lands, so the settlement queue refusing must not drop it.
+    const till = [changeProof(16, '66'.repeat(32))];
     mockMintChargeChange.mockImplementationOnce(async () => {
       swapped = true;
-      return {change: [], till: []};
+      return {change: [], till};
     });
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
@@ -2111,6 +2117,49 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       // Not a change write: the copy classifier says so, and the screen
       // still ends it as paid on the flag.
       expect(classified(failure)).toBe(false);
+      expect(card.burnCount).toBe(1);
+      expect(await listSettledProofs()).toEqual(till);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+    }
+  });
+
+  it('the till store refusing after the swap: the entries are still marked settled, and the charge is flagged paid', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    let swapped = false;
+    mockMintChargeChange.mockImplementationOnce(async () => {
+      swapped = true;
+      return {change: [], till: [changeProof(16, '65'.repeat(32))]};
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (swapped && k === '@cashu_settled_proofs') {
+        throw new Error('till write denied');
+      }
+      return realSet(k, v);
+    });
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(
+        `[${PHASE_RECORDING_PAYMENT}] till write denied`,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      // The swap spent the burned proofs: a queue left 'pending' would have
+      // the drain swap them again. The settle write ran despite the till.
+      const entries = await listSettlements();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].status).toBe('settled');
       expect(card.burnCount).toBe(1);
     } finally {
       storage.setSecure.mockImplementation(realSet);

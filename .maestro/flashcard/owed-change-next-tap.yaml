@@ -32,7 +32,12 @@ tags:
       id: 'error-body'
       text: '3 sats are paid. Your 5 sats change is saved on this terminal and will be added once the card has a free slot.'
     timeout: 60000
-- assertVisible: 'The card is full'
+# The headline says paid too: "The card is full" over a paid body reads as
+# a failed charge, and the merchant charges the card again.
+- assertVisible:
+    id: 'error-title'
+    text: 'Paid — change not on card'
+- assertNotVisible: 'The card is full'
 - assertNotVisible:
     id: 'pin-sheet'
 - assertNotVisible: 'Tap card again'

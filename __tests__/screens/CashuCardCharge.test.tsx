@@ -620,12 +620,26 @@ describe('CashuCardCharge', () => {
       });
     };
 
-    /** Paid, change saved, no way to run the charge again. */
+    /**
+     * Paid, change saved, no way to run the charge again. The headline (the
+     * big text) says paid too: "Charge didn't finish" or "The card moved
+     * away" over a paid body sends the merchant to charge the card again.
+     */
     const expectPaidNoRetry = async (
       utils: Awaited<ReturnType<typeof renderScreen>>,
       body: string,
+      headline = 'Paid — change not on card',
     ) => {
       const {getByTestId, getByText, queryByTestId, queryByText} = utils;
+      expect(getByTestId('error-title').props.children).toBe(headline);
+      expect(getByTestId('error-title', visible)).toBeTruthy();
+      for (const unpaid of [
+        'Charge didn’t finish',
+        'The card moved away',
+        'The card is full',
+      ]) {
+        expect(queryByText(unpaid, all)).toBeNull();
+      }
       expect(getByTestId('error-body').props.children).toBe(body);
       expect(getByText(body, visible)).toBeTruthy();
       // No PIN pad to re-enter a PIN into, no "Tap card again", no Cancel
@@ -656,7 +670,6 @@ describe('CashuCardCharge', () => {
       await enterPin(getByLabelText);
 
       expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
-      expect(getByText('The card is full', visible)).toBeTruthy();
       await expectPaidNoRetry(
         utils,
         '16 sats are paid. Your 8 sats change is saved on this terminal and will be added once the card has a free slot.',
@@ -706,7 +719,6 @@ describe('CashuCardCharge', () => {
       });
       await enterPin(utils.getByLabelText);
 
-      expect(utils.getByText('The card moved away', visible)).toBeTruthy();
       await expectPaidNoRetry(
         utils,
         '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
@@ -902,6 +914,7 @@ describe('CashuCardCharge', () => {
       await expectPaidNoRetry(
         utils,
         '16 sats are paid. There is nothing more to do.',
+        'Paid',
       );
       await act(async () => {
         jest.advanceTimersByTime(5000);

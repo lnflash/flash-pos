@@ -69,6 +69,10 @@ export interface ChargeStageProps {
 }
 
 export const PAID_TITLE = 'Paid — you can lift the card';
+/** The error title of a paid failure (ENG-642) whose change is not on the card. */
+export const PAID_CHANGE_NOT_ON_CARD_TITLE = 'Paid — change not on card';
+/** The error title of a paid failure with no change: an exact bill. */
+export const PAID_FAILURE_TITLE = 'Paid';
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -138,7 +142,14 @@ function ChargeStage(props: ChargeStageProps) {
     const failure = parseFailure(error);
     return {
       paidTitle: PAID_TITLE,
-      errorTitle: failure.cardFull
+      // A paid failure (ENG-642) is headlined as paid, whatever the card
+      // said: the title is the big text, and "didn't finish" over a paid
+      // body sends the merchant to charge the card again for the same bill.
+      errorTitle: paid
+        ? changeSat > 0
+          ? PAID_CHANGE_NOT_ON_CARD_TITLE
+          : PAID_FAILURE_TITLE
+        : failure.cardFull
         ? 'The card is full'
         : failure.tagLost
         ? 'The card moved away'

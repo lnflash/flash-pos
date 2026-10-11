@@ -464,11 +464,19 @@ describe('flows that fail the change write after the swap (ENG-642)', () => {
   // PIN would run the charge a second time. These flows once pinned that
   // bug under a KNOWN BUG marker; they now assert the fix.
   it.each([
-    ['owed-change-next-tap', 'will be added once the card has a free slot.'],
-    ['lost-load-answer', 'will be added the next time this card is charged.'],
+    [
+      'owed-change-next-tap',
+      'will be added once the card has a free slot.',
+      'The card is full',
+    ],
+    [
+      'lost-load-answer',
+      'will be added the next time this card is charged.',
+      'The card moved away',
+    ],
   ])(
-    '%s asserts the paid body with the change saved on the terminal, and no PIN pad',
-    (flow, tail) => {
+    '%s asserts the paid title and body with the change saved on the terminal, and no PIN pad',
+    (flow, tail, unpaidTitle) => {
       const text = read(`${flow}.yaml`);
       expect(text).not.toMatch(/KNOWN BUG/);
       const at = text.indexOf("id: 'error-body'");
@@ -477,6 +485,11 @@ describe('flows that fail the change write after the swap (ENG-642)', () => {
         `change is saved on this terminal and ${tail}`,
       );
       const after = text.slice(at);
+      // The headline is paid, never the failure title over a paid body.
+      expect(after).toMatch(
+        /assertVisible:\s*\n\s*id: 'error-title'\s*\n\s*text: 'Paid — change not on card'/,
+      );
+      expect(text).not.toContain(`assertVisible: '${unpaidTitle}'`);
       expect(after).toMatch(/assertNotVisible:\s*\n\s*id: 'pin-sheet'/);
       expect(after).toContain("assertNotVisible: 'Tap card again'");
     },
