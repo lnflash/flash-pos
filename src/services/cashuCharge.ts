@@ -828,6 +828,15 @@ export async function executeCharge({
           // Recorded: the piece is owed on disk and the next tap writes it.
           // Unrecorded: it is nowhere but this process, and the error must
           // say so — the UI's "your change is saved" keys on the phase.
+          // A held bookkeeping failure is superseded by this one; log it so
+          // a refused till write (the merchant's take, held only in memory)
+          // is not lost without a trace.
+          if (bookkeepingError) {
+            console.warn(
+              '[charge] post-swap bookkeeping failed; superseded by the change write failure',
+              bookkeepingError.message,
+            );
+          }
           throw new PhaseError(
             changeRecorded
               ? PHASE_WRITING_CHANGE

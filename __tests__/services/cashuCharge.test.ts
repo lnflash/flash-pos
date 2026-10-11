@@ -2277,6 +2277,12 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       expect(paidBody(failure)).toBe(
         '10 sats are paid. Your 6 sats change could not be put on the card.',
       );
+      // The superseded bookkeeping failure (the refused till write) is
+      // logged, not silently dropped.
+      expect(warn).toHaveBeenCalledWith(
+        '[charge] post-swap bookkeeping failed; superseded by the change write failure',
+        expect.stringMatching(/recording the payment/),
+      );
     } finally {
       restore();
       warn.mockRestore();
