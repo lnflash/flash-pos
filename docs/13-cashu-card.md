@@ -120,6 +120,18 @@ on top of this one.
 The screen runs **SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE** only. Nothing
 is written and no proof is spent, so it is safe against a loaded card.
 
+### Simulator e2e (no card, no reader)
+
+Below the read button, **Card bridge** routes every card APDU (this screen's
+read and the production charge and balance paths) to a `cardsim` bridge
+instead of NFC: the real applet in jCardSim, from `lnflash/cashu-javacard`
+`tools/cardsim`, on `http://127.0.0.1:9876`. Save sets it, Clear goes back to
+NFC, and a restart forgets it. Dev builds only: `getCardBridge()` answers
+`null` in a release build whatever was set. The Maestro flows set the same
+bridge with the deep link `flashpos://dev/card-bridge?url=…`. The run book,
+including the local mint and the six flows, is in
+[docs/10-testing.md](./10-testing.md#e2e-testing-ecash-card-on-the-ios-simulator).
+
 ### Reading the error box
 
 `react-native-nfc-manager` constructs every one of its error classes with no

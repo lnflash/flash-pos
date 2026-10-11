@@ -525,6 +525,26 @@ describe('CashuCardCharge', () => {
     expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
   });
 
+  it("tags the PIN sheet's reason line for the simulator e2e flows, empty until a failure (ENG-634)", async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    mockExecuteCharge.mockRejectedValue(
+      new Error('[verifying PIN] wrong PIN — 2 tries left'),
+    );
+    const {getByTestId, getByLabelText} = await renderScreen({
+      preRead: {...PLAN, pinRequired: true},
+    });
+    expect(getByTestId('pin-error-text').props.children).toBe('');
+    for (const digit of ['1', '2', '3', '4']) {
+      fireEvent.press(getByLabelText(digit));
+    }
+    await act(async () => {
+      jest.advanceTimersByTime(700);
+    });
+    expect(getByTestId('pin-error-text').props.children).toBe(
+      'Wrong PIN — 2 tries left. Try again.',
+    );
+  });
+
   it('cancels the NFC session on Cancel and on unmount', async () => {
     mockWithCardSession.mockImplementation(() => new Promise(() => {}));
     const {getByText, unmount} = await renderScreen();

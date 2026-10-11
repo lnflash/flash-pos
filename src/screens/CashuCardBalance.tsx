@@ -53,14 +53,23 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
   // Change from an earlier charge (ENG-630): written just now by the keypad
   // read (PIN-less card), waiting for the next charge (PIN card), or both
   // when the keypad read put some of it on the card and the rest stayed owed.
+  // Each note keeps a stable testID for the simulator e2e flows.
   const changeNotes = [
-    changeAddedSat ? `Change added · ${formatSatAmount(changeAddedSat)}` : null,
-    owedChangeSat
-      ? `Change waiting · ${formatSatAmount(
-          owedChangeSat,
-        )} — added on the next charge`
+    changeAddedSat
+      ? {
+          testID: 'balance-added',
+          text: `Change added · ${formatSatAmount(changeAddedSat)}`,
+        }
       : null,
-  ].filter((note): note is string => note !== null);
+    owedChangeSat
+      ? {
+          testID: 'balance-owed',
+          text: `Change waiting · ${formatSatAmount(
+            owedChangeSat,
+          )} — added on the next charge`,
+        }
+      : null,
+  ].filter((note): note is {testID: string; text: string} => note !== null);
 
   const onCharge = useCallback(() => navigation.goBack(), [navigation]);
 
@@ -69,7 +78,7 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
       <CardFrame>
         <CardArtV2 />
       </CardFrame>
-      <Balance>{summary.balance} sats</Balance>
+      <Balance testID="balance-sat">{summary.balance} sats</Balance>
       <Fiat>
         {loading ? ' ' : satsToCurrency(summary.balance).formattedCurrency}
       </Fiat>
@@ -101,7 +110,9 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
         </Row>
       </Details>
       {changeNotes.map(note => (
-        <ChangeNote key={note}>{note}</ChangeNote>
+        <ChangeNote key={note.testID} testID={note.testID}>
+          {note.text}
+        </ChangeNote>
       ))}
 
       <PrimaryButton

@@ -1,0 +1,66 @@
+# ENG-630 end to end. The read plans on a card with room; by the time the
+# PIN is entered the card is full (FIXTURE_FULL: same P8, every other slot
+# spent). The burn and the swap succeed, the first change LOAD answers
+# 6A84, and the 5 sats of change are kept on the terminal. On the next
+# charge (a fresh card state holding P4, FIXTURE_AFTER) the owed 4 + 1 go
+# on first, then P4 pays the 4-sat bill exactly.
+appId: com.flash.pos
+name: 'eCash card: owed change is written on the next tap'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- extendedWaitUntil:
+    visible:
+      id: 'pin-sheet'
+    timeout: 30000
+- runScript:
+    file: scripts/post-fixture.js
+    env:
+      FIXTURE: ${FIXTURE_FULL}
+- runFlow: common/enter-pin.yaml
+# The money moved and the change could not land.
+# KNOWN BUG ENG-642: pins today's wrong behaviour. A PIN card's charge falls
+# back into the PIN pad after the swap settled, shows the raw 6A84 refusal
+# on the sheet's line and invites a PIN re-entry that re-runs the charge.
+# The fix flips this to error-body "…saved on this terminal…" (plan
+# ENG-634-flash-pos.md:69).
+- extendedWaitUntil:
+    visible:
+      id: 'pin-error-text'
+      text: 'LOAD_PROOF failed: card is full.*'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[],"spentLabels":["P8"]}'
+- runScript:
+    file: scripts/post-fixture.js
+    env:
+      FIXTURE: ${FIXTURE_AFTER}
+- runFlow: common/leave-charge.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '4'
+      D2: ''
+- runFlow: common/enter-pin.yaml
+- extendedWaitUntil:
+    visible: 'Charged 4 sats — paid by eCash card'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[4,1],"spentLabels":["P4"]}'
+- tapOn: 'Done'
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '5'
+- assertNotVisible:
+    id: 'balance-owed'

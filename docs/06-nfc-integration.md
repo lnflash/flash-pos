@@ -382,6 +382,18 @@ catch (err) {
 - **App Foreground**: NFC reading requires app to be in foreground
 - **User Prompt**: iOS shows system NFC scanning prompt
 
+### One transport seam for the eCash card
+
+Every eCash card session opens through `openCardSession` in
+`src/services/cashuCardNfc.ts`: `withCardSession` and the two multi-tech
+callers (`useKeypadCardReader`, `useCardPaymentRouter`) take their tag, their
+APDU channel and their teardown from it, and nothing else calls
+`requestTechnology` for the card. On NFC it arms the technology request and
+raises the transceive timeout; in a dev build with the card bridge set
+(`src/services/cardBridge.ts`) it opens at once on a `cardsim` bridge over
+HTTP, so the simulator e2e flows run the production card code with no radio
+(docs/10-testing.md).
+
 ## Security Considerations
 
 ### 1. Data Validation

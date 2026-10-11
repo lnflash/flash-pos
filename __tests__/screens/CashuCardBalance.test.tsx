@@ -185,6 +185,26 @@ describe('CashuCardBalance', () => {
     ).toBeTruthy();
   });
 
+  it('tags the balance and each change note for the simulator e2e flows (ENG-634)', () => {
+    const {getByTestId, queryByTestId} = renderScreen(
+      {...SUMMARY, balance: 16, info: {...SUMMARY.info, pinState: 'unset'}},
+      {changeAddedSat: 4, owedChangeSat: 2},
+    );
+
+    expect(getByTestId('balance-sat').props.children).toEqual([16, ' sats']);
+    expect(getByTestId('balance-added').props.children).toBe(
+      'Change added · 4 sats',
+    );
+    expect(getByTestId('balance-owed').props.children).toBe(
+      'Change waiting · 2 sats — added on the next charge',
+    );
+
+    const none = renderScreen();
+    expect(none.queryByTestId('balance-owed')).toBeNull();
+    expect(none.queryByTestId('balance-added')).toBeNull();
+    expect(queryByTestId('balance-sat')).not.toBeNull();
+  });
+
   it('"Charge this card" goes back to the keypad', () => {
     const {getByText} = renderScreen();
 

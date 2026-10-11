@@ -223,6 +223,7 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				FFAFA2F692F0626BD787C8DC /* [CP] Embed Pods Frameworks */,
 				CBB6764EBA2B965EECC17B9C /* [CP] Copy Pods Resources */,
+				E2E0634A0000000000000001 /* [Dev] Register flashpos:// URL scheme */,
 			);
 			buildRules = (
 			);
@@ -408,6 +409,23 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-flash_pos-flash_posTests/Pods-flash_pos-flash_posTests-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		E2E0634A0000000000000001 /* [Dev] Register flashpos:// URL scheme */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "[Dev] Register flashpos:// URL scheme";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/scripts/register-dev-url-scheme.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		FFAFA2F692F0626BD787C8DC /* [CP] Embed Pods Frameworks */ = {

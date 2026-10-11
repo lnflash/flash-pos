@@ -12,10 +12,11 @@ import {useFlashcard} from './useFlashcard';
 import {isAppletNotFound} from '../services/cashuCard';
 import {readAndPlan} from '../services/cashuCharge';
 import {
+  cancelCardSession,
   describeCardFailure,
-  extendCardTimeout,
   isUserCancel,
-  nfcTransceiver,
+  openCardSession,
+  usingCardBridge,
 } from '../services/cashuCardNfc';
 
 // utils
@@ -79,33 +80,42 @@ async function readLnurlwTagInSession(
 export function useCardPaymentRouter() {
   const navigation = useNavigation<InvoiceNav>();
   const {handleTag, setNfcBusy} = useFlashcard();
-  const satAmount = Number(useAppSelector(state => state.amount.satAmount) ?? 0);
+  const satAmount = Number(
+    useAppSelector(state => state.amount.satAmount) ?? 0,
+  );
   const [isScanning, setIsScanning] = useState(false);
 
   const routeCardPayment = useCallback(async (): Promise<boolean> => {
-    const isSupported = await NfcManager.isSupported();
-    if (!isSupported) {
-      Alert.alert('NFC is not supported on this device');
-      return false;
-    }
-    const isEnabled = await NfcManager.isEnabled();
-    if (!isEnabled) {
-      Alert.alert('NFC is not enabled on this device.');
-      return false;
+    // The dev card bridge (simulator e2e) is the reader: the radio's
+    // support, state and start() do not apply to it.
+    const bridged = usingCardBridge();
+    if (!bridged) {
+      const isSupported = await NfcManager.isSupported();
+      if (!isSupported) {
+        Alert.alert('NFC is not supported on this device');
+        return false;
+      }
+      const isEnabled = await NfcManager.isEnabled();
+      if (!isEnabled) {
+        Alert.alert('NFC is not enabled on this device.');
+        return false;
+      }
     }
     if (!(satAmount > 0)) {
       Alert.alert('Enter an amount first');
       return false;
     }
-    NfcManager.start();
+    if (!bridged) {
+      NfcManager.start();
+    }
     setNfcBusy(true);
     setIsScanning(true);
 
     try {
       const wantedTechs: NfcTech[] = [NfcTech.IsoDep, NfcTech.Ndef];
-      await NfcManager.requestTechnology(wantedTechs);
+      const session = await openCardSession({techs: wantedTechs});
 
-      const tag = await NfcManager.getTag();
+      const tag = await session.getTag();
       if (!tag) {
         return false;
       }
@@ -127,14 +137,13 @@ export function useCardPaymentRouter() {
           }
         }
         try {
-          await extendCardTimeout();
           const preRead = await readAndPlan({
-            transceive: nfcTransceiver,
+            transceive: session.transceive,
             amountSat: satAmount,
           });
           // Close this session before the charge flow opens its own
           // tap → PIN → tap session.
-          await NfcManager.cancelTechnologyRequest();
+          await session.close();
           navigation.navigate('CashuCardCharge', {preRead});
           return true;
         } catch (readError) {
@@ -167,7 +176,9 @@ export function useCardPaymentRouter() {
     } finally {
       setNfcBusy(false);
       setIsScanning(false);
-      NfcManager.cancelTechnologyRequest();
+      // Never throws: with no session left (or on the bridge, with no
+      // radio at all) there is nothing to cancel and nobody to tell.
+      cancelCardSession();
     }
   }, [handleTag, navigation, setNfcBusy, satAmount]);
 

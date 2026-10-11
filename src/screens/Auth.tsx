@@ -58,6 +58,7 @@ const Auth: React.FC<Props> = ({navigation}) => {
           <Container>
             <Label>Enter your Flash username</Label>
             <Input
+              testID="auth-username"
               value={value}
               onChangeText={setValue}
               placeholder="Enter your flash username"

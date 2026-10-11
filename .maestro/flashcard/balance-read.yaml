@@ -1,0 +1,19 @@
+# Keypad "Card balance" on a PIN card holding one 8-sat proof: the read is
+# SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE, nothing written.
+appId: com.flash.pos
+name: 'eCash card: balance read'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '8'
+- assertVisible: 'Charge this card'
+- assertNotVisible:
+    id: 'balance-owed'
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8],"unspentLabels":["P8"]}'

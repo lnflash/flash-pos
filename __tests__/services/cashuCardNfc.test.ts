@@ -9,10 +9,13 @@ import {
   isUserCancel,
   isCardReadingSupported,
   nfcTransceiver,
+  openCardSession,
   readCardOverNfc,
   setCardSessionMessage,
+  usingCardBridge,
   withCardSession,
 } from '../../src/services/cashuCardNfc';
+import {BRIDGE_TAG, setCardBridge} from '../../src/services/cardBridge';
 import {CardError, CardProtocolError} from '../../src/services/cashuCard';
 import {recordApdu} from '../../src/services/apduTiming';
 
@@ -27,9 +30,10 @@ jest.mock('react-native-nfc-manager', () => ({
     requestTechnology: jest.fn(() => Promise.resolve()),
     cancelTechnologyRequest: jest.fn(() => Promise.resolve()),
     setTimeout: jest.fn(() => Promise.resolve()),
+    getTag: jest.fn(() => Promise.resolve(null)),
     isoDepHandler: {transceive: jest.fn()},
   },
-  NfcTech: {IsoDep: 'IsoDep'},
+  NfcTech: {IsoDep: 'IsoDep', Ndef: 'Ndef'},
   NfcError: jest.requireActual('react-native-nfc-manager/src/NfcError'),
 }));
 
@@ -39,6 +43,7 @@ const mockNfc = NfcManager as unknown as {
   requestTechnology: jest.Mock;
   cancelTechnologyRequest: jest.Mock;
   setTimeout: jest.Mock;
+  getTag: jest.Mock;
   isoDepHandler: {transceive: jest.Mock};
 };
 
@@ -221,10 +226,12 @@ describe('extendCardTimeout', () => {
     }
   });
 
-  it('runs inside withCardSession after the tag connects and before the read', async () => {
+  it('runs inside withCardSession after the tag connects and before the first APDU', async () => {
     const platform = onPlatform('android');
+    mockNfc.isoDepHandler.transceive.mockResolvedValue([0x90, 0x00]);
     try {
-      await withCardSession(async () => {
+      await withCardSession(async transceive => {
+        await transceive([0x00, 0xa4, 0x04, 0x00]);
         // The read itself must already enjoy the longer budget — the whole
         // point is that SPEND_PROOF's signature gets it.
         expect(mockNfc.setTimeout).toHaveBeenCalledWith(
@@ -237,7 +244,10 @@ describe('extendCardTimeout', () => {
     }
     const [armed] = mockNfc.requestTechnology.mock.invocationCallOrder;
     const [extended] = mockNfc.setTimeout.mock.invocationCallOrder;
+    const [firstApdu] =
+      mockNfc.isoDepHandler.transceive.mock.invocationCallOrder;
     expect(extended).toBeGreaterThan(armed);
+    expect(extended).toBeLessThan(firstApdu);
   });
 });
 
@@ -474,5 +484,209 @@ describe('withCardSession timing', () => {
     const closedIdx = texts.indexOf('[card-session] session closed');
     expect(timingIdx).toBeGreaterThan(-1);
     expect(timingIdx).toBeLessThan(closedIdx);
+  });
+});
+
+describe('openCardSession (ENG-634)', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({hex: '01009000', sw: '9000'}),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    setCardBridge(null);
+    global.fetch = realFetch;
+  });
+
+  describe('on NFC', () => {
+    it('requests one IsoDep tech by default, raises the timeout before the first APDU, and hands back the tag and the NFC channel', async () => {
+      const platform = jest.replaceProperty(Platform, 'OS', 'android');
+      const tag = {id: '04AA', techTypes: ['android.nfc.tech.IsoDep']};
+      mockNfc.getTag.mockResolvedValue(tag);
+      mockNfc.isoDepHandler.transceive.mockResolvedValue([0x01, 0x90, 0x00]);
+      try {
+        const session = await openCardSession({alertMessage: 'Hold it'});
+        expect(mockNfc.requestTechnology).toHaveBeenCalledWith(NfcTech.IsoDep, {
+          alertMessage: 'Hold it',
+        });
+        // Not yet: the caller has not classified the tag.
+        expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+        await expect(session.transceive([0x00, 0xa4])).resolves.toEqual([
+          0x01, 0x90, 0x00,
+        ]);
+        expect(mockNfc.setTimeout).toHaveBeenCalledWith(
+          CARD_TRANSCEIVE_TIMEOUT_MS,
+        );
+        expect(mockNfc.isoDepHandler.transceive).toHaveBeenCalledWith([
+          0x00, 0xa4,
+        ]);
+        const [extended] = mockNfc.setTimeout.mock.invocationCallOrder;
+        const [firstApdu] =
+          mockNfc.isoDepHandler.transceive.mock.invocationCallOrder;
+        expect(extended).toBeLessThan(firstApdu);
+        await expect(session.getTag()).resolves.toBe(tag);
+        expect(mockNfc.cancelTechnologyRequest).not.toHaveBeenCalled();
+        await session.close();
+        expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalledTimes(1);
+      } finally {
+        platform.restore();
+      }
+    });
+
+    it('raises the timeout once per session, however many APDUs follow', async () => {
+      const platform = jest.replaceProperty(Platform, 'OS', 'android');
+      mockNfc.isoDepHandler.transceive.mockResolvedValue([0x90, 0x00]);
+      try {
+        const session = await openCardSession();
+        await Promise.all([
+          session.transceive([0x01]),
+          session.transceive([0x02]),
+        ]);
+        await session.transceive([0x03]);
+      } finally {
+        platform.restore();
+      }
+      expect(mockNfc.setTimeout).toHaveBeenCalledTimes(1);
+      expect(mockNfc.isoDepHandler.transceive).toHaveBeenCalledTimes(3);
+    });
+
+    it('never raises the timeout for a session that never transceives (an NDEF-only tag)', async () => {
+      // A multi-tech request on an NTAG21x LNURL-w card connects as Ndef,
+      // where Android's setTimeout rejects with ERR_API_NOT_SUPPORT: the
+      // caller reads the tag and closes without sending an APDU, and must
+      // not pay a native round trip and a warning for a knob it never uses.
+      const platform = jest.replaceProperty(Platform, 'OS', 'android');
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockNfc.setTimeout.mockRejectedValue(new Error('ERR_API_NOT_SUPPORT'));
+      mockNfc.getTag.mockResolvedValue({
+        id: '04BB',
+        techTypes: ['android.nfc.tech.Ndef'],
+        ndefMessage: [],
+      });
+      try {
+        const session = await openCardSession({
+          techs: [NfcTech.IsoDep, NfcTech.Ndef],
+        });
+        await session.getTag();
+        await session.close();
+        expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        platform.restore();
+        warn.mockRestore();
+      }
+    });
+
+    it('passes a multi-tech request through as an array, with no options when there is no alert', async () => {
+      await openCardSession({techs: [NfcTech.IsoDep, NfcTech.Ndef]});
+      expect(mockNfc.requestTechnology).toHaveBeenCalledWith([
+        NfcTech.IsoDep,
+        NfcTech.Ndef,
+      ]);
+      expect(mockNfc.requestTechnology.mock.calls[0]).toHaveLength(1);
+    });
+
+    it('issues the request before its first await, so a blur right after the call finds it', () => {
+      openCardSession({techs: [NfcTech.IsoDep, NfcTech.Ndef]});
+      expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a lost tag as null', async () => {
+      mockNfc.getTag.mockResolvedValue(undefined);
+      const session = await openCardSession();
+      await expect(session.getTag()).resolves.toBeNull();
+    });
+
+    it('closes without throwing when there is nothing to cancel', async () => {
+      mockNfc.cancelTechnologyRequest.mockRejectedValue(
+        new Error('ERR_NO_TECH_REQ'),
+      );
+      const session = await openCardSession();
+      await expect(session.close()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('on the dev card bridge', () => {
+    beforeEach(() => setCardBridge({url: 'http://127.0.0.1:9876/'}));
+
+    it('opens at once and never touches the radio', async () => {
+      const platform = jest.replaceProperty(Platform, 'OS', 'android');
+      try {
+        const session = await openCardSession({
+          techs: [NfcTech.IsoDep, NfcTech.Ndef],
+          alertMessage: 'Hold it',
+        });
+        await expect(session.getTag()).resolves.toBe(BRIDGE_TAG);
+        await session.close();
+      } finally {
+        platform.restore();
+      }
+      expect(mockNfc.requestTechnology).not.toHaveBeenCalled();
+      expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+      expect(mockNfc.getTag).not.toHaveBeenCalled();
+      expect(mockNfc.cancelTechnologyRequest).not.toHaveBeenCalled();
+      expect(usingCardBridge()).toBe(true);
+    });
+
+    it('sends the APDUs to the bridge, not the IsoDep handler', async () => {
+      const session = await openCardSession();
+      await expect(
+        session.transceive([0x00, 0xa4, 0x04, 0x00]),
+      ).resolves.toEqual([0x01, 0x00, 0x90, 0x00]);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:9876/apdu',
+        expect.objectContaining({method: 'POST'}),
+      );
+      expect(mockNfc.isoDepHandler.transceive).not.toHaveBeenCalled();
+    });
+
+    it('runs withCardSession over the bridge: a full read with no NFC call at all', async () => {
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({hex: '01009000'}),
+        }) // SELECT
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({hex: '01002003011C03019000'}),
+        }) // GET_INFO
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({hex: `02${'AB'.repeat(32)}9000`}),
+        }) // GET_PUBKEY
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({hex: '000001F49000'}),
+        }); // GET_BALANCE
+
+      const summary = await readCardOverNfc();
+
+      expect(summary.balance).toBe(500);
+      expect(summary.pubkey).toBe(`02${'ab'.repeat(32)}`);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(mockNfc.requestTechnology).not.toHaveBeenCalled();
+      expect(mockNfc.cancelTechnologyRequest).not.toHaveBeenCalled();
+    });
+
+    it('makes card reading "supported" whatever the radio says', async () => {
+      mockNfc.isSupported.mockResolvedValue(false);
+      expect(await isCardReadingSupported()).toBe(true);
+      expect(mockNfc.isSupported).not.toHaveBeenCalled();
+
+      setCardBridge(null);
+      expect(usingCardBridge()).toBe(false);
+      expect(await isCardReadingSupported()).toBe(false);
+    });
   });
 });

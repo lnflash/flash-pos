@@ -1,0 +1,25 @@
+# Every other slot is spent: 5 sats of change (4 + 1) need 2 free slots and
+# the card has 0. The pre-flight refuses BEFORE anything burns (ENG-630).
+appId: com.flash.pos
+name: 'eCash card: a full card is refused before the burn'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- extendedWaitUntil:
+    visible:
+      id: 'error-body'
+      text: 'Nothing was taken from the card. It has no free slot for the change.'
+    timeout: 30000
+- assertVisible: 'The card is full'
+- assertNotVisible:
+    id: 'pin-sheet'
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8],"unspentLabels":["P8"]}'

@@ -5,6 +5,7 @@ import {NfcError} from 'react-native-nfc-manager';
 
 import CashuCardDebug from '../../src/screens/CashuCardDebug';
 import {CardError, type CardSummary} from '../../src/services/cashuCard';
+import {getCardBridge, setCardBridge} from '../../src/services/cardBridge';
 
 const mockCancelCardSession = jest.fn();
 const mockIsCardReadingSupported = jest.fn();
@@ -307,5 +308,71 @@ describe('CashuCardDebug results', () => {
     mockIsCardReadingSupported.mockResolvedValue(false);
     const {getByText} = await renderScreen();
     expect(getByText('no')).toBeTruthy();
+  });
+});
+
+describe('CashuCardDebug card bridge (ENG-634)', () => {
+  afterEach(() => setCardBridge(null));
+
+  it('starts on NFC with the cardsim default as the placeholder', async () => {
+    const {getByTestId, getByText} = await renderScreen();
+
+    expect(getByTestId('card-bridge-url').props.placeholder).toBe(
+      'http://127.0.0.1:9876',
+    );
+    expect(getByTestId('card-bridge-state').props.children).toBe('NFC');
+    expect(
+      getByText('Routes every card APDU to a cardsim bridge instead of NFC.'),
+    ).toBeTruthy();
+  });
+
+  it('Save routes card sessions to the bridge and re-checks reading support', async () => {
+    const {getByTestId, getByText} = await renderScreen();
+    expect(mockIsCardReadingSupported).toHaveBeenCalledTimes(1);
+
+    fireEvent.changeText(
+      getByTestId('card-bridge-url'),
+      'http://127.0.0.1:9876/',
+    );
+    await act(async () => {
+      fireEvent.press(getByText('Save'));
+    });
+
+    expect(getCardBridge()).toEqual({url: 'http://127.0.0.1:9876'});
+    expect(getByTestId('card-bridge-state').props.children).toBe(
+      'http://127.0.0.1:9876',
+    );
+    expect(mockIsCardReadingSupported).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a URL that is not http(s) and says why', async () => {
+    const {getByTestId, getByText} = await renderScreen();
+
+    fireEvent.changeText(getByTestId('card-bridge-url'), '127.0.0.1:9876');
+    await act(async () => {
+      fireEvent.press(getByText('Save'));
+    });
+
+    expect(getCardBridge()).toBeNull();
+    expect(getByTestId('card-bridge-state').props.children).toBe('NFC');
+    expect(
+      getByText(/card bridge: the URL must start with http:\/\/ or https:\/\//),
+    ).toBeTruthy();
+  });
+
+  it('Clear goes back to NFC', async () => {
+    setCardBridge({url: 'http://127.0.0.1:9876'});
+    const {getByTestId, getByText} = await renderScreen();
+    expect(getByTestId('card-bridge-url').props.value).toBe(
+      'http://127.0.0.1:9876',
+    );
+
+    await act(async () => {
+      fireEvent.press(getByText('Clear'));
+    });
+
+    expect(getCardBridge()).toBeNull();
+    expect(getByTestId('card-bridge-state').props.children).toBe('NFC');
+    expect(getByTestId('card-bridge-url').props.value).toBe('');
   });
 });
