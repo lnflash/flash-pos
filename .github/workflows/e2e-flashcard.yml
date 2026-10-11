@@ -1,0 +1,239 @@
+name: E2E Flashcard (iOS simulator)
+
+# The eCash card flows end to end on an iOS simulator (ENG-634): the real
+# applet in jCardSim (cardsim, lnflash/cashu-javacard), a local Nutshell
+# mint on FakeWallet, and the production charge/balance UI driven by
+# Maestro through the Debug-only card bridge. Run book: docs/10-testing.md.
+#
+# Not a required check: it needs the TEST backend (login + price) and a
+# simulator, so it runs on card-path changes, nightly and on demand.
+# Needs the repository variable FLASH_POS_E2E_USERNAME: a merchant username
+# on the TEST instance (api.test.flashapp.me), never a production account.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/services/cashu*'
+      - 'src/services/cardBridge.ts'
+      - 'src/hooks/use*Card*'
+      - 'src/screens/CashuCard*'
+      - 'src/components/cashu/**'
+      - 'ios/flash_pos/AppDelegate.mm'
+      - 'ios/scripts/register-dev-url-scheme.sh'
+      - '.maestro/**'
+      - 'scripts/e2e-flashcard.mjs'
+      - 'scripts/e2e-flashcard/**'
+      - '.github/workflows/e2e-flashcard.yml'
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-flashcard-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # lnflash/cashu-javacard main with tools/cardsim (ENG-634, #33).
+  CASHU_JAVACARD_REF: 7a961021e0b563c75b6968320bf1b098c0ef07f0
+  # The last Nutshell that mints 8-byte (v1) keyset ids: 0.20 mints v2 ids
+  # for a fresh keyset, which a card's LOAD_PROOF cannot store.
+  NUTSHELL_VERSION: '0.19.2'
+  MAESTRO_VERSION: '2.10.0'
+  CARDSIM_URL: http://127.0.0.1:9876
+  MINT_URL: http://127.0.0.1:3338
+
+jobs:
+  flashcard:
+    name: eCash card flows (iOS simulator)
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check the TEST merchant is configured
+        env:
+          FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
+        run: |
+          if [ -z "$FLASH_POS_E2E_USERNAME" ]; then
+            echo "::error::Set the repository variable FLASH_POS_E2E_USERNAME to a TEST-instance merchant username."
+            exit 1
+          fi
+
+      # ---- the card: cardsim ------------------------------------------------
+      - name: Checkout cashu-javacard (cardsim)
+        uses: actions/checkout@v4
+        with:
+          repository: lnflash/cashu-javacard
+          ref: ${{ env.CASHU_JAVACARD_REF }}
+          path: cardsim
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+          cache-dependency-path: cardsim/tools/cardsim/pom.xml
+
+      - name: Build and start cardsim
+        run: |
+          # Its own CI runs the cardsim suite at this ref; here it is a fixture.
+          mvn -B -q -f cardsim/tools/cardsim/pom.xml package -DskipTests
+          nohup java -jar cardsim/tools/cardsim/target/cardsim.jar --port 9876 \
+            > "$RUNNER_TEMP/cardsim.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf "$CARDSIM_URL/state" > /dev/null && break
+            sleep 1
+          done
+          curl -sf "$CARDSIM_URL/state" | head -c 200; echo
+
+      # ---- the mint: Nutshell on FakeWallet -------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: scripts/e2e-flashcard/nutshell-constraints.txt
+
+      - name: Install and start the FakeWallet mint
+        run: |
+          python -m venv "$RUNNER_TEMP/nutshell"
+          "$RUNNER_TEMP/nutshell/bin/pip" install -q \
+            -c scripts/e2e-flashcard/nutshell-constraints.txt \
+            "cashu==$NUTSHELL_VERSION"
+          mkdir -p "$RUNNER_TEMP/mint"
+          cd "$RUNNER_TEMP/mint"
+          # Free and instant: FakeWallet pays every quote, no fees, no delays.
+          cat > .env <<'ENV'
+          DEBUG=FALSE
+          TOR=FALSE
+          MINT_LISTEN_HOST=127.0.0.1
+          MINT_LISTEN_PORT=3338
+          MINT_PRIVATE_KEY=ci-flashcard-e2e-throwaway-key
+          MINT_DATABASE=data/mint
+          MINT_BACKEND_BOLT11_SAT=FakeWallet
+          MINT_INPUT_FEE_PPK=0
+          FAKEWALLET_BRR=TRUE
+          FAKEWALLET_DELAY_INCOMING_PAYMENT=0
+          FAKEWALLET_DELAY_OUTGOING_PAYMENT=0
+          ENV
+          nohup "$RUNNER_TEMP/nutshell/bin/mint" > "$RUNNER_TEMP/mint.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf "$MINT_URL/v1/info" > /dev/null && break
+            sleep 1
+          done
+          curl -sf "$MINT_URL/v1/keysets"; echo
+
+      # ---- the app: a Debug build with its JS bundle embedded ----------------
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Point the app at TEST and the local mint
+        run: |
+          cp .env.example .env
+          sed -i '' \
+            -e 's#^FLASH_GRAPHQL_URI=.*#FLASH_GRAPHQL_URI=https://api.test.flashapp.me/graphql#' \
+            -e 's#^FLASH_GRAPHQL_WS_URI=.*#FLASH_GRAPHQL_WS_URI=wss://ws.test.flashapp.me/graphql#' \
+            -e 's#^FLASH_LN_ADDRESS_URL=.*#FLASH_LN_ADDRESS_URL=https://test.flashapp.me#' \
+            -e 's#^FLASH_LN_ADDRESS=.*#FLASH_LN_ADDRESS=test.flashapp.me#' \
+            -e "s#^FLASH_CASHU_MINT_URL=.*#FLASH_CASHU_MINT_URL=$MINT_URL#" \
+            .env
+          # Never production: refuse to go on if any flashapp.me host but TEST is left.
+          if grep -E '^FLASH_[A-Z_]+=.*(//|^)(api|ws)\.flashapp\.me' .env; then
+            echo "::error::.env still points at production"
+            exit 1
+          fi
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          bundle exec pod install
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: 'latest-stable'
+
+      - name: Create a simulator
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes available -j | node -e '
+            const r = JSON.parse(require("fs").readFileSync(0, "utf8")).runtimes
+              .filter(x => x.platform === "iOS" && x.isAvailable);
+            console.log(r[r.length - 1].identifier);')
+          DEVICE_TYPE=$(xcrun simctl list devicetypes -j | node -e '
+            const t = JSON.parse(require("fs").readFileSync(0, "utf8")).devicetypes
+              .filter(x => /^iPhone \d+$/.test(x.name));
+            console.log(t[t.length - 1].identifier);')
+          SIM=$(xcrun simctl create flashcard-e2e "$DEVICE_TYPE" "$RUNTIME")
+          echo "SIM_ID=$SIM" >> "$GITHUB_ENV"
+          echo "simulator $SIM ($DEVICE_TYPE, $RUNTIME)"
+
+      - name: Build iOS app (Debug, bundle embedded)
+        run: |
+          # FORCE_BUNDLING embeds main.jsbundle (still __DEV__) so the app
+          # runs with no Metro; AppDelegate falls back to it. Ad-hoc signed,
+          # not unsigned: without its entitlements the simulator keychain
+          # refuses react-native-keychain, the owed-change store reads as
+          # unreadable and every charge fails closed.
+          xcodebuild -workspace ios/flash_pos.xcworkspace \
+            -scheme flash_pos \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$SIM_ID" \
+            -derivedDataPath ios/build \
+            build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            FORCE_BUNDLING=1 | tail -n 40
+          APP="ios/build/Build/Products/Debug-iphonesimulator/Flash POS.app"
+          test -f "$APP/main.jsbundle"
+          # The Debug-only dev scheme the card-bridge link needs.
+          plutil -p "$APP/Info.plist" | grep -q '"flashpos"'
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Boot the simulator and install the app
+        run: |
+          xcrun simctl boot "$SIM_ID"
+          xcrun simctl bootstatus "$SIM_ID" -b
+          xcrun simctl install "$SIM_ID" "$APP_PATH"
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run the eCash card flows
+        env:
+          FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
+        run: |
+          node scripts/e2e-flashcard.mjs \
+            --username "$FLASH_POS_E2E_USERNAME" \
+            --bridge "$CARDSIM_URL" \
+            --mint "$MINT_URL" \
+            --device "$SIM_ID"
+
+      - name: Upload Maestro output and service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-flashcard
+          path: |
+            ~/.maestro/tests/**
+            ${{ runner.temp }}/cardsim.log
+            ${{ runner.temp }}/mint.log
+          retention-days: 7
+          if-no-files-found: ignore
