@@ -165,14 +165,28 @@ jobs:
 
       - name: Create a simulator
         run: |
-          RUNTIME=$(xcrun simctl list runtimes available -j | node -e '
+          # The newest available iOS runtime (numeric version sort), then the
+          # newest plain `iPhone N` that runtime itself supports. Picking the
+          # runtime and the device type separately can pair a device the
+          # runtime rejects (CoreSimulator 403 "Incompatible device").
+          read -r RUNTIME DEVICE_TYPE < <(xcrun simctl list runtimes available -j | node -e '
+            const num = (a, b) => a.localeCompare(b, undefined, { numeric: true });
             const r = JSON.parse(require("fs").readFileSync(0, "utf8")).runtimes
-              .filter(x => x.platform === "iOS" && x.isAvailable);
-            console.log(r[r.length - 1].identifier);')
-          DEVICE_TYPE=$(xcrun simctl list devicetypes -j | node -e '
-            const t = JSON.parse(require("fs").readFileSync(0, "utf8")).devicetypes
-              .filter(x => /^iPhone \d+$/.test(x.name));
-            console.log(t[t.length - 1].identifier);')
+              .filter(x => x.platform === "iOS" && x.isAvailable)
+              .sort((a, b) => num(a.version, b.version))
+              .at(-1);
+            const d = (r?.supportedDeviceTypes ?? [])
+              .filter(t => /^iPhone \d+$/.test(t.name))
+              .sort((a, b) => num(a.name, b.name))
+              .at(-1);
+            console.log(r?.identifier ?? "", d?.identifier ?? "");') || true
+          echo "runtime: ${RUNTIME:-<none>}"
+          echo "device type: ${DEVICE_TYPE:-<none>}"
+          if [ -z "$RUNTIME" ] || [ -z "$DEVICE_TYPE" ]; then
+            echo "::error::No available iOS runtime with a supported plain iPhone device type."
+            xcrun simctl list runtimes available
+            exit 1
+          fi
           SIM=$(xcrun simctl create flashcard-e2e "$DEVICE_TYPE" "$RUNTIME")
           echo "SIM_ID=$SIM" >> "$GITHUB_ENV"
           echo "simulator $SIM ($DEVICE_TYPE, $RUNTIME)"
