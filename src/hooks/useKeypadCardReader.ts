@@ -13,6 +13,7 @@ import {
   getSlotStatuses,
   readCard,
   type CardSummary,
+  type Transceiver,
 } from '../services/cashuCard';
 import {reconcileOwedChange, writeOwedChange} from '../services/cashuCharge';
 import {
@@ -22,10 +23,10 @@ import {
 import {
   cancelCardSession,
   describeCardFailure,
-  extendCardTimeout,
   isCardReadingSupported,
   isUserCancel,
-  nfcTransceiver,
+  openCardSession,
+  usingCardBridge,
 } from '../services/cashuCardNfc';
 
 // utils
@@ -85,8 +86,13 @@ type BalanceParams = RootStackType['CashuCardBalance'];
  * field case) all leave the summary true and the change recorded, and the
  * screen opens with what is still waiting. The next charge's `readAndPlan`
  * fails closed on its own.
+ *
+ * `transceive` is the session's own channel (NFC, or the dev card bridge).
  */
-async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
+async function settleOwedChange(
+  summary: CardSummary,
+  transceive: Transceiver,
+): Promise<BalanceParams> {
   let owed: OwedChangeEntry[] = [];
   try {
     owed = await outstandingChangeForCard(summary.pubkey);
@@ -109,12 +115,9 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
     // veto the read: it falls back to what the store says.
     let remaining = owed;
     try {
-      const statuses = await getSlotStatuses(
-        nfcTransceiver,
-        summary.info.maxSlots,
-      );
+      const statuses = await getSlotStatuses(transceive, summary.info.maxSlots);
       remaining = await reconcileOwedChange({
-        transceive: nfcTransceiver,
+        transceive,
         cardPubkey: summary.pubkey,
         statuses,
         now,
@@ -129,12 +132,9 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
   let remaining = owed;
   let written: OwedChangeEntry[] = [];
   try {
-    const statuses = await getSlotStatuses(
-      nfcTransceiver,
-      summary.info.maxSlots,
-    );
+    const statuses = await getSlotStatuses(transceive, summary.info.maxSlots);
     remaining = await reconcileOwedChange({
-      transceive: nfcTransceiver,
+      transceive,
       cardPubkey: summary.pubkey,
       statuses,
       now,
@@ -145,14 +145,14 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
       return {summary};
     }
     written = await writeOwedChange({
-      transceive: nfcTransceiver,
+      transceive,
       owed: remaining,
       now,
     });
   } catch {
     // A piece may have landed before the refusal: show the balance as it is
     // now when the card will still answer, the pre-write one when it won't.
-    const latest = await readCard(nfcTransceiver).catch(() => summary);
+    const latest = await readCard(transceive).catch(() => summary);
     return {
       summary: latest,
       owedChangeSat: await stillOwedSat(summary, remaining, new Set()),
@@ -162,7 +162,7 @@ async function settleOwedChange(summary: CardSummary): Promise<BalanceParams> {
   // already there, and never a piece the write resolved without sending
   // (the store refusing the write-ahead mark ends the write short, quietly).
   // Whatever it did not send is still waiting, and the screen says so.
-  const params: BalanceParams = {summary: await readCard(nfcTransceiver)};
+  const params: BalanceParams = {summary: await readCard(transceive)};
   if (written.length > 0) {
     params.changeAddedSat = sumSat(written);
   }
@@ -259,13 +259,13 @@ export function useKeypadCardReader() {
       setReading(true);
       try {
         // Synchronous up to the first await: a blur that lands after this
-        // line finds a request to cancel, never a gap.
-        if (alertMessage) {
-          await NfcManager.requestTechnology(KEYPAD_CARD_TECHS, {alertMessage});
-        } else {
-          await NfcManager.requestTechnology(KEYPAD_CARD_TECHS);
-        }
-        const tag = await NfcManager.getTag();
+        // line finds a request to cancel, never a gap (openCardSession
+        // issues the request before its own first await).
+        const session = await openCardSession({
+          techs: KEYPAD_CARD_TECHS,
+          alertMessage,
+        });
+        const tag = await session.getTag();
         if (!tag) {
           return 'failed';
         }
@@ -273,11 +273,10 @@ export function useKeypadCardReader() {
           handleTagRef.current(tag);
           return 'routed';
         }
-        await extendCardTimeout();
-        const summary = await readCard(nfcTransceiver);
-        const params = await settleOwedChange(summary);
+        const summary = await readCard(session.transceive);
+        const params = await settleOwedChange(summary, session.transceive);
         // Close the session before the balance screen takes the foreground.
-        await cancelCardSession();
+        await session.close();
         if (gen !== focusGenRef.current) {
           return 'cancelled';
         }
@@ -349,7 +348,11 @@ export function useKeypadCardReader() {
 
   /** iOS: one session under the system sheet. Safe to press twice. */
   const readOnce = useCallback(async () => {
-    NfcManager.start();
+    // The dev card bridge needs no radio, and on the simulator start()
+    // rejects (an unhandled rejection whose LogBox toast covers the keypad).
+    if (!usingCardBridge()) {
+      NfcManager.start();
+    }
     await runSession(IOS_BALANCE_SHEET_MESSAGE);
   }, [runSession]);
 
