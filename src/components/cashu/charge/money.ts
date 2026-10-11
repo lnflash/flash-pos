@@ -71,17 +71,19 @@ export function parseFailure(message: string | null | undefined): Failure {
  * Both change-write phases `executeCharge` reports a failure under
  * (`PHASE_WRITING_CHANGE` and its "(unrecorded)" variant). Nothing else
  * starts this way: owed change from an earlier charge is written under its
- * own phase, before the PIN-gated burn.
+ * own phase, before the PIN-gated burn. `cashuCharge.test` pins this against
+ * the messages the service really throws.
  */
 const CHANGE_WRITE = /^writing change to card/i;
 
 /**
- * The charge died AFTER the mint swap settled the bill: the burned proofs
- * are spent at the mint, the merchant's take is in the till, and only the
- * change had still to reach the card (it is recorded owed on the terminal,
- * unless the phase says otherwise — see `failureBody`). The bill is PAID:
- * nothing may run the charge again for it, neither a PIN re-entry nor a
- * "Tap card again", which would burn the card a second time (ENG-642).
+ * The charge died writing the change onto the card, after the mint swap
+ * settled the bill: the change is recorded owed on the terminal, unless the
+ * phase says otherwise. BODY COPY ONLY — whether the bill is paid is
+ * `executeCharge`'s word (`PhaseError.paid`, `isPaidFailure`), never this
+ * wording match: a paid charge can fail on a phase that is not a change
+ * write (the payment bookkeeping, say), and the screen must end it as paid
+ * all the same (ENG-642).
  */
 export function failedAfterSwap(failure: Failure): boolean {
   return CHANGE_WRITE.test(failure.phase ?? '');
@@ -92,6 +94,11 @@ export interface FailureContext {
   burnsDone: number;
   paidSat: number;
   changeSat: number;
+  /**
+   * `executeCharge` reported the bill paid (`PhaseError.paid`): the failure
+   * came after the swap, whatever its phase.
+   */
+  paid?: boolean;
   /** formatSatAmount: "4 sats", "1 sat". */
   fmt: (sat: number) => string;
 }
@@ -104,7 +111,7 @@ export interface FailureContext {
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
   const phase = failure.phase ?? '';
-  if (failure.cardFull && ctx.burnsDone === 0) {
+  if (failure.cardFull && ctx.burnsDone === 0 && !ctx.paid) {
     // The pre-flight (or a LOAD of earlier change) refused before any burn.
     // No instruction: a spend leaves its slot 'spent', not free, and nothing
     // in the app clears spent slots yet (ENG-631 adds the top-up that does).
@@ -139,6 +146,16 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     return failure.cardFull
       ? `${saved} and will be added once the card has a free slot.`
       : `${saved} and will be added the next time this card is charged.`;
+  }
+  if (ctx.paid) {
+    // Paid, but not on a change write: the payment bookkeeping or a later
+    // step failed. The bill must read as paid — never "hold the card again",
+    // which would charge it twice. Any change had not been written yet (the
+    // bookkeeping runs before the change goes on), so promise nothing.
+    const paid = `${ctx.fmt(ctx.paidSat)} ${verb} paid.`;
+    return ctx.changeSat > 0
+      ? `${paid} Your ${ctx.fmt(ctx.changeSat)} change did not reach the card.`
+      : `${paid} There is nothing more to do.`;
   }
   if (!failure.tagLost) {
     return failure.detail || 'The card stopped responding.';

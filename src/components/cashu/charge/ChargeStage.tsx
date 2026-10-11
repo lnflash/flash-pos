@@ -48,6 +48,8 @@ export interface ChargeStageProps {
   /** Mode 'error' in the PIN pose: the pad is the retry. */
   pinError: boolean;
   error: string | null;
+  /** The error came after the swap: the bill is paid (`isPaidFailure`). */
+  paid?: boolean;
   stalled: boolean;
   nfcSupported: boolean | null;
   reduceMotion: boolean;
@@ -91,6 +93,7 @@ function ChargeStage(props: ChargeStageProps) {
     pinLength,
     pinError,
     error,
+    paid = false,
     stalled,
     nfcSupported,
     reduceMotion,
@@ -146,6 +149,7 @@ function ChargeStage(props: ChargeStageProps) {
         burnsDone,
         paidSat: amountSat,
         changeSat,
+        paid,
         fmt: formatSatAmount,
       }),
       idleHelper:
@@ -156,7 +160,7 @@ function ChargeStage(props: ChargeStageProps) {
           : 'Go back and enter an amount first',
       notice: nfcSupported === false ? NFC_NOTICE : null,
     };
-  }, [error, stage.phase, burnsDone, changeSat, nfcSupported, amountSat]);
+  }, [error, stage.phase, burnsDone, changeSat, paid, nfcSupported, amountSat]);
 
   const snapshot: Snapshot = {
     mode,

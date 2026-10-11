@@ -24,7 +24,12 @@ import PrimaryButton from '../../buttons/PrimaryButton';
 import ChargeStage from './ChargeStage';
 import {chargeLayout, HEADER_H, type Frame} from './geometry';
 import {BackArrow} from './icons';
-import {changePieces, parseFailure, pinFailureText, runningTotals} from './money';
+import {
+  changePieces,
+  parseFailure,
+  pinFailureText,
+  runningTotals,
+} from './money';
 import type {StageState} from './phaseToStation';
 import PinSheet from './PinSheet';
 import {COLOR, DUR, MAX_FONT_SCALE, TYPE} from './tokens';
@@ -77,10 +82,11 @@ export interface ChargeViewProps {
   onPinConfirm: () => void;
   onOpenNfcSettings?: () => void;
   /**
-   * The error came AFTER the mint swap settled the bill (`failedAfterSwap`):
+   * The error came AFTER the mint swap settled the bill (`isPaidFailure`):
    * the charge is over and paid, so the error state offers only `onDone` —
    * no "Tap card again" and no Cancel back to a fresh charge for the same
-   * bill (ENG-642). Needs `onDone`; without it the usual pair shows.
+   * bill (ENG-642). Hardware Back runs `onDone` too. Needs `onDone`; without
+   * it the usual pair shows.
    */
   settled?: boolean;
   onDone?: () => void;
@@ -119,7 +125,6 @@ export function planShape(plan: PlanSummary, amountSat: number): PlanShape {
     paidSat: amountSat,
   };
 }
-
 
 /**
  * The status bar over a white screen reads dark; once the flood has reached
@@ -260,6 +265,20 @@ const ChargeView = (props: ChargeViewProps) => {
     return () => sub.remove();
   }, [mode]);
 
+  // Paid after the swap: hardware Back is Done, never a pop onto a screen
+  // that could charge the same bill again (ENG-642).
+  const {settled, onDone} = props;
+  useEffect(() => {
+    if (!settled) {
+      return;
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onDone?.();
+      return true;
+    });
+    return () => sub.remove();
+  }, [settled, onDone]);
+
   const complete = mode === 'complete';
   const header = (
     <Pressable
@@ -344,7 +363,8 @@ const ChargeView = (props: ChargeViewProps) => {
     );
 
   const pinErrorText = pinError
-    ? pinFailureText(parseFailure(error).detail) || 'The card stopped responding.'
+    ? pinFailureText(parseFailure(error).detail) ||
+      'The card stopped responding.'
     : null;
   const renderSheet = useCallback(
     (sheet: Nodes['sheet'], dots: Nodes['dots']) =>
@@ -387,6 +407,7 @@ const ChargeView = (props: ChargeViewProps) => {
         pinLength={pin.length}
         pinError={pinError}
         error={error}
+        paid={props.settled}
         stalled={stalled}
         nfcSupported={nfcSupported}
         reduceMotion={reduceMotion}

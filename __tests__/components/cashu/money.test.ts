@@ -330,6 +330,55 @@ describe('failureBody', () => {
   });
 });
 
+describe('failureBody for a charge executeCharge flagged paid (ENG-642)', () => {
+  const fmt = (sat: number) => `${sat} ${sat === 1 ? 'sat' : 'sats'}`;
+  const paid = (changeSat: number) => ({
+    burnsDone: 1,
+    paidSat: 16,
+    changeSat,
+    paid: true,
+    fmt,
+  });
+
+  it('an exact bill lost on the final read: paid, never "hold the card again"', () => {
+    const body = failureBody(
+      parseFailure('[reading card] Tag was lost.'),
+      paid(0),
+    );
+    expect(body).toBe('16 sats are paid. There is nothing more to do.');
+    expect(body).not.toMatch(/again/i);
+  });
+
+  it('the payment bookkeeping refused with change due: paid, the change not promised', () => {
+    expect(
+      failureBody(
+        parseFailure('[recording the payment] keychain write denied'),
+        paid(4),
+      ),
+    ).toBe('16 sats are paid. Your 4 sats change did not reach the card.');
+  });
+
+  it('a change write keeps its own copy: saved on the terminal', () => {
+    expect(
+      failureBody(
+        parseFailure('[writing change to card] Tag was lost.'),
+        paid(4),
+      ),
+    ).toBe(
+      '16 sats are paid. Your 4 sats change is saved on this terminal and will be added the next time this card is charged.',
+    );
+  });
+
+  it('one sat paid reads "is paid"', () => {
+    expect(
+      failureBody(parseFailure('[reading card] Tag was lost.'), {
+        ...paid(0),
+        paidSat: 1,
+      }),
+    ).toBe('1 sat is paid. There is nothing more to do.');
+  });
+});
+
 describe('pinFailureText', () => {
   it("turns the card's tries-left verdict into one instruction", () => {
     expect(pinFailureText('VERIFY_PIN failed: wrong PIN — 2 tries left')).toBe(

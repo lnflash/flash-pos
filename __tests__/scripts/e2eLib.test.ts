@@ -482,17 +482,21 @@ describe('flows that fail the change write after the swap (ENG-642)', () => {
     },
   );
 
-  it('no flow asserts the PIN pad line', () => {
-    const flows = fs
+  // Scoped to the flows that reach a post-swap failure: a wrong-PIN or a
+  // pre-burn-refusal flow MUST assert the PIN pad line, and a blanket ban
+  // would push the next such flow into deleting this guard.
+  it('no post-swap flow asserts the PIN pad line', () => {
+    const named = ['owed-change-next-tap.yaml', 'lost-load-answer.yaml'];
+    const postSwap = fs
       .readdirSync(dir)
-      .filter((f: string) => f.endsWith('.yaml'));
-    expect(flows).toEqual(
-      expect.arrayContaining([
-        'owed-change-next-tap.yaml',
-        'lost-load-answer.yaml',
-      ]),
-    );
-    for (const f of flows) {
+      .filter((f: string) => f.endsWith('.yaml'))
+      .filter(
+        (f: string) =>
+          named.includes(f) ||
+          /saved on this terminal|\b(?:are|is) paid\b/.test(read(f)),
+      );
+    expect(postSwap).toEqual(expect.arrayContaining(named));
+    for (const f of postSwap) {
       expect(read(f)).not.toContain('pin-error-text');
     }
   });

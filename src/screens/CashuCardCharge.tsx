@@ -17,6 +17,7 @@ import {
   type PurchasePlan,
 } from '../services/cashuCharge';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
+import {isPaidFailure} from '../services/phaseError';
 
 // components
 // Leaf imports, not the barrel — this screen ships in release builds and must
@@ -25,11 +26,7 @@ import {PIN_MAX_LENGTH, PIN_MIN_LENGTH} from '../components/cashu/PinPad';
 import ChargeView, {
   type PlanSummary,
 } from '../components/cashu/charge/ChargeView';
-import {
-  failedAfterSwap,
-  last4FromPubkey,
-  parseFailure,
-} from '../components/cashu/charge/money';
+import {last4FromPubkey} from '../components/cashu/charge/money';
 import {
   INITIAL_STAGE,
   friendlyLabel,
@@ -283,21 +280,21 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   );
 
   /**
-   * A charge that died writing the change onto the card died AFTER the mint
-   * swap settled the bill (ENG-642): the customer has paid, and the change
-   * is recorded owed on this terminal for the card's next tap. Ending here
-   * as paid is the only safe answer — the PIN pad (which auto-commits on
-   * four digits) or "Tap card again" would run the charge again and burn
+   * A charge that failed AFTER the mint swap settled the bill (ENG-642) —
+   * on the change write, the payment bookkeeping, anything past the point
+   * `executeCharge` flags as paid — is over: the customer has paid. Ending
+   * here as paid is the only safe answer — the PIN pad (which auto-commits
+   * on four digits) or "Tap card again" would run the charge again and burn
    * the card a second time for the same bill. The error body says where the
-   * money is (`failureBody`); the one way out is Done. Returns false for
-   * any failure before the swap, which the caller handles as today.
+   * money is (`failureBody`); every way out is Done. Returns false for any
+   * failure before the swap, which the caller handles as today.
    */
   const endPaid = useCallback(
     (err: unknown): boolean => {
-      const message = describeCardFailure(err);
-      if (!failedAfterSwap(parseFailure(message))) {
+      if (!isPaidFailure(err)) {
         return false;
       }
+      const message = describeCardFailure(err);
       settledRef.current = true;
       setSettled(true);
       setFlow('done');
@@ -485,11 +482,30 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   // The paid-after-swap error's one way out: the bill is settled, so back to
   // a fresh keypad (it clears the amount on focus), as Success's Done does.
   // Home is the existing route object (same key), so it does not remount.
+  const leavingRef = useRef(false);
   const onDone = useCallback(() => {
+    leavingRef.current = true;
     const routes = navigation.getState?.()?.routes ?? [];
     const home = routes.find(r => r.name === 'Home') ?? {name: 'Home'};
     navigation.reset({index: 0, routes: [home as never]});
   }, [navigation]);
+
+  // Once paid, every exit is Done. The common path here is Keypad → Invoice
+  // → "Pay by Flashcard" → router → this screen: a plain pop (edge swipe,
+  // a stray goBack) would land on the Invoice with the amount still in the
+  // store and "Pay by Flashcard" live — one more tap burns the card again
+  // for a bill already paid (ENG-642). Done's own reset passes through.
+  useEffect(
+    () =>
+      navigation.addListener('beforeRemove', e => {
+        if (!settledRef.current || leavingRef.current) {
+          return;
+        }
+        e.preventDefault();
+        onDone();
+      }),
+    [navigation, onDone],
+  );
 
   const onPinDigit = useCallback((d: string) => {
     // The first digit after a failed attempt starts a new one.
@@ -547,7 +563,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       error={error}
       stalled={stalled}
       nfcSupported={supported}
-      onBack={() => navigation.goBack()}
+      onBack={settled ? onDone : () => navigation.goBack()}
       onCharge={onCharge}
       onCancel={onCancel}
       onRetry={onRetry}

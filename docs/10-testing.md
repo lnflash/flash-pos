@@ -458,7 +458,13 @@ cannot.
 and `lost-load-answer` assert `error-body` with the "saved on this terminal"
 copy and that neither the PIN sheet nor "Tap card again" is on screen: a PIN
 re-entry or a retry there would burn the card a second time for the same
-bill. Done (`charge-done`) takes the merchant back to the keypad.
+bill. Done (`charge-done`) takes the merchant back to the keypad, and so
+does every other exit from the paid state (header back, hardware Back, the
+edge swipe): a plain pop could land on the Invoice with "Pay by Flashcard"
+still live. Whether the bill is paid is `executeCharge`'s word
+(`PhaseError.paid`), not the phase wording, so a failure after the swap on
+any phase ends the same way; the screen tests cover each exit on the
+router (pre-read) path.
 
 The flows leave the charge with the stack's edge swipe (or, from the paid
 error state, Done): on notched iPhones the header's back arrow sits in the

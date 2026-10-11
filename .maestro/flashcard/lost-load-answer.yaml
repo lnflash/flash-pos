@@ -30,8 +30,9 @@ tags:
     file: scripts/assert-state.js
     env:
       EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'
-# The stack's back gesture still leaves the paid state (owed-change-next-tap
-# leaves by Done).
+# The stack's back gesture leaves the paid state as Done does: a reset to
+# the keypad, never a pop onto a screen that could charge the bill again
+# (owed-change-next-tap leaves by Done itself).
 - runFlow: common/leave-charge.yaml
 - runFlow:
     file: common/balance.yaml
