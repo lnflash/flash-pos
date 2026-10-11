@@ -106,7 +106,12 @@ const mockNfc = NfcManager as unknown as {
   requestTechnology: jest.Mock;
   getTag: jest.Mock;
   cancelTechnologyRequest: jest.Mock;
+  setTimeout: jest.Mock;
+  isoDepHandler: {transceive: jest.Mock};
 };
+
+/** A SELECT, the first APDU any card read sends. */
+const SELECT_APDU = [0x00, 0xa4, 0x04, 0x00];
 
 const SUMMARY: CardSummary = {
   appletVersion: '1.0',
@@ -218,9 +223,13 @@ beforeEach(() => {
   mockIsCardReadingSupported.mockResolvedValue(true);
   mockExtendCardTimeout.mockResolvedValue(undefined);
   setCardBridge(null);
+  mockNfc.setTimeout.mockResolvedValue(undefined);
   // The seam's NFC branch, with its timeout knob observable: the request as
   // the hook asked for it (alert message only when given), the timeout
-  // raised once the tag connects, the session's teardown the real cancel.
+  // raised lazily on the session's first APDU (never for a tag nobody talks
+  // to, like a BoltCard's NDEF), the session's teardown the real cancel.
+  // The flag lives on the session so `mockSessionTransceive` stays the one
+  // channel the identity assertions compare against.
   mockOpenCardSession.mockImplementation(
     async ({
       techs,
@@ -234,7 +243,14 @@ beforeEach(() => {
       } else {
         await mockNfc.requestTechnology(techs);
       }
-      await mockExtendCardTimeout();
+      let extended = false;
+      mockSessionTransceive.mockImplementation(async () => {
+        if (!extended) {
+          extended = true;
+          await mockExtendCardTimeout();
+        }
+        return [0x90, 0x00];
+      });
       return {
         transceive: mockSessionTransceive,
         getTag: () => mockNfc.getTag(),
@@ -305,6 +321,9 @@ describe('useKeypadCardReader on Android', () => {
     expect(mockHandleTag).toHaveBeenCalledWith(LNURLW_TAG);
     expect(mockReadCard).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
+    // Nothing talked to the tag, so the transceive timeout was never raised.
+    expect(mockSessionTransceive).not.toHaveBeenCalled();
+    expect(mockExtendCardTimeout).not.toHaveBeenCalled();
     // The session closes and a fresh one is armed for the next tap.
     expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalled();
     expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2);
@@ -312,6 +331,11 @@ describe('useKeypadCardReader on Android', () => {
   });
 
   it('reads an IsoDep card with no NDEF in the same session and opens CashuCardBalance', async () => {
+    // The read talks to the card, which is what raises the timeout.
+    mockReadCard.mockImplementationOnce(async transceive => {
+      await transceive(SELECT_APDU);
+      return SUMMARY;
+    });
     renderHook(() => useKeypadCardReader());
     focus();
     await flush();
@@ -320,6 +344,7 @@ describe('useKeypadCardReader on Android', () => {
 
     expect(mockHandleTag).not.toHaveBeenCalled();
     expect(mockExtendCardTimeout).toHaveBeenCalledTimes(1);
+    expect(mockSessionTransceive).toHaveBeenCalledWith(SELECT_APDU);
     expect(mockReadCard).toHaveBeenCalledTimes(1);
     expect(mockReadCard).toHaveBeenCalledWith(expect.any(Function));
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
@@ -442,6 +467,80 @@ describe('useKeypadCardReader on Android', () => {
     await flush();
 
     expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useKeypadCardReader: the transceive timeout (real openCardSession, Android)', () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    setPlatform('android');
+    mockOpenCardSession.mockImplementation(actualNfc.openCardSession);
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    // What the native module answers for a tag connected as Ndef.
+    mockNfc.setTimeout.mockRejectedValue(new Error('ERR_API_NOT_SUPPORT'));
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  /** An NTAG21x BoltCard: NDEF only, no IsoDep surface at all. */
+  const NDEF_ONLY_LNURLW_TAG: TagEvent = {
+    ...LNURLW_TAG,
+    id: '04778899AABBCC',
+    techTypes: ['android.nfc.tech.Ndef', 'android.nfc.tech.NfcA'],
+  };
+
+  it.each([
+    ['a BoltCard (IsoDep + Ndef)', LNURLW_TAG],
+    ['an NDEF-only NTAG21x BoltCard', NDEF_ONLY_LNURLW_TAG],
+  ])(
+    'hands %s to the Flashcard context with no setTimeout call and no warning',
+    async (_label, tag) => {
+      renderHook(() => useKeypadCardReader());
+      focus();
+      await flush();
+      expect(mockNfc.requestTechnology).toHaveBeenCalledWith(KEYPAD_CARD_TECHS);
+      await tap(tag);
+      await flush();
+
+      expect(mockHandleTag).toHaveBeenCalledTimes(1);
+      expect(mockHandleTag).toHaveBeenCalledWith(tag);
+      expect(mockReadCard).not.toHaveBeenCalled();
+      expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      // The session still closes and re-arms for the next tap.
+      expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalled();
+      expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('a Cashu javacard still gets the longer timeout before its first APDU', async () => {
+    mockNfc.setTimeout.mockResolvedValue(undefined);
+    mockNfc.isoDepHandler.transceive.mockResolvedValue([0x90, 0x00]);
+    mockReadCard.mockImplementationOnce(async transceive => {
+      await transceive(SELECT_APDU);
+      await transceive(SELECT_APDU);
+      return SUMMARY;
+    });
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+
+    expect(mockHandleTag).not.toHaveBeenCalled();
+    expect(mockNfc.setTimeout).toHaveBeenCalledTimes(1);
+    const [extendedAt] = mockNfc.setTimeout.mock.invocationCallOrder;
+    const [firstApduAt] =
+      mockNfc.isoDepHandler.transceive.mock.invocationCallOrder;
+    expect(extendedAt).toBeLessThan(firstApduAt);
+    expect(mockNfc.isoDepHandler.transceive).toHaveBeenCalledTimes(2);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+    });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
