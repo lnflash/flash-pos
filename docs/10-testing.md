@@ -524,9 +524,18 @@ byte-identity is pinned in `__tests__/scripts/e2eLib.test.ts`), resets the
 card (its key survives `/reset`, which the runner checks), posts the starting
 fixture, and hands later fixtures to the flow (`FIXTURE_FULL`,
 `FIXTURE_AFTER`). Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
-Every bridge call goes through cashu-javacard's `client.cjs` (5 s per request,
-fixtures validated before they are posted), so a wedged bridge fails the flow
-instead of hanging the run.
+The runner's own bridge calls (`/state`, `/reset` and the starting
+`/fixture`) go through cashu-javacard's `client.cjs`, with its 5 s deadline
+per request, so a wedged bridge fails the flow instead of hanging the run.
+Before anything is minted, the runner also checks every stage of every flow
+(`INITIAL`, `FULL`, `AFTER`) with the client's `validateFixture`, and checks
+each flow's stages again once its proofs are minted. The flows' own bridge
+calls do not go through the client: `.maestro/flashcard/scripts/post-fixture.js`
+(`/reset` and the mid-flow `/fixture`) and `assert-state.js` (`/state`) use
+Maestro's `http`, which validates nothing. A malformed
+stage therefore fails in the runner, naming the flow and the stage, and never
+reaches the bridge as a bare 400 from inside Maestro. `--dry-run` runs the
+same check when it finds a cashu-javacard checkout.
 
 ### CI
 

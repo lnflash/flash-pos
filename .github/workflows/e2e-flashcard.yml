@@ -61,15 +61,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check the TEST merchant is configured
-        env:
-          FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
-        run: |
-          if [ -z "$FLASH_POS_E2E_USERNAME" ]; then
-            echo "::error::Set the repository variable FLASH_POS_E2E_USERNAME to a TEST-instance merchant username."
-            exit 1
-          fi
-
       # ---- the card: cardsim ------------------------------------------------
       - name: Checkout cashu-javacard (cardsim)
         uses: actions/checkout@v4
@@ -218,6 +209,18 @@ jobs:
         run: |
           curl -Ls "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # Checked here, not first: only the login needs the merchant, so a
+      # missing variable still lets every step above (cardsim, the mint, the
+      # app build, the simulator, Maestro) run and show it works.
+      - name: Check the TEST merchant is configured
+        env:
+          FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
+        run: |
+          if [ -z "$FLASH_POS_E2E_USERNAME" ]; then
+            echo "::error::Set the repository variable FLASH_POS_E2E_USERNAME to a TEST-instance merchant username."
+            exit 1
+          fi
 
       - name: Run the eCash card flows
         env:

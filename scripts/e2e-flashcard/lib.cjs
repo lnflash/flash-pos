@@ -211,7 +211,13 @@ function resolveCardSimClient({flag, env, root, exists}) {
  * `CardSim` with reset/fixture/state). `options` go to the CardSim
  * constructor ({fetch, timeoutMs}).
  */
-function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
+/**
+ * Loads the cardsim client module and checks it is the one the runner was
+ * written against: a CardSim with reset/fixture/state, and the
+ * `validateFixture` the runner checks every stage with (the flows post
+ * their later stages through Maestro's own http, which validates nothing).
+ */
+function requireCardSimClient(clientPath, requireFn) {
   if (!clientPath) {
     throw new Error(
       'no cardsim client: pass --cardsim-client <cashu-javacard>/' +
@@ -239,7 +245,56 @@ function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
       `${clientPath} is not the cardsim client (no CardSim with reset/fixture/state)`,
     );
   }
+  if (typeof mod.validateFixture !== 'function') {
+    throw new Error(
+      `${clientPath} is not the cardsim client (no validateFixture)`,
+    );
+  }
+  return mod;
+}
+
+function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
+  const {CardSim} = requireCardSimClient(clientPath, requireFn);
   return new CardSim(bridgeUrl, options);
+}
+
+/**
+ * Every stage of a flow through the client's `validateFixture`. Only the
+ * runner's INITIAL stage is posted through the client (`sim.fixture`); FULL
+ * and AFTER reach the bridge from inside the flow (post-fixture.js, Maestro's
+ * http), where a malformed body would be a bare 400 mid-flow. Checked here,
+ * a drifted stage fails the run in the runner's stack, naming the flow and
+ * the stage, before anything is posted. Throws on the first bad stage.
+ */
+function validateStages(client, flow, fixtures) {
+  for (const [stage, body] of Object.entries(fixtures)) {
+    try {
+      client.validateFixture(body);
+    } catch (error) {
+      throw new Error(
+        `${flow} ${stage} fixture: ${
+          error instanceof Error ? error.message : error
+        }`,
+      );
+    }
+  }
+}
+
+/** Every stage of every named flow, on placeholder proofs: no mint needed. */
+function validateFlows(client, flows) {
+  for (const flow of flows) {
+    const proofs = placeholderProofs(flow);
+    validateStages(
+      client,
+      flow,
+      Object.fromEntries(
+        Object.entries(FLOWS[flow].stages).map(([stage, spec]) => [
+          stage,
+          buildFixture(spec, proofs),
+        ]),
+      ),
+    );
+  }
 }
 
 module.exports = {
@@ -255,6 +310,9 @@ module.exports = {
   cardSecret,
   loadCardSim,
   placeholderProofs,
+  requireCardSimClient,
   resolveCardSimClient,
   toHex,
+  validateFlows,
+  validateStages,
 };

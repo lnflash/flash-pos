@@ -128,14 +128,23 @@ function parseArgs(argv) {
  * fixture is validated locally before it is posted. A 409 (a fixture step
  * the applet refused) arrives as its CardSimError naming the step.
  */
-function openCardSim(opts) {
-  const clientPath = lib.resolveCardSimClient({
+function cardSimClientPath(opts) {
+  return lib.resolveCardSimClient({
     flag: opts.cardsimClient && resolve(opts.cardsimClient),
     env: process.env.CARDSIM_CLIENT && resolve(process.env.CARDSIM_CLIENT),
     root: ROOT,
     exists: existsSync,
   });
-  return lib.loadCardSim(clientPath, opts.bridge, require);
+}
+
+/**
+ * The bridge's CardSim, and the client module it came from: the module's
+ * `validateFixture` checks the stages the flows post themselves (through
+ * Maestro's http), which never pass through the CardSim.
+ */
+function openCardSim(opts) {
+  const client = lib.requireCardSimClient(cardSimClientPath(opts), require);
+  return {client, sim: new client.CardSim(opts.bridge)};
 }
 
 /** /reset, then prove the card key survived it (minted proofs depend on it). */
@@ -289,7 +298,19 @@ async function main() {
   const maestro = process.env.MAESTRO || 'maestro';
 
   if (opts.dryRun) {
-    console.log(`dry run: ${opts.flows.length} flow(s), no network\n`);
+    console.log(`dry run: ${opts.flows.length} flow(s), no network`);
+    // Local only: the stages against the reference validator, when a
+    // cashu-javacard checkout is found.
+    const clientPath = cardSimClientPath(opts);
+    if (clientPath) {
+      lib.validateFlows(
+        lib.requireCardSimClient(clientPath, require),
+        opts.flows,
+      );
+      console.log(`fixtures validated by ${clientPath}\n`);
+    } else {
+      console.log('fixtures not validated: no cardsim client found\n');
+    }
     for (const flow of opts.flows) {
       const minted = lib.placeholderProofs(flow);
       const fixtures = fixturesFor(flow, minted);
@@ -318,7 +339,11 @@ async function main() {
     return 0;
   }
 
-  const sim = openCardSim(opts);
+  const {client, sim} = openCardSim(opts);
+  // Every stage of every flow against the reference validator before a sat
+  // is minted: FULL and AFTER are posted mid-flow by post-fixture.js through
+  // Maestro's http, so this is the only check they get before the bridge.
+  lib.validateFlows(client, opts.flows);
   const first = await sim.state();
   const pubkey = first.pubkey;
   console.log(
@@ -335,6 +360,8 @@ async function main() {
     try {
       const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
       const fixtures = fixturesFor(flow, minted);
+      // Again on the minted proofs, which the placeholders only stand in for.
+      lib.validateStages(client, flow, fixtures);
       // The flow starts on this card; later stages are its own to post.
       await resetCard(sim, pubkey);
       const state = await sim.fixture(fixtures.INITIAL);

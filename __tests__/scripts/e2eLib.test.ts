@@ -223,6 +223,26 @@ describe('the cardsim client', () => {
       ).toThrow(/is not the cardsim client/);
     });
 
+    it("refuses a client with no validateFixture (the flows' stages need it)", () => {
+      const file = write(
+        'old.cjs',
+        `class CardSim { reset() {} fixture() {} state() {} }
+         module.exports = {CardSim};`,
+      );
+      expect(() =>
+        lib.loadCardSim(file, 'http://127.0.0.1:9876', require),
+      ).toThrow(/is not the cardsim client \(no validateFixture\)/);
+    });
+
+    it('requireCardSimClient hands back the module itself', () => {
+      const file = write(
+        'mod.cjs',
+        `class CardSim { reset() {} fixture() {} state() {} }
+         module.exports = {CardSim, validateFixture: f => f, marker: 7};`,
+      );
+      expect(lib.requireCardSimClient(file, require).marker).toBe(7);
+    });
+
     it("builds the client's CardSim on the bridge URL with the options", () => {
       const file = write(
         'client.cjs',
@@ -230,13 +250,49 @@ describe('the cardsim client', () => {
            constructor(url, opts) { this.url = url; this.opts = opts; }
            reset() {} fixture() {} state() {}
          }
-         module.exports = {CardSim};`,
+         module.exports = {CardSim, validateFixture: f => f};`,
       );
       const sim = lib.loadCardSim(file, 'http://127.0.0.1:9876', require, {
         timeoutMs: 1234,
       });
       expect(sim.url).toBe('http://127.0.0.1:9876');
       expect(sim.opts).toEqual({timeoutMs: 1234});
+    });
+  });
+
+  // FULL and AFTER are posted mid-flow by post-fixture.js through Maestro's
+  // http, never through the client; the runner's validateFlows is the only
+  // check they get. Runs in plain CI with a recording stand-in.
+  describe('validateFlows', () => {
+    it('checks every stage of every flow, mid-flow ones included', () => {
+      const seen: unknown[] = [];
+      lib.validateFlows(
+        {validateFixture: (f: unknown) => seen.push(f)},
+        lib.FLOW_NAMES,
+      );
+      const stages = lib.FLOW_NAMES.flatMap((flow: string) =>
+        Object.keys(lib.FLOWS[flow].stages),
+      );
+      expect(seen).toHaveLength(stages.length);
+      expect(stages).toEqual(expect.arrayContaining(['FULL', 'AFTER']));
+    });
+
+    it('names the flow and the stage a validator refused', () => {
+      const flow = 'owed-change-next-tap';
+      const stages = Object.keys(lib.FLOWS[flow].stages);
+      let calls = 0;
+      const client = {
+        // Refuses the last stage only, so the error must name that one.
+        validateFixture: () => {
+          calls += 1;
+          if (calls === stages.length) {
+            throw new TypeError('refused');
+          }
+        },
+      };
+      expect(() => lib.validateFlows(client, [flow])).toThrow(
+        `${flow} ${stages[stages.length - 1]} fixture: refused`,
+      );
     });
   });
 
@@ -272,6 +328,28 @@ describe('the cardsim client', () => {
         sim.fixture({proofs: [{keysetId: 'zz', amount: 1, nonce: '', C: ''}]}),
       ).toThrow(/keysetId must be 8 bytes/);
       expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('the runner refuses a drifted mid-flow stage before anything is posted', () => {
+      const client = require(real);
+      const flow = 'owed-change-next-tap';
+      const good = Object.fromEntries(
+        Object.entries(lib.FLOWS[flow].stages).map(([stage, spec]) => [
+          stage,
+          lib.buildFixture(spec, lib.placeholderProofs(flow)),
+        ]),
+      ) as Record<string, {proofs: Array<Record<string, unknown>>}>;
+      expect(() => lib.validateStages(client, flow, good)).not.toThrow();
+      const drifted = {
+        ...good,
+        FULL: {
+          ...good.FULL,
+          proofs: [{...good.FULL.proofs[0], keysetId: 'zz'}],
+        },
+      };
+      expect(() => lib.validateStages(client, flow, drifted)).toThrow(
+        /owed-change-next-tap FULL fixture: .*keysetId must be 8 bytes/,
+      );
     });
 
     it('accepts every stage the flows post', () => {
