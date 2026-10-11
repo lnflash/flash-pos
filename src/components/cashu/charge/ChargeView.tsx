@@ -24,7 +24,12 @@ import PrimaryButton from '../../buttons/PrimaryButton';
 import ChargeStage from './ChargeStage';
 import {chargeLayout, HEADER_H, type Frame} from './geometry';
 import {BackArrow} from './icons';
-import {changePieces, parseFailure, pinFailureText, runningTotals} from './money';
+import {
+  changePieces,
+  parseFailure,
+  pinFailureText,
+  runningTotals,
+} from './money';
 import type {StageState} from './phaseToStation';
 import PinSheet from './PinSheet';
 import {COLOR, DUR, MAX_FONT_SCALE, TYPE} from './tokens';
@@ -76,6 +81,15 @@ export interface ChargeViewProps {
   onPinClear: () => void;
   onPinConfirm: () => void;
   onOpenNfcSettings?: () => void;
+  /**
+   * The error came AFTER the mint swap settled the bill (`isPaidFailure`):
+   * the charge is over and paid, so the error state offers only `onDone` —
+   * no "Tap card again" and no Cancel back to a fresh charge for the same
+   * bill (ENG-642). Hardware Back runs `onDone` too. Needs `onDone`; without
+   * it the usual pair shows.
+   */
+  settled?: boolean;
+  onDone?: () => void;
   onHeaderLongPress?: () => void;
   /** Overrides the system setting (the preview's toggle). */
   reduceMotion?: boolean;
@@ -111,7 +125,6 @@ export function planShape(plan: PlanSummary, amountSat: number): PlanShape {
     paidSat: amountSat,
   };
 }
-
 
 /**
  * The status bar over a white screen reads dark; once the flood has reached
@@ -252,6 +265,20 @@ const ChargeView = (props: ChargeViewProps) => {
     return () => sub.remove();
   }, [mode]);
 
+  // Paid after the swap: hardware Back is Done, never a pop onto a screen
+  // that could charge the same bill again (ENG-642).
+  const {settled, onDone} = props;
+  useEffect(() => {
+    if (!settled) {
+      return;
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onDone?.();
+      return true;
+    });
+    return () => sub.remove();
+  }, [settled, onDone]);
+
   const complete = mode === 'complete';
   const header = (
     <Pressable
@@ -311,26 +338,33 @@ const ChargeView = (props: ChargeViewProps) => {
       </Pressable>
     </View>
   );
-  // Two equal buttons, symmetric about the screen's one centred axis.
-  const errorAction = (
-    <View style={styles.errorRow}>
-      <View style={styles.errorHalf}>
-        <PrimaryButton
-          btnText="Cancel"
-          onPress={props.onCancel}
-          btnStyle={styles.secondaryBtn}
-          textStyle={styles.secondaryText}
-        />
+  // Two equal buttons, symmetric about the screen's one centred axis — or,
+  // once the bill is paid, the one way out.
+  const errorAction =
+    props.settled && props.onDone ? (
+      <View style={styles.primarySlot} testID="charge-done">
+        <PrimaryButton btnText="Done" onPress={props.onDone} />
       </View>
-      <View style={styles.errorGap} />
-      <View style={styles.errorHalf}>
-        <PrimaryButton btnText="Tap card again" onPress={props.onRetry} />
+    ) : (
+      <View style={styles.errorRow}>
+        <View style={styles.errorHalf}>
+          <PrimaryButton
+            btnText="Cancel"
+            onPress={props.onCancel}
+            btnStyle={styles.secondaryBtn}
+            textStyle={styles.secondaryText}
+          />
+        </View>
+        <View style={styles.errorGap} />
+        <View style={styles.errorHalf}>
+          <PrimaryButton btnText="Tap card again" onPress={props.onRetry} />
+        </View>
       </View>
-    </View>
-  );
+    );
 
   const pinErrorText = pinError
-    ? pinFailureText(parseFailure(error).detail) || 'The card stopped responding.'
+    ? pinFailureText(parseFailure(error).detail) ||
+      'The card stopped responding.'
     : null;
   const renderSheet = useCallback(
     (sheet: Nodes['sheet'], dots: Nodes['dots']) =>
@@ -373,6 +407,7 @@ const ChargeView = (props: ChargeViewProps) => {
         pinLength={pin.length}
         pinError={pinError}
         error={error}
+        paid={props.settled}
         stalled={stalled}
         nfcSupported={nfcSupported}
         reduceMotion={reduceMotion}

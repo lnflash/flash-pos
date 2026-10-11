@@ -1,5 +1,7 @@
 import {
+  changeOnCard,
   changePieces,
+  failedAfterSwap,
   failureBody,
   last4FromPubkey,
   parseFailure,
@@ -142,6 +144,35 @@ describe('parseFailure', () => {
       tagLost: false,
     });
     expect(parseFailure('[verifying PIN] wrong PIN').cardFull).toBe(false);
+  });
+});
+
+describe('failedAfterSwap (ENG-642)', () => {
+  it('is true only for the change write, recorded or not: the swap has settled the bill', () => {
+    for (const message of [
+      '[writing change to card] Tag was lost.',
+      '[writing change to card] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      '[writing change to card] ',
+      '[writing change to card (unrecorded)] Tag was lost.',
+    ]) {
+      expect(failedAfterSwap(parseFailure(message))).toBe(true);
+    }
+  });
+
+  it('is false for every phase before the swap, owed change from an earlier charge included', () => {
+    for (const message of [
+      '[reading card] Tag was lost.',
+      '[verifying PIN] wrong PIN — 2 tries left',
+      '[adding 4 sat of change owed from an earlier charge] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+      '[burning 16 sat (proof 1/2)] tag lost',
+      '[settling payment and minting change] mint unreachable',
+      'this card is full: 6 sat of change needs 2 free slots and the card has 0',
+      'writing change to card',
+      '',
+      null,
+    ]) {
+      expect(failedAfterSwap(parseFailure(message))).toBe(false);
+    }
   });
 });
 
@@ -297,6 +328,77 @@ describe('failureBody', () => {
     expect(failureBody(parseFailure(''), ctx())).toBe(
       'Hold the card to the phone again to finish.',
     );
+  });
+});
+
+describe('failureBody for a charge executeCharge flagged paid (ENG-642)', () => {
+  const fmt = (sat: number) => `${sat} ${sat === 1 ? 'sat' : 'sats'}`;
+  const paid = (changeSat: number) => ({
+    burnsDone: 1,
+    paidSat: 16,
+    changeSat,
+    paid: true,
+    fmt,
+  });
+
+  it('an exact bill lost on the final read: paid, never "hold the card again"', () => {
+    const body = failureBody(
+      parseFailure('[reading card] Tag was lost.'),
+      paid(0),
+    );
+    expect(body).toBe('16 sats are paid. There is nothing more to do.');
+    expect(body).not.toMatch(/again/i);
+  });
+
+  it('the payment bookkeeping refused with change due: paid, the change not promised', () => {
+    expect(
+      failureBody(
+        parseFailure('[recording the payment] keychain write denied'),
+        paid(4),
+      ),
+    ).toBe('16 sats are paid. Your 4 sats change did not reach the card.');
+  });
+
+  it('the payment bookkeeping refused but the change landed: paid, the change on the card', () => {
+    const failure = parseFailure(
+      '[recording the payment (change on card)] keychain write denied',
+    );
+    expect(changeOnCard(failure)).toBe(true);
+    expect(failedAfterSwap(failure)).toBe(false);
+    const body = failureBody(failure, paid(4));
+    expect(body).toBe('16 sats are paid. Your 4 sats change is on the card.');
+    expect(body).not.toMatch(/did not reach|saved/i);
+  });
+
+  it('changeOnCard keys on the change-on-card phase only', () => {
+    for (const message of [
+      '[recording the payment] keychain write denied',
+      '[writing change to card] Tag was lost.',
+      '[writing change to card (unrecorded)] Tag was lost.',
+      'keychain write denied',
+    ]) {
+      expect(changeOnCard(parseFailure(message))).toBe(false);
+    }
+  });
+
+  it('a change write keeps its own copy: saved on the terminal', () => {
+    expect(
+      failureBody(
+        parseFailure('[writing change to card] Tag was lost.'),
+        paid(4),
+      ),
+    ).toBe(
+      '16 sats are paid. Your 4 sats change is saved on this terminal and will be added the next time this card is charged.',
+    );
+  });
+
+  it('one sat paid reads "is paid"', () => {
+    expect(
+      failureBody(parseFailure('[reading card] Tag was lost.'), {
+        ...paid(0),
+        paidSat: 1,
+      }),
+    ).toBe('1 sat is paid. There is nothing more to do.');
   });
 });
 

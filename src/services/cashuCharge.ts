@@ -36,6 +36,7 @@ import {
 } from './cashuCard';
 import {appendSettledProofsTill, mintChargeChange} from './cashuMint';
 import {burnPlannedSlot} from './cashuSpend';
+import {PhaseError} from './phaseError';
 import {
   attachRecoveredWitness,
   listSettlements,
@@ -51,6 +52,8 @@ import {
   type SettlementEntry,
 } from './cashuSettlement';
 import {pow2PieceCount} from '../utils/denominations';
+
+export {PhaseError, isPaidFailure} from './phaseError';
 
 export const DEFAULT_UNIT = 'sat';
 
@@ -267,6 +270,27 @@ export const PHASE_WRITING_CHANGE_UNRECORDED =
   'writing change to card (unrecorded)';
 
 /**
+ * The phase a failure of the post-swap bookkeeping (the burned entries
+ * marked settled, the merchant's take into the till) is reported under. It
+ * is never emitted to the stage: it only names the step on the thrown, paid
+ * `PhaseError`.
+ */
+export const PHASE_RECORDING_PAYMENT = 'recording the payment';
+
+/**
+ * The post-swap bookkeeping failed, but every piece of change was then
+ * written onto the card (the loads run regardless; see `executeCharge`).
+ * Like `PHASE_RECORDING_PAYMENT`, never emitted to the stage: it lets the
+ * UI headline and word a paid failure without claiming the change is
+ * missing when it is on the card.
+ */
+export const PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD =
+  'recording the payment (change on card)';
+
+/** The catch-all phase for a post-swap failure that carries no phase of its own. */
+export const PHASE_AFTER_SWAP = 'finishing the charge';
+
+/**
  * Write change owed from an earlier charge onto the card, piece by piece,
  * marking each written as the card answers. A piece the card refuses (a
  * `6A84` — no free slot — or a lost tag) stays owed with the attempt
@@ -359,28 +383,11 @@ export interface ChargeResult {
   burned: SettlementEntry[];
   changeSat: number;
   changeLoaded: number;
-  balanceAfter: number;
-}
-
-/**
- * A failure inside one phase of a charge. The message carries the phase for
- * the merchant-facing log ("[reading card] SELECT failed: ..."); `cause` keeps
- * the original error — a `CardError` with its status word, for one — so
- * callers branch on the class, not on the wording.
- *
- * Declared as a field rather than passed as `new Error(message, {cause})`:
- * Hermes supports `cause`, but the React Native tsconfig's `lib` stops short
- * of `es2022.error`, which is where that overload and `Error.cause` are typed.
- */
-export class PhaseError extends Error {
-  readonly cause: unknown;
-
-  constructor(phase: string, cause: unknown) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    super(`[${phase}] ${message}`);
-    this.name = 'PhaseError';
-    this.cause = cause;
-  }
+  /**
+   * The card's balance read after the charge, for display. `null` when the
+   * card had left the field by then: the charge is complete either way.
+   */
+  balanceAfter: number | null;
 }
 
 const makeStep =
@@ -742,95 +749,204 @@ export async function executeCharge({
     minted = null;
   }
 
-  if (minted) {
-    // The change exists only in this process until the card takes it: record
-    // it durably FIRST — before the settlement bookkeeping and before any
-    // LOAD — so a 6A84 on the second piece, a lost tag or a killed app leaves
-    // a record the card's next tap writes from. A record that will not land
-    // is logged and the loads still run: the card is the only home left.
-    let changeRecorded = true;
+  // THE POINT OF NO RETURN. The burns are done and the swap has settled
+  // them (or, for an exact bill, deferred them to the drain): the bill is
+  // PAID. Whatever the rest throws — a change LOAD the card refuses, a tag
+  // lost mid-write, the settlement store refusing a write — carries
+  // `paid`, so the screen ends the charge as paid instead of offering a
+  // retry that would burn the card a second time for the same bill
+  // (ENG-642). Only this function knows where the swap stands; the UI must
+  // not infer it from the wording of a phase.
+  try {
+    if (minted) {
+      // The change exists only in this process until the card takes it:
+      // record it durably FIRST — before the settlement bookkeeping and
+      // before any LOAD — so a 6A84 on the second piece, a lost tag or a
+      // killed app leaves a record the card's next tap writes from. A
+      // record that will not land is logged and the loads still run: the
+      // card is the only home left.
+      let changeRecorded = true;
+      try {
+        await recordOwedChange(cardPubkey, minted.change, {mintUrl, unit}, now);
+      } catch (error) {
+        changeRecorded = false;
+        console.warn(
+          '[charge] owed change could not be recorded; writing to the card unrecorded',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      // The post-swap bookkeeping, then the change LOADs. Every step always
+      // runs, so none depends on another succeeding:
+      //  - The merchant's take joins the till FIRST (the sweep melts it
+      //    above the float reserve to the account address). Like the change,
+      //    it exists only in this process until it is written: a settlement
+      //    queue that refuses the write below must not drop it.
+      //  - The swap consumed the burned proofs: mark the entries settled.
+      //  - The change goes onto the card EVEN IF the bookkeeping failed.
+      //    The owed-change record, the till and the queue all write through
+      //    the same Keychain, so their failures are correlated: a Keychain
+      //    that refuses the till has most likely refused the owed-change
+      //    record too, and then the card still in the field is the only
+      //    home the change has left (`recordOwedChange`'s contract).
+      // The bookkeeping failure is held, not thrown, until the loads are
+      // done. A load that fails throws its own error instead (it says
+      // where the change is, which the body copy needs more). If every
+      // load landed, the held failure is thrown under a phase that says the
+      // change is on the card, so the screen never reports it missing.
+      const till = minted.till;
+      let bookkeepingError: PhaseError | null = null;
+      try {
+        await recordingPayment(() =>
+          allAttempted([
+            () => appendSettledProofsTill(till),
+            () =>
+              markEntriesSettled(
+                burned.map(e => e.id),
+                now,
+              ),
+          ]),
+        );
+      } catch (error) {
+        bookkeepingError =
+          error instanceof PhaseError
+            ? error
+            : new PhaseError(PHASE_RECORDING_PAYMENT, error);
+      }
+
+      for (const proof of minted.change) {
+        const nonce = nonceFromSecret(proof.secret);
+        onPhase(PHASE_WRITING_CHANGE);
+        let slot: number;
+        try {
+          slot = await loadProof(transceive, {
+            keysetId: proof.id,
+            amount: proof.amount,
+            nonce,
+            C: proof.C,
+          });
+        } catch (error) {
+          // Recorded: the piece is owed on disk and the next tap writes it.
+          // Unrecorded: it is nowhere but this process, and the error must
+          // say so — the UI's "your change is saved" keys on the phase.
+          // A held bookkeeping failure is superseded by this one; log it so
+          // a refused till write (the merchant's take, held only in memory)
+          // is not lost without a trace.
+          if (bookkeepingError) {
+            console.warn(
+              '[charge] post-swap bookkeeping failed; superseded by the change write failure',
+              bookkeepingError.message,
+            );
+          }
+          throw new PhaseError(
+            changeRecorded
+              ? PHASE_WRITING_CHANGE
+              : PHASE_WRITING_CHANGE_UNRECORDED,
+            error,
+          );
+        }
+        changeLoaded += 1;
+        if (changeRecorded) {
+          try {
+            await markOwedChangeWritten(
+              owedChangeId(cardPubkey, nonce),
+              slot,
+              now,
+            );
+          } catch {
+            // The piece is on the card. A stale 'owed' record is harmless:
+            // the next tap's reconcile finds the nonce in a slot and marks it.
+          }
+        }
+      }
+
+      if (bookkeepingError) {
+        // Every load landed (a failed one threw above). With change on the
+        // card, say so: "change not on card" would be false.
+        throw changeLoaded > 0
+          ? new PhaseError(
+              PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD,
+              bookkeepingError.cause,
+            )
+          : bookkeepingError;
+      }
+    }
+
+    // Witness recovery — AFTER the customer's critical path: entries parked
+    // as needs-card by earlier sessions (a burn whose SPEND_PROOF response
+    // was lost mid-NFC) are re-signed while the card is still in the field
+    // and PIN-verified; SIGN_ARBITRARY consumes nothing. Best-effort by
+    // design, the queue read included: a tag lost mid-sign or a store that
+    // will not read leaves the entry needs-card for the next session, and
+    // must never fail the charge that is already complete.
+    let queue: SettlementEntry[] = [];
     try {
-      await recordOwedChange(cardPubkey, minted.change, {mintUrl, unit}, now);
+      queue = await listSettlements();
     } catch (error) {
-      changeRecorded = false;
       console.warn(
-        '[charge] owed change could not be recorded; writing to the card unrecorded',
+        '[charge] settlement queue unreadable; witness recovery skipped',
         error instanceof Error ? error.message : String(error),
       );
     }
-    // The swap consumed the burned proofs: mark the entries settled.
-    await markEntriesSettled(
-      burned.map(e => e.id),
-      now,
+    const orphaned = queue.filter(
+      e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
     );
-    // The merchant's take joins the till (the sweep melts it above the
-    // float reserve to the account address).
-    await appendSettledProofsTill(minted.till);
-
-    for (const proof of minted.change) {
-      const nonce = nonceFromSecret(proof.secret);
-      onPhase(PHASE_WRITING_CHANGE);
-      let slot: number;
+    for (const entry of orphaned) {
+      onPhase(`re-signing recovered ${entry.amount} sat`);
       try {
-        slot = await loadProof(transceive, {
-          keysetId: proof.id,
-          amount: proof.amount,
-          nonce,
-          C: proof.C,
-        });
-      } catch (error) {
-        // Recorded: the piece is owed on disk and the next tap writes it.
-        // Unrecorded: it is nowhere but this process, and the error must say
-        // so — the UI's "your change is saved" keys on the phase.
-        throw new PhaseError(
-          changeRecorded
-            ? PHASE_WRITING_CHANGE
-            : PHASE_WRITING_CHANGE_UNRECORDED,
-          error,
-        );
-      }
-      changeLoaded += 1;
-      if (changeRecorded) {
-        try {
-          await markOwedChangeWritten(
-            owedChangeId(cardPubkey, nonce),
-            slot,
-            now,
-          );
-        } catch {
-          // The piece is on the card. A stale 'owed' record is harmless: the
-          // next tap's reconcile finds the nonce in a slot and marks it.
-        }
+        const signature = await resignWitness(transceive, entry);
+        await attachRecoveredWitness(entry.id, toHex(signature), now);
+      } catch {
+        // The card left the field mid-sign: the entry stays needs-card and
+        // the next session retries it. Never fail a completed charge for this.
       }
     }
-  }
 
-  // Witness recovery — AFTER the customer's critical path: entries parked as
-  // needs-card by earlier sessions (a burn whose SPEND_PROOF response was lost
-  // mid-NFC) are re-signed while the card is still in the field and
-  // PIN-verified; SIGN_ARBITRARY consumes nothing. Best-effort by design: a
-  // tag lost mid-sign leaves the entry needs-card for the next session, and
-  // must never fail the charge that is already complete.
-  const orphaned = (await listSettlements()).filter(
-    e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
-  );
-  for (const entry of orphaned) {
-    onPhase(`re-signing recovered ${entry.amount} sat`);
+    // Display only: the charge is complete, so a customer who lifts the
+    // card before this read must not turn a paid charge into a failure.
+    onPhase('reading card');
+    const balanceAfter = await getBalance(transceive).catch(() => null);
+    return {
+      amountSat,
+      burned,
+      changeSat: plan.changeSat,
+      changeLoaded,
+      balanceAfter,
+    };
+  } catch (error) {
+    if (error instanceof PhaseError) {
+      error.paid = true;
+      throw error;
+    }
+    throw new PhaseError(PHASE_AFTER_SWAP, error, {paid: true});
+  }
+}
+
+/**
+ * Run every write in order, each whether or not an earlier one failed, then
+ * throw the first failure. For bookkeeping where one write refusing must not
+ * cost the record another write would have kept.
+ */
+async function allAttempted(writes: Array<() => Promise<unknown>>) {
+  let first: {error: unknown} | null = null;
+  for (const write of writes) {
     try {
-      const signature = await resignWitness(transceive, entry);
-      await attachRecoveredWitness(entry.id, toHex(signature), now);
-    } catch {
-      // The card left the field mid-sign: the entry stays needs-card and the
-      // next session retries it. Never fail a completed charge for this.
+      await write();
+    } catch (error) {
+      if (!first) {
+        first = {error};
+      }
     }
   }
+  if (first) {
+    throw first.error;
+  }
+}
 
-  const balanceAfter = await step('reading card', () => getBalance(transceive));
-  return {
-    amountSat,
-    burned,
-    changeSat: plan.changeSat,
-    changeLoaded,
-    balanceAfter,
-  };
+/** Post-swap bookkeeping: a failure names its step, never the stage's. */
+async function recordingPayment<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    throw new PhaseError(PHASE_RECORDING_PAYMENT, error);
+  }
 }

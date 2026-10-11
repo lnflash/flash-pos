@@ -25,10 +25,7 @@ import {
   recoverableForCard,
 } from '../services/cashuSettlement';
 import {resignWitness} from '../services/cashuCard';
-import {
-  meltSettledProofs,
-  type PayoutResult,
-} from '../services/cashuMint';
+import {meltSettledProofs, type PayoutResult} from '../services/cashuMint';
 import {chargeCard, type ChargeResult} from '../services/cashuCharge';
 import {
   listSettlements,
@@ -127,16 +124,19 @@ const CashuCardSpend = () => {
     setCharge(null);
     setDrain(null);
     try {
-      const result = await withCardSession(transceive =>
-        chargeCard({
-          transceive,
-          amountSat: amount,
-          pin: chargePin,
-          mintUrl: FLASH_CASHU_MINT_URL,
-          onPhase: setPhase,
-        }), {
-        alertMessage: `Charge ${amount} sat — hold the customer's card`,
-      });
+      const result = await withCardSession(
+        transceive =>
+          chargeCard({
+            transceive,
+            amountSat: amount,
+            pin: chargePin,
+            mintUrl: FLASH_CASHU_MINT_URL,
+            onPhase: setPhase,
+          }),
+        {
+          alertMessage: `Charge ${amount} sat — hold the customer's card`,
+        },
+      );
       setCharge(result);
       await refreshQueue();
       // The burns are recorded; settle + sweep to the account address now.
@@ -320,14 +320,13 @@ const CashuCardSpend = () => {
             <Row>
               <Label>Change written to card</Label>
               <Value>
-                {charge.changeSat} sat ({charge.changeLoaded}{' '}
-                proof(s))
+                {charge.changeSat} sat ({charge.changeLoaded} proof(s))
               </Value>
             </Row>
           )}
           <Row>
             <Label>Card balance after</Label>
-            <Value>{charge.balanceAfter}</Value>
+            <Value>{charge.balanceAfter ?? 'not read'}</Value>
           </Row>
         </Results>
       )}

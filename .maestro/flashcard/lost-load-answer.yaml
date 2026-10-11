@@ -15,20 +15,28 @@ tags:
       D1: '3'
       D2: ''
 - runFlow: common/enter-pin.yaml
-# The change write died on a lost tag, after the swap.
-# KNOWN BUG ENG-642: pins today's wrong behaviour. A PIN card's charge falls
-# back into the PIN pad after the swap settled and invites a PIN re-entry
-# that re-runs the charge. The fix flips this to error-body "…will be added
-# the next time this card is charged." (plan ENG-634-flash-pos.md:67).
+# The change write died on a lost tag, after the swap: the bill is paid and
+# the charge ends there (ENG-642), with no PIN pad or "Tap card again" that
+# would run it a second time.
 - extendedWaitUntil:
     visible:
-      id: 'pin-error-text'
-      text: 'The card stopped responding.'
+      id: 'error-body'
+      text: '3 sats are paid. Your 5 sats change is saved on this terminal and will be added the next time this card is charged.'
     timeout: 60000
+- assertVisible:
+    id: 'error-title'
+    text: 'Paid — change not on card'
+- assertNotVisible: 'The card moved away'
+- assertNotVisible:
+    id: 'pin-sheet'
+- assertNotVisible: 'Tap card again'
 - runScript:
     file: scripts/assert-state.js
     env:
       EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'
+# The stack's back gesture leaves the paid state as Done does: a reset to
+# the keypad, never a pop onto a screen that could charge the bill again
+# (owed-change-next-tap leaves by Done itself).
 - runFlow: common/leave-charge.yaml
 - runFlow:
     file: common/balance.yaml

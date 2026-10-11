@@ -11,11 +11,18 @@ import {
   toHex,
   type Transceiver,
 } from '../../src/services/cashuCard';
-import {buildCardP2PKSecret} from '../../src/services/cashuMint';
+import {
+  buildCardP2PKSecret,
+  listSettledProofs,
+} from '../../src/services/cashuMint';
 import {
   chargeCard,
   executeCharge,
+  isPaidFailure,
   owedChangePhase,
+  PHASE_RECORDING_PAYMENT,
+  PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD,
+  PHASE_WRITING_CHANGE,
   PHASE_WRITING_CHANGE_UNRECORDED,
   PhaseError,
   planPurchase,
@@ -33,6 +40,13 @@ import {
   outstandingChangeForCard,
   recordOwedChange,
 } from '../../src/services/cashuSettlement';
+import {describeCardFailure} from '../../src/services/cashuCardNfc';
+import {
+  changeOnCard,
+  failedAfterSwap,
+  failureBody,
+  parseFailure,
+} from '../../src/components/cashu/charge/money';
 
 const mockStore: Record<string, string> = {};
 const mockMintChargeChange = jest.fn();
@@ -109,6 +123,8 @@ function fakeCard(opts: {
    * host must re-read before re-sending).
    */
   loseAnswerOnLoad?: (loadAttempt: number) => boolean;
+  /** The tag is lost on any balance read once a slot has burned. */
+  loseTagOnBalanceAfterBurn?: boolean;
 }) {
   const sent: number[][] = [];
   const loads: {keysetId: string; amount: number; nonce: string; C: string}[] =
@@ -154,6 +170,9 @@ function fakeCard(opts: {
       case 0x10:
         return ok(PUBKEY);
       case 0x11: {
+        if (opts.loseTagOnBalanceAfterBurn && burnCount > 0) {
+          throw new Error('Tag was lost.');
+        }
         const bal = cells
           .map((c, i) => (c && statusOf(i) === 0x01 ? c.amount : 0))
           .reduce((t, a) => t + a, 0);
@@ -1935,5 +1954,423 @@ describe('card-full classification', () => {
     );
     expect(isAppletNotFound(raw)).toBe(false);
     expect(new PhaseError('writing change to card', raw).cause).toBe(raw);
+  });
+});
+
+describe('the point of no return: a failure after the swap is PAID (ENG-642)', () => {
+  /**
+   * The screen ends a charge as paid on `isPaidFailure`, and picks the body
+   * copy with `failedAfterSwap` on the message the screen displays. Both are
+   * pinned here against what the service really throws.
+   */
+  const classified = (failure: unknown) =>
+    failedAfterSwap(parseFailure(describeCardFailure(failure)));
+
+  it('a change write the card refuses (recorded): flagged paid, and the copy classifier agrees', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      refuseLoad: () => true,
+    });
+    mockMintChargeChange.mockResolvedValueOnce({
+      change: [changeProof(4, '77'.repeat(32))],
+      till: [],
+    });
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 12,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(
+      new RegExp(`^\\[${PHASE_WRITING_CHANGE}\\] `),
+    );
+    expect(failure.paid).toBe(true);
+    expect(isPaidFailure(failure)).toBe(true);
+    expect(classified(failure)).toBe(true);
+  });
+
+  it('a change write that fails unrecorded: flagged paid, and the copy classifier agrees', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      refuseLoad: () => true,
+    });
+    mockMintChargeChange.mockResolvedValueOnce({
+      change: [changeProof(4, '77'.repeat(32))],
+      till: [],
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (k === OWED_CHANGE_KEY) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 12,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toMatch(
+        new RegExp(
+          `^\\[${PHASE_WRITING_CHANGE_UNRECORDED.replace(/[()]/g, '\\$&')}\\] `,
+        ),
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      expect(classified(failure)).toBe(true);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+      warn.mockRestore();
+    }
+  });
+
+  it('an exact bill whose card leaves the field on the final balance read: the charge completes', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      loseTagOnBalanceAfterBurn: true,
+    });
+    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    // The read is display-only: no failure, so no retry, so no second burn.
+    expect(result.changeSat).toBe(0);
+    expect(result.balanceAfter).toBeNull();
+    expect(card.burnCount).toBe(1);
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+  });
+
+  it('an exact bill whose swap is deferred, then the card leaves on the final read: still completes', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      loseTagOnBalanceAfterBurn: true,
+    });
+    mockMintChargeChange.mockRejectedValueOnce(new Error('offline'));
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.balanceAfter).toBeNull();
+    expect(card.burnCount).toBe(1);
+  });
+
+  it('the settlement store refusing markEntriesSettled after the swap: flagged paid under its own phase, the till still written', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    let swapped = false;
+    // The merchant's take: it exists only in this process until the till
+    // write lands, so the settlement queue refusing must not drop it.
+    const till = [changeProof(16, '66'.repeat(32))];
+    mockMintChargeChange.mockImplementationOnce(async () => {
+      swapped = true;
+      return {change: [], till};
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (swapped && k === '@cashu_settlement_queue') {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(swapped).toBe(true);
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(
+        `[${PHASE_RECORDING_PAYMENT}] keychain write denied`,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      // Not a change write: the copy classifier says so, and the screen
+      // still ends it as paid on the flag.
+      expect(classified(failure)).toBe(false);
+      expect(card.burnCount).toBe(1);
+      expect(await listSettledProofs()).toEqual(till);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+    }
+  });
+
+  it('the till store refusing after the swap: the entries are still marked settled, and the charge is flagged paid', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    let swapped = false;
+    mockMintChargeChange.mockImplementationOnce(async () => {
+      swapped = true;
+      return {change: [], till: [changeProof(16, '65'.repeat(32))]};
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (swapped && k === '@cashu_settled_proofs') {
+        throw new Error('till write denied');
+      }
+      return realSet(k, v);
+    });
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(
+        `[${PHASE_RECORDING_PAYMENT}] till write denied`,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      // The swap spent the burned proofs: a queue left 'pending' would have
+      // the drain swap them again. The settle write ran despite the till.
+      const entries = await listSettlements();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].status).toBe('settled');
+      expect(card.burnCount).toBe(1);
+    } finally {
+      storage.setSecure.mockImplementation(realSet);
+    }
+  });
+
+  /**
+   * The Keychain refusing every write once the swap has settled (device
+   * locked, Keychain busy): the owed-change record, the till and the
+   * settlement queue all fail together. The change exists only in this
+   * process, and the card in the field is its only home left.
+   */
+  const refuseEveryWriteAfterSwap = () => {
+    let swapped = false;
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (swapped) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    mockMintChargeChange.mockImplementationOnce(async () => {
+      swapped = true;
+      return {
+        change: [
+          changeProof(4, '77'.repeat(32)),
+          changeProof(2, '78'.repeat(32)),
+        ],
+        till: [changeProof(10, '66'.repeat(32))],
+      };
+    });
+    return () => storage.setSecure.mockImplementation(realSet);
+  };
+
+  const paidBody = (failure: unknown) =>
+    failureBody(parseFailure(describeCardFailure(failure)), {
+      burnsDone: 1,
+      paidSat: 10,
+      changeSat: 6,
+      paid: isPaidFailure(failure),
+      fmt: (sat: number) => `${sat} sats`,
+    });
+
+  it('every write refused after the swap: the change still goes onto the card, the charge is paid, and the copy never calls the change missing', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const restore = refuseEveryWriteAfterSwap();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      // Both pieces reached the card despite the bookkeeping failing first.
+      expect(card.loads).toHaveLength(2);
+      expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+      expect(card.burnCount).toBe(1);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(
+        `[${PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD}] keychain write denied`,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      const parsed = parseFailure(describeCardFailure(failure));
+      expect(changeOnCard(parsed)).toBe(true);
+      expect(failedAfterSwap(parsed)).toBe(false);
+      const body = paidBody(failure);
+      expect(body).toBe('10 sats are paid. Your 6 sats change is on the card.');
+      expect(body).not.toMatch(/did not reach|could not be put|saved/i);
+    } finally {
+      restore();
+      warn.mockRestore();
+    }
+  });
+
+  it('bookkeeping refused AND a change LOAD refused: the load failure is the one thrown, still paid', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      refuseLoad: n => n === 1,
+    });
+    const restore = refuseEveryWriteAfterSwap();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      // The first piece landed; the second was refused.
+      expect(card.loads).toHaveLength(1);
+      expect(failure).toBeInstanceOf(PhaseError);
+      // The owed-change record was refused too, so the load reports the
+      // change as unrecorded — the more specific story for the body copy.
+      expect(failure.message).toBe(
+        `[${PHASE_WRITING_CHANGE_UNRECORDED}] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
+      );
+      expect(failure.message).not.toMatch(/recording the payment/);
+      expect(isPaidFailure(failure)).toBe(true);
+      expect(changeOnCard(parseFailure(describeCardFailure(failure)))).toBe(
+        false,
+      );
+      expect(paidBody(failure)).toBe(
+        '10 sats are paid. Your 6 sats change could not be put on the card.',
+      );
+      // The superseded bookkeeping failure (the refused till write) is
+      // logged, not silently dropped.
+      expect(warn).toHaveBeenCalledWith(
+        '[charge] post-swap bookkeeping failed; superseded by the change write failure',
+        expect.stringMatching(/recording the payment/),
+      );
+    } finally {
+      restore();
+      warn.mockRestore();
+    }
+  });
+
+  it('a settlement queue that will not read after the change is on the card: the charge completes', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    let loaded = false;
+    mockMintChargeChange.mockResolvedValueOnce({
+      change: [changeProof(4, '77'.repeat(32))],
+      till: [],
+    });
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      getSecureStrict: jest.Mock;
+    };
+    const realGet = storage.getSecureStrict.getMockImplementation()!;
+    const realTransceive = card.transceive;
+    const transceive: Transceiver = async apdu => {
+      const answer = await realTransceive(apdu);
+      if (apdu[1] === 0x30) {
+        loaded = true;
+      }
+      return answer;
+    };
+    storage.getSecureStrict.mockImplementation(async (k: string) => {
+      if (loaded && k === '@cashu_settlement_queue') {
+        throw new Error('keychain read denied');
+      }
+      return realGet(k);
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await chargeCard({
+        transceive,
+        amountSat: 12,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      expect(result.changeLoaded).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/witness recovery skipped/),
+        expect.stringContaining('keychain read denied'),
+      );
+    } finally {
+      storage.getSecureStrict.mockImplementation(realGet);
+      warn.mockRestore();
+    }
+  });
+
+  it('a failure BEFORE the swap is not paid: a burn that loses the tag', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const transceive: Transceiver = async apdu => {
+      if (apdu[1] === 0x20) {
+        throw new Error('Tag was lost.');
+      }
+      return card.transceive(apdu);
+    };
+
+    const failure = await chargeCard({
+      transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[burning 16 sat/);
+    expect(isPaidFailure(failure)).toBe(false);
+    expect(mockMintChargeChange).not.toHaveBeenCalled();
+  });
+
+  it('a swap that fails with change owed is not paid: nothing reached the till', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    mockMintChargeChange.mockRejectedValueOnce(new Error('offline'));
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 12,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[settling payment/);
+    expect(isPaidFailure(failure)).toBe(false);
   });
 });

@@ -24,17 +24,23 @@ tags:
     env:
       FIXTURE: ${FIXTURE_FULL}
 - runFlow: common/enter-pin.yaml
-# The money moved and the change could not land.
-# KNOWN BUG ENG-642: pins today's wrong behaviour. A PIN card's charge falls
-# back into the PIN pad after the swap settled, shows the raw 6A84 refusal
-# on the sheet's line and invites a PIN re-entry that re-runs the charge.
-# The fix flips this to error-body "…saved on this terminal…" (plan
-# ENG-634-flash-pos.md:69).
+# The money moved and the change could not land. The swap settled the bill,
+# so the charge ends as paid (ENG-642): the change is saved on the terminal,
+# and there is no PIN pad or "Tap card again" to run the charge a second time.
 - extendedWaitUntil:
     visible:
-      id: 'pin-error-text'
-      text: 'LOAD_PROOF failed: card is full.*'
+      id: 'error-body'
+      text: '3 sats are paid. Your 5 sats change is saved on this terminal and will be added once the card has a free slot.'
     timeout: 60000
+# The headline says paid too: "The card is full" over a paid body reads as
+# a failed charge, and the merchant charges the card again.
+- assertVisible:
+    id: 'error-title'
+    text: 'Paid — change not on card'
+- assertNotVisible: 'The card is full'
+- assertNotVisible:
+    id: 'pin-sheet'
+- assertNotVisible: 'Tap card again'
 - runScript:
     file: scripts/assert-state.js
     env:
@@ -43,7 +49,12 @@ tags:
     file: scripts/post-fixture.js
     env:
       FIXTURE: ${FIXTURE_AFTER}
-- runFlow: common/leave-charge.yaml
+# Done is the one way out: back to a fresh keypad.
+- tapOn:
+    id: 'charge-done'
+- extendedWaitUntil:
+    visible: '.*Card balance'
+    timeout: 15000
 - runFlow:
     file: common/charge.yaml
     env:

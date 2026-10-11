@@ -452,41 +452,65 @@ describe('the cardsim client', () => {
   });
 });
 
-describe('flows that pin a known bug', () => {
+describe('flows that fail the change write after the swap (ENG-642)', () => {
   const fs = require('fs');
   const path = require('path');
   const dir = path.join(__dirname, '../../.maestro/flashcard');
+  const read = (f: string): string =>
+    fs.readFileSync(path.join(dir, f), 'utf8');
 
-  // A PIN card whose change write fails after the swap falls back into the
-  // PIN pad (ENG-642). Every flow that asserts that pad line after a PIN
-  // must say it pins a bug, so the fix reads as a fix, not a regression.
-  it.each(['owed-change-next-tap', 'lost-load-answer'])(
-    '%s marks its pin-error-text assertion KNOWN BUG ENG-642',
-    flow => {
-      const text: string = fs.readFileSync(
-        path.join(dir, `${flow}.yaml`),
-        'utf8',
-      );
-      const at = text.indexOf("id: 'pin-error-text'");
+  // A PIN card whose change write fails after the swap has paid: the charge
+  // ends on the paid error body, never back on the PIN pad, whose re-entered
+  // PIN would run the charge a second time. These flows once pinned that
+  // bug under a KNOWN BUG marker; they now assert the fix.
+  it.each([
+    [
+      'owed-change-next-tap',
+      'will be added once the card has a free slot.',
+      'The card is full',
+    ],
+    [
+      'lost-load-answer',
+      'will be added the next time this card is charged.',
+      'The card moved away',
+    ],
+  ])(
+    '%s asserts the paid title and body with the change saved on the terminal, and no PIN pad',
+    (flow, tail, unpaidTitle) => {
+      const text = read(`${flow}.yaml`);
+      expect(text).not.toMatch(/KNOWN BUG/);
+      const at = text.indexOf("id: 'error-body'");
       expect(at).toBeGreaterThan(-1);
-      expect(text.slice(0, at)).toMatch(
-        /# KNOWN BUG ENG-642: pins today's wrong behaviour[\s\S]*error-body/,
+      expect(text.slice(at)).toContain(
+        `change is saved on this terminal and ${tail}`,
       );
+      const after = text.slice(at);
+      // The headline is paid, never the failure title over a paid body.
+      expect(after).toMatch(
+        /assertVisible:\s*\n\s*id: 'error-title'\s*\n\s*text: 'Paid — change not on card'/,
+      );
+      expect(text).not.toContain(`assertVisible: '${unpaidTitle}'`);
+      expect(after).toMatch(/assertNotVisible:\s*\n\s*id: 'pin-sheet'/);
+      expect(after).toContain("assertNotVisible: 'Tap card again'");
     },
   );
 
-  it('no other flow asserts the PIN pad line', () => {
-    const others = fs
+  // Scoped to the flows that reach a post-swap failure: a wrong-PIN or a
+  // pre-burn-refusal flow MUST assert the PIN pad line, and a blanket ban
+  // would push the next such flow into deleting this guard.
+  it('no post-swap flow asserts the PIN pad line', () => {
+    const named = ['owed-change-next-tap.yaml', 'lost-load-answer.yaml'];
+    const postSwap = fs
       .readdirSync(dir)
       .filter((f: string) => f.endsWith('.yaml'))
       .filter(
         (f: string) =>
-          !['owed-change-next-tap.yaml', 'lost-load-answer.yaml'].includes(f),
+          named.includes(f) ||
+          /saved on this terminal|\b(?:are|is) paid\b/.test(read(f)),
       );
-    for (const f of others) {
-      expect(fs.readFileSync(path.join(dir, f), 'utf8')).not.toContain(
-        'pin-error-text',
-      );
+    expect(postSwap).toEqual(expect.arrayContaining(named));
+    for (const f of postSwap) {
+      expect(read(f)).not.toContain('pin-error-text');
     }
   });
 });

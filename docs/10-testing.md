@@ -453,17 +453,23 @@ cannot.
 | `owed-change-next-tap` | 8, then full, then 4 | the change LOAD answers 6A84 after the swap; the 5 sats are kept on the terminal and written first on the next charge (4 + 1, then the 4-sat proof pays the bill exactly) |
 | `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance shows 4 sats + "Change waiting · 1 sat" |
 
-**Known bug (ENG-642):** a PIN card whose change write fails after the swap
-falls back into the PIN pad, though the money has moved, and a PIN re-entry
-re-runs the charge. Until it is fixed, `owed-change-next-tap` and
-`lost-load-answer` pin that wrong behaviour on the PIN sheet's line
-(`pin-error-text`), each marked `# KNOWN BUG ENG-642`. The fix flips them to
-`error-body` with the "saved on this terminal" copy the plan asked for; a
-failure there after the fix is the flow catching up, not a regression.
+**A change write that fails after the swap ends the charge as paid
+(ENG-642).** The swap has settled the bill by then, so `owed-change-next-tap`
+and `lost-load-answer` assert `error-body` with the "saved on this terminal"
+copy, the paid headline (`error-title` "Paid — change not on card", never
+"The card is full" or "The card moved away" over a paid body), and that neither the PIN sheet nor "Tap card again" is on screen: a PIN
+re-entry or a retry there would burn the card a second time for the same
+bill. Done (`charge-done`) takes the merchant back to the keypad, and so
+does every other exit from the paid state (header back, hardware Back, the
+edge swipe): a plain pop could land on the Invoice with "Pay by Flashcard"
+still live. Whether the bill is paid is `executeCharge`'s word
+(`PhaseError.paid`), not the phase wording, so a failure after the swap on
+any phase ends the same way; the screen tests cover each exit on the
+router (pre-read) path.
 
-The flows leave the charge with the stack's edge swipe: on notched iPhones the
-header's back arrow sits in the status-bar band, where a tap goes to the
-system.
+The flows leave the charge with the stack's edge swipe (or, from the paid
+error state, Done): on notched iPhones the header's back arrow sits in the
+status-bar band, where a tap goes to the system.
 
 `dropLoad=n` makes the bridge forward the n-th LOAD_PROOF and then report the
 tag lost: the transport twin of `loseAnswerOnLoad` in
@@ -554,7 +560,8 @@ Maestro's output and the cardsim and mint logs are uploaded as the
   with the bridge's implicit tap that loop would spin, so the bridge is not
   meant for the emulator yet.
 - The flows pin customer-facing copy ("The card is full", "Change waiting · 1
-  sat — added on the next charge", "The card stopped responding."). A copy change updates the flow in the same
+  sat — added on the next charge", "… change is saved on this terminal and
+  will be added the next time this card is charged."). A copy change updates the flow in the same
   PR. The `/state` assertions are the durable half.
 - The card key is the same after every `/reset`, and the owed-change store is
   keyed by it: every flow starts with `clearState` and `clearKeychain`.
