@@ -99,7 +99,14 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
         transparent={true}
         visible={visible}
         onRequestClose={() => setVisible(!visible)}>
-        <Backdrop onPress={() => setVisible(false)} activeOpacity={0.9}>
+        {/* Not one accessible element: a touchable is, by default, and it
+            would swallow every currency row below it, so VoiceOver (and the
+            simulator e2e flows, which read the same tree) could not reach
+            a single one. The backdrop still closes on a tap. */}
+        <Backdrop
+          onPress={() => setVisible(false)}
+          activeOpacity={0.9}
+          accessible={false}>
           <ModalView>
             <RowWrapper>
               <Close />
@@ -113,6 +120,7 @@ const CurrencyPicker: React.FC<Props> = ({btnStyle, showCompleteText}) => {
                 currencyItem => (
                   <ItemBtn
                     key={currencyItem.id}
+                    testID={`currency-${currencyItem.id}`}
                     onPress={() => handleCurrencyChange(currencyItem as CurrencyItem)}>
                     <ItemText>{`${currencyItem.id} - ${currencyItem.name} ${currencyItem.flag}`}</ItemText>
                   </ItemBtn>
