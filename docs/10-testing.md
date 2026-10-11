@@ -415,71 +415,130 @@ describe('FlashcardProvider Integration', () => {
 });
 ```
 
-## E2E Testing (Future Implementation)
+## E2E Testing: eCash card on the iOS simulator
 
-### Detox Setup
+The card charge, balance and owed-change paths run end to end on an iOS
+simulator with no reader and no card (ENG-634). Three local services stand in
+for the hardware and the money:
 
-**Package Configuration**:
-```json
-{
-  "detox": {
-    "configurations": {
-      "ios.sim.debug": {
-        "binaryPath": "ios/build/Build/Products/Debug-iphonesimulator/flash_pos.app",
-        "build": "xcodebuild -workspace ios/flash_pos.xcworkspace -scheme flash_pos -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build",
-        "type": "ios.simulator",
-        "device": {
-          "type": "iPhone 12"
-        }
-      },
-      "android.emu.debug": {
-        "binaryPath": "android/app/build/outputs/apk/debug/app-debug.apk",
-        "build": "cd android && ./gradlew assembleDebug assembleAndroidTest -DtestBuildType=debug && cd ..",
-        "type": "android.emulator",
-        "device": {
-          "avdName": "Pixel_3_API_29"
-        }
-      }
-    }
-  }
-}
+| Piece | What it is | Where |
+|---|---|---|
+| Card | The real cashu-javacard applet in jCardSim, served over HTTP (`cardsim`) | `lnflash/cashu-javacard` `tools/cardsim`, port 9876 |
+| Mint | Nutshell 0.19.2 on FakeWallet: quotes pay themselves, no fees | port 3338 |
+| App | A Debug build with the JS bundle embedded, driven by Maestro | `.maestro/flashcard/` |
+
+The app reaches the card through the **card bridge** (`src/services/cardBridge.ts`):
+in a dev build, every card APDU can go to cardsim instead of NFC. It is set by
+the deep link `flashpos://dev/card-bridge?url=<bridge>` (Maestro opens it) or
+by hand on the eCash card bring-up screen (Profile → Settings → Cashu card
+(dev) → Card bridge). With the bridge set, a "tap" is implicit: the card
+session opens at once. `getCardBridge()` is `null` in every release build, and
+the `flashpos://` scheme is registered only in the Debug configuration
+(`ios/scripts/register-dev-url-scheme.sh`, a build phase).
+
+### What the flows prove
+
+Every flow logs in on SAT (a sub-cent SAT bill skips the BTCPay invoice and
+opens the card charge directly), charges a 3-sat bill against an 8-sat proof
+(change 5 = 4 + 1) and, after the UI step, reads the card's own state from
+cardsim (`scripts/assert-state.js`): copy on screen can lie about money, slots
+cannot.
+
+| Flow | Card | Proves |
+|---|---|---|
+| `balance-read` | 8, PIN | Card balance shows "8 sats", nothing written |
+| `charge-with-change` | 8, PIN | read → PIN → burn → swap → 4 + 1 written; balance "5 sats" |
+| `charge-no-pin` | 8 | one tap, no PIN sheet |
+| `full-card-refusal` | 8 + 31 spent | refused before the burn ("The card is full"); the 8 stays unspent |
+| `owed-change-next-tap` | 8, then full, then 4 | the change LOAD answers 6A84 after the swap; the 5 sats are kept on the terminal and written first on the next charge (4 + 1, then the 4-sat proof pays the bill exactly) |
+| `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance shows 4 sats + "Change waiting · 1 sat" |
+
+A PIN card whose change write fails after the swap falls back into the PIN
+pose, so those two flows read the reason from the PIN sheet's line
+(`pin-error-text`), not the error body. They leave the charge with the stack's
+edge swipe: on notched iPhones the header's back arrow sits in the status-bar
+band, where a tap goes to the system.
+
+`dropLoad=n` makes the bridge forward the n-th LOAD_PROOF and then report the
+tag lost: the transport twin of `loseAnswerOnLoad` in
+`__tests__/services/cashuCharge.test.ts`.
+
+### Running it locally
+
+```bash
+# 1. The card (cashu-javacard checkout at the ref in .github/workflows/e2e-flashcard.yml)
+mvn -B -f tools/cardsim/pom.xml package -DskipTests
+java -jar tools/cardsim/target/cardsim.jar --port 9876
+
+# 2. The mint (Python 3.10+; the constraints pin Nutshell's own lockfile)
+python3 -m venv /tmp/nutshell && /tmp/nutshell/bin/pip install \
+  -c scripts/e2e-flashcard/nutshell-constraints.txt cashu==0.19.2
+mkdir -p /tmp/mint && cd /tmp/mint && cat > .env <<'ENV'
+MINT_LISTEN_PORT=3338
+MINT_PRIVATE_KEY=local-e2e-throwaway
+MINT_BACKEND_BOLT11_SAT=FakeWallet
+MINT_INPUT_FEE_PPK=0
+FAKEWALLET_DELAY_INCOMING_PAYMENT=0
+FAKEWALLET_DELAY_OUTGOING_PAYMENT=0
+ENV
+/tmp/nutshell/bin/mint
+
+# 3. The app, against TEST (never production) and the local mint: in .env set
+#    FLASH_GRAPHQL_URI=https://api.test.flashapp.me/graphql
+#    FLASH_GRAPHQL_WS_URI=wss://ws.test.flashapp.me/graphql
+#    FLASH_LN_ADDRESS_URL=https://test.flashapp.me
+#    FLASH_LN_ADDRESS=test.flashapp.me
+#    FLASH_CASHU_MINT_URL=http://127.0.0.1:3338
+cd ios && pod install && cd ..
+xcodebuild -workspace ios/flash_pos.xcworkspace -scheme flash_pos \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath ios/build \
+  build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+  PROVISIONING_PROFILE_SPECIFIER= FORCE_BUNDLING=1
+xcrun simctl install booted "ios/build/Build/Products/Debug-iphonesimulator/Flash POS.app"
+
+# 4. The flows (maestro 2.10.0 on PATH)
+yarn e2e:flashcard --username <TEST merchant>             # all six
+yarn e2e:flashcard --username <TEST merchant> --flow charge-with-change
+yarn e2e:flashcard --dry-run                              # the plan, no network
 ```
 
-**Example E2E Test**:
-```javascript
-// e2e/payment-flow.e2e.js
-describe('Payment Flow', () => {
-  beforeEach(async () => {
-    await device.reloadReactNative();
-  });
+`FORCE_BUNDLING=1` embeds `main.jsbundle` in the Debug build (still `__DEV__`),
+so the app needs no Metro. Sign it ad hoc (`CODE_SIGN_IDENTITY=-`), not
+`CODE_SIGNING_ALLOWED=NO`: an unsigned build has no keychain entitlement on the
+simulator, the owed-change store reads as unreadable ("owed change store
+unreadable: Internal error when a required entitlement isn't present") and
+every charge fails closed. `yarn ios` with Metro running works too. Pass
+`--device <simulator id>` when more than one simulator is booted.
 
-  it('should complete full payment flow', async () => {
-    // Navigate to keypad
-    await element(by.id('keypad-tab')).tap();
-    
-    // Enter amount
-    await element(by.id('digit-1')).tap();
-    await element(by.id('digit-0')).tap();
-    
-    // Create invoice
-    await element(by.id('create-invoice-button')).tap();
-    
-    // Verify invoice screen
-    await expect(element(by.id('invoice-qr-code'))).toBeVisible();
-    await expect(element(by.id('invoice-amount'))).toHaveText('10');
-  });
+The runner (`scripts/e2e-flashcard.mjs`) mints each flow's proofs P2PK-locked to
+the card exactly as the app rebuilds them (`buildCardP2PKSecret`; the
+byte-identity is pinned in `__tests__/scripts/e2eLib.test.ts`), resets the
+card (its key survives `/reset`, which the runner checks), posts the starting
+fixture, and hands later fixtures to the flow (`FIXTURE_FULL`,
+`FIXTURE_AFTER`). Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
 
-  it('should handle rewards flow', async () => {
-    await element(by.id('rewards-tab')).tap();
-    
-    // Simulate NFC tap (mock implementation)
-    await device.shake(); // Custom trigger for mock NFC
-    
-    await expect(element(by.id('rewards-success'))).toBeVisible();
-    await expect(element(by.text('21 sats'))).toBeVisible();
-  });
-});
-```
+### CI
+
+`.github/workflows/e2e-flashcard.yml` runs the same on `macos-15`: on pull
+requests that touch the card path, nightly, and on demand. It is not a required
+check. It needs the repository variable `FLASH_POS_E2E_USERNAME`, a merchant
+username on the TEST instance. The login and the keypad's price fetch call TEST
+read-only; after a charge the app's auto-settlement tries an lnurlp sweep to
+`<username>@test.flashapp.me` from the local FakeWallet mint (no real payment).
+Maestro's output and the cardsim and mint logs are uploaded as the
+`e2e-flashcard` artifact.
+
+### Limits
+
+- iOS only. On Android the keypad keeps a card session armed while focused;
+  with the bridge's implicit tap that loop would spin, so the bridge is not
+  meant for the emulator yet.
+- The flows pin customer-facing copy ("The card is full", "Change waiting · 1
+  sat — added on the next charge", "The card stopped responding."). A copy change updates the flow in the same
+  PR. The `/state` assertions are the durable half.
+- The card key is the same after every `/reset`, and the owed-change store is
+  keyed by it: every flow starts with `clearState` and `clearKeychain`.
 
 ## Mock Implementations
 
