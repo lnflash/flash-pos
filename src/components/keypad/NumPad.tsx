@@ -18,35 +18,53 @@ const NumPad = () => {
   return (
     <NumbersWrapper>
       <RowWrapper>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '1'))}>
+        <NumBtn
+          testID="numpad-1"
+          onPress={() => dispatch(updateAmount('addDigit', '1'))}>
           <NumText>1</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '2'))}>
+        <NumBtn
+          testID="numpad-2"
+          onPress={() => dispatch(updateAmount('addDigit', '2'))}>
           <NumText>2</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '3'))}>
+        <NumBtn
+          testID="numpad-3"
+          onPress={() => dispatch(updateAmount('addDigit', '3'))}>
           <NumText>3</NumText>
         </NumBtn>
       </RowWrapper>
       <RowWrapper>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '4'))}>
+        <NumBtn
+          testID="numpad-4"
+          onPress={() => dispatch(updateAmount('addDigit', '4'))}>
           <NumText>4</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '5'))}>
+        <NumBtn
+          testID="numpad-5"
+          onPress={() => dispatch(updateAmount('addDigit', '5'))}>
           <NumText>5</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '6'))}>
+        <NumBtn
+          testID="numpad-6"
+          onPress={() => dispatch(updateAmount('addDigit', '6'))}>
           <NumText>6</NumText>
         </NumBtn>
       </RowWrapper>
       <RowWrapper>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '7'))}>
+        <NumBtn
+          testID="numpad-7"
+          onPress={() => dispatch(updateAmount('addDigit', '7'))}>
           <NumText>7</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '8'))}>
+        <NumBtn
+          testID="numpad-8"
+          onPress={() => dispatch(updateAmount('addDigit', '8'))}>
           <NumText>8</NumText>
         </NumBtn>
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '9'))}>
+        <NumBtn
+          testID="numpad-9"
+          onPress={() => dispatch(updateAmount('addDigit', '9'))}>
           <NumText>9</NumText>
         </NumBtn>
       </RowWrapper>
@@ -64,7 +82,9 @@ const NumPad = () => {
             <NumText />
           </NumBtn>
         )}
-        <NumBtn onPress={() => dispatch(updateAmount('addDigit', '0'))}>
+        <NumBtn
+          testID="numpad-0"
+          onPress={() => dispatch(updateAmount('addDigit', '0'))}>
           <NumText>0</NumText>
         </NumBtn>
         <NumBtn onPress={() => dispatch(updateAmount('clearInput'))}>
