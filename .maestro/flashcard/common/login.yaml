@@ -12,10 +12,20 @@ appId: com.flash.pos
     timeout: 120000
 # After JS is up, so the Linking listener is there to hear it.
 - openLink: ${BRIDGE_LINK}
-# iOS asks before an app opens its own custom-scheme link.
+# iOS asks before an app opens its own custom-scheme link. The prompt can
+# take several seconds on a cold CI simulator: wait for it, not the few
+# seconds an optional tap looks for. A prompt left up covers the app for
+# this flow and every later one (it survives the next launchApp).
+- extendedWaitUntil:
+    visible: 'Open'
+    timeout: 30000
+    optional: true
 - tapOn:
     text: 'Open'
     optional: true
+- extendedWaitUntil:
+    notVisible: 'Open'
+    timeout: 10000
 - tapOn:
     id: 'auth-username'
 - inputText: ${FLASH_USERNAME}

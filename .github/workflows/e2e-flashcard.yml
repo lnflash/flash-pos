@@ -217,6 +217,13 @@ jobs:
         run: |
           xcrun simctl boot "$SIM_ID"
           xcrun simctl bootstatus "$SIM_ID" -b
+          # A fresh simulator shows the keyboard's one-time introductions
+          # (slide to type) over the app the first time a field is focused.
+          for key in DidShowContinuousPathIntroduction \
+            DidShowGestureKeyboardIntroduction \
+            KeyboardDidShowProductivityTutorial; do
+            xcrun simctl spawn "$SIM_ID" defaults write com.apple.Preferences "$key" -bool true
+          done
           xcrun simctl install "$SIM_ID" "$APP_PATH"
 
       - name: Install Maestro
@@ -247,14 +254,45 @@ jobs:
             --mint "$MINT_URL" \
             --device "$SIM_ID"
 
+      # Maestro names its output folders after the flow titles, and
+      # upload-artifact refuses a path holding any of " : < > | * ? CR LF:
+      # copy the tree to names it accepts. Never fails the job itself.
+      - name: Collect Maestro output
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/e2e-output"
+          mkdir -p "$out"
+          if [ -d "$HOME/.maestro/tests" ]; then
+            node -e '
+              const fs = require("fs");
+              const path = require("path");
+              const safe = n => n.replace(/[":<>|*?\r\n]/g, "_");
+              const copy = (src, dst) => {
+                for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+                  const s = path.join(src, e.name);
+                  const d = path.join(dst, safe(e.name));
+                  if (e.isDirectory()) {
+                    fs.mkdirSync(d, { recursive: true });
+                    copy(s, d);
+                  } else if (e.isFile()) {
+                    fs.copyFileSync(s, d);
+                  }
+                }
+              };
+              fs.mkdirSync(process.argv[2], { recursive: true });
+              copy(process.argv[1], process.argv[2]);
+            ' "$HOME/.maestro/tests" "$out/maestro" || echo "::warning::could not copy the Maestro output"
+          fi
+          if [ -n "${SIM_ID:-}" ]; then
+            xcrun simctl io "$SIM_ID" screenshot "$out/simulator-final.png" || true
+          fi
+          cp "$RUNNER_TEMP/cardsim.log" "$RUNNER_TEMP/mint.log" "$out/" 2>/dev/null || true
+
       - name: Upload Maestro output and service logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-flashcard
-          path: |
-            ~/.maestro/tests/**
-            ${{ runner.temp }}/cardsim.log
-            ${{ runner.temp }}/mint.log
+          path: ${{ runner.temp }}/e2e-output
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: warn
