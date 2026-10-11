@@ -1,4 +1,4 @@
-import {Alert} from 'react-native';
+import {Alert, Platform} from 'react-native';
 import {act, renderHook} from '@testing-library/react-native';
 import NfcManager, {NfcError, TagEvent} from 'react-native-nfc-manager';
 
@@ -81,6 +81,7 @@ const mockNfc = NfcManager as unknown as {
   cancelTechnologyRequest: jest.Mock;
   setTimeout: jest.Mock;
   ndefHandler: {getNdefMessage: jest.Mock};
+  isoDepHandler: {transceive: jest.Mock};
 };
 
 const LNURLW = 'lnurlw://btcpay.flashapp.me/boltcard?p=0A1B&c=2C3D';
@@ -148,16 +149,24 @@ beforeEach(() => {
   mockNfc.requestTechnology.mockResolvedValue(undefined);
   mockNfc.getTag.mockResolvedValue(null);
   mockNfc.cancelTechnologyRequest.mockResolvedValue(undefined);
+  mockNfc.setTimeout.mockResolvedValue(undefined);
   mockNfc.ndefHandler.getNdefMessage.mockResolvedValue(null);
   mockExtendCardTimeout.mockResolvedValue(undefined);
   setCardBridge(null);
-  // The seam's NFC branch: request the techs, raise the timeout once the
-  // tag connects, hand back the tag the stack reports and its teardown.
+  // The seam's NFC branch: request the techs, raise the timeout before the
+  // first APDU (never for a tag nobody talks to), hand back the tag the
+  // stack reports and its teardown.
   mockOpenCardSession.mockImplementation(async ({techs}: {techs: string[]}) => {
     await mockNfc.requestTechnology(techs);
-    await mockExtendCardTimeout();
+    let extended = false;
     return {
-      transceive: (...args: unknown[]) => mockTransceiver(...args),
+      transceive: async (...args: unknown[]) => {
+        if (!extended) {
+          extended = true;
+          await mockExtendCardTimeout();
+        }
+        return mockTransceiver(...args);
+      },
       getTag: () => mockNfc.getTag(),
       close: () => mockNfc.cancelTechnologyRequest(),
     };
@@ -223,10 +232,16 @@ describe('useCardPaymentRouter — routing by evidence (ENG-614)', () => {
     mockNfc.ndefHandler.getNdefMessage.mockRejectedValue(
       new Error('No ndef available'),
     );
+    mockReadAndPlan.mockImplementation(async ({transceive}) => {
+      await transceive([0x00, 0xa4, 0x04, 0x00]);
+      await transceive([0x80, 0x01, 0x00, 0x00]);
+      return PLAN;
+    });
 
     const routed = await route();
 
     expect(routed).toBe(true);
+    // The Cashu read talks to the card, so the timeout is raised — once.
     expect(mockExtendCardTimeout).toHaveBeenCalledTimes(1);
     expect(mockReadAndPlan).toHaveBeenCalledWith(
       expect.objectContaining({amountSat: 800}),
@@ -354,6 +369,60 @@ describe('useCardPaymentRouter — routing by evidence (ENG-614)', () => {
     expect(routed).toBe(false);
     expect(mockHandleTag).toHaveBeenCalledWith(tag);
     expect(mockReadAndPlan).not.toHaveBeenCalled();
+  });
+
+  describe('the transceive timeout (real openCardSession, Android)', () => {
+    let platform: jest.ReplaceProperty<typeof Platform.OS>;
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      mockOpenCardSession.mockImplementation(
+        jest.requireActual('../../src/services/cashuCardNfc').openCardSession,
+      );
+      platform = jest.replaceProperty(Platform, 'OS', 'android');
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // What the native module answers for a tag connected as Ndef.
+      mockNfc.setTimeout.mockRejectedValue(new Error('ERR_API_NOT_SUPPORT'));
+    });
+
+    afterEach(() => {
+      platform.restore();
+    });
+
+    it('an NDEF-only LNURL-w tag routes to the BoltCard flow with no setTimeout call and no warning', async () => {
+      const tag: TagEvent = {
+        id: '04556677889900',
+        techTypes: ['android.nfc.tech.Ndef', 'android.nfc.tech.NfcA'],
+        ndefMessage: [lnurlwRecord()],
+      };
+      mockNfc.getTag.mockResolvedValue(tag);
+
+      const routed = await route();
+
+      expect(routed).toBe(false);
+      expect(mockHandleTag).toHaveBeenCalledWith(tag);
+      expect(mockNfc.setTimeout).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a Cashu javacard still gets the longer timeout before its first APDU', async () => {
+      mockNfc.setTimeout.mockResolvedValue(undefined);
+      mockNfc.getTag.mockResolvedValue(androidV2Tag());
+      mockNfc.isoDepHandler.transceive.mockResolvedValue([0x90, 0x00]);
+      mockReadAndPlan.mockImplementation(async ({transceive}) => {
+        await transceive([0x00, 0xa4, 0x04, 0x00]);
+        return PLAN;
+      });
+
+      const routed = await route();
+
+      expect(routed).toBe(true);
+      expect(mockNfc.setTimeout).toHaveBeenCalledTimes(1);
+      const [extended] = mockNfc.setTimeout.mock.invocationCallOrder;
+      const [firstApdu] =
+        mockNfc.isoDepHandler.transceive.mock.invocationCallOrder;
+      expect(extended).toBeLessThan(firstApdu);
+    });
   });
 
   it('always releases the session and the Flashcard context, whichever way it routed', async () => {

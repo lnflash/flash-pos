@@ -14,12 +14,26 @@ on:
   pull_request:
     branches: [main]
     paths:
+      # Path filters are case-sensitive globs: list what the flows touch
+      # explicitly rather than trusting a pattern (use*Card* misses
+      # useFlashcard). A rename the flows depend on must run this workflow
+      # on the PR, not surface as a nightly failure on main.
+      - 'App.tsx'
       - 'src/services/cashu*'
       - 'src/services/cardBridge.ts'
       - 'src/hooks/use*Card*'
+      - 'src/hooks/useFlashcard*'
       - 'src/screens/CashuCard*'
+      - 'src/screens/Auth.tsx'
+      - 'src/screens/Keypad.tsx'
       - 'src/components/cashu/**'
+      - 'src/components/keypad/**'
+      - 'src/components/modals/CurrencyPicker.tsx'
+      - 'src/utils/nfcTag.ts'
       - 'ios/flash_pos/AppDelegate.mm'
+      - 'ios/flash_pos.xcodeproj/**'
+      - 'package.json'
+      - 'yarn.lock'
       - 'ios/scripts/register-dev-url-scheme.sh'
       - '.maestro/**'
       - 'scripts/e2e-flashcard.mjs'
@@ -48,7 +62,11 @@ jobs:
   flashcard:
     name: eCash card flows (iOS simulator)
     runs-on: macos-15
-    timeout-minutes: 45
+    # The gate run took 38.5 min (about 22 of setup and build, 16 of
+    # flows); leave room for a slow host or a cold cache. The flows step has
+    # its own, shorter budget so that a hang there still leaves time to
+    # collect and upload the output.
+    timeout-minutes: 75
     # An explicit `shell: bash` runs as `bash --noprofile --norc -eo
     # pipefail {0}`; the implicit default is `bash -e {0}`, under which
     # `xcodebuild … | tail` and `curl … | head` exit 0 when the left side
@@ -244,6 +262,7 @@ jobs:
           fi
 
       - name: Run the eCash card flows
+        timeout-minutes: 40
         env:
           FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
         run: |

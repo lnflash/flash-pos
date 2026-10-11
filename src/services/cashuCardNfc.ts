@@ -169,8 +169,10 @@ export function usingCardBridge(): boolean {
  * The single seam between the card protocol and its transport.
  *
  * NFC: arms a technology request — pending until a card enters the field,
- * so this resolves on the tap — then raises the transceive timeout
- * (`extendCardTimeout`). The caller owns the teardown: `close()` in a
+ * so this resolves on the tap. The transceive timeout (`extendCardTimeout`)
+ * is raised lazily, before the session's first APDU, so a tag the caller
+ * never talks to (an NDEF-only LNURL-w card) never pays for it. The caller
+ * owns the teardown: `close()` in a
  * `finally`, exactly like `withCardSession`, or the pending request
  * swallows every BoltCard tap app-wide (see the header of this file).
  *
@@ -199,9 +201,23 @@ export async function openCardSession({
   } else {
     await NfcManager.requestTechnology(tech);
   }
-  await extendCardTimeout();
+  // The timeout is raised on the first APDU, not here: the caller has not
+  // classified the tag yet. A multi-tech request that lands on an NDEF-only
+  // tag (an NTAG21x LNURL-w card) connects as Ndef, where Android's
+  // setTimeout has no case and rejects with ERR_API_NOT_SUPPORT. Raising it
+  // eagerly would cost every such tap a native round trip and a warning.
+  // One shared promise, so the knob is turned once per session however the
+  // APDUs are issued.
+  let extending: Promise<void> | null = null;
+  const transceive: Transceiver = async apdu => {
+    if (!extending) {
+      extending = extendCardTimeout();
+    }
+    await extending;
+    return nfcTransceiver(apdu);
+  };
   return {
-    transceive: nfcTransceiver,
+    transceive,
     getTag: async () => (await NfcManager.getTag()) ?? null,
     close: cancelCardSession,
   };
