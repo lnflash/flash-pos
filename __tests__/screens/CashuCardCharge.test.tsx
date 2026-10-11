@@ -957,6 +957,37 @@ describe('CashuCardCharge', () => {
       expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
     });
 
+    it('a PIN card whose bookkeeping fails but whose change landed: headlined "Paid", the change on the card, no PIN pad', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({onPhase}: {onPhase: (p: string) => void}) => {
+          onPhase('reading card');
+          onPhase('verifying PIN');
+          onPhase('burning 16 sat (proof 1/2)');
+          onPhase('burning 8 sat (proof 2/2)');
+          onPhase('settling payment and minting change');
+          onPhase('writing change to card');
+          throw paidFailure(
+            '[recording the payment (change on card)] keychain write denied',
+          );
+        },
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is on the card.',
+        'Paid',
+      );
+      expect(utils.queryByText('Paid — change not on card', all)).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
     it('a failure BEFORE the burn still returns to the PIN pad, and the re-entered PIN re-runs the charge', async () => {
       jest.useFakeTimers(FAKE_TIMERS);
       mockExecuteCharge

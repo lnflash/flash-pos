@@ -277,6 +277,16 @@ export const PHASE_WRITING_CHANGE_UNRECORDED =
  */
 export const PHASE_RECORDING_PAYMENT = 'recording the payment';
 
+/**
+ * The post-swap bookkeeping failed, but every piece of change was then
+ * written onto the card (the loads run regardless; see `executeCharge`).
+ * Like `PHASE_RECORDING_PAYMENT`, never emitted to the stage: it lets the
+ * UI headline and word a paid failure without claiming the change is
+ * missing when it is on the card.
+ */
+export const PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD =
+  'recording the payment (change on card)';
+
 /** The catch-all phase for a post-swap failure that carries no phase of its own. */
 export const PHASE_AFTER_SWAP = 'finishing the charge';
 
@@ -765,25 +775,43 @@ export async function executeCharge({
           error instanceof Error ? error.message : String(error),
         );
       }
-      // The post-swap bookkeeping. Both writes always run, and the first
-      // failure is thrown after both have been tried, so neither depends on
-      // the other succeeding:
+      // The post-swap bookkeeping, then the change LOADs. Every step always
+      // runs, so none depends on another succeeding:
       //  - The merchant's take joins the till FIRST (the sweep melts it
       //    above the float reserve to the account address). Like the change,
       //    it exists only in this process until it is written: a settlement
       //    queue that refuses the write below must not drop it.
       //  - The swap consumed the burned proofs: mark the entries settled.
+      //  - The change goes onto the card EVEN IF the bookkeeping failed.
+      //    The owed-change record, the till and the queue all write through
+      //    the same Keychain, so their failures are correlated: a Keychain
+      //    that refuses the till has most likely refused the owed-change
+      //    record too, and then the card still in the field is the only
+      //    home the change has left (`recordOwedChange`'s contract).
+      // The bookkeeping failure is held, not thrown, until the loads are
+      // done. A load that fails throws its own error instead (it says
+      // where the change is, which the body copy needs more). If every
+      // load landed, the held failure is thrown under a phase that says the
+      // change is on the card, so the screen never reports it missing.
       const till = minted.till;
-      await recordingPayment(() =>
-        allAttempted([
-          () => appendSettledProofsTill(till),
-          () =>
-            markEntriesSettled(
-              burned.map(e => e.id),
-              now,
-            ),
-        ]),
-      );
+      let bookkeepingError: PhaseError | null = null;
+      try {
+        await recordingPayment(() =>
+          allAttempted([
+            () => appendSettledProofsTill(till),
+            () =>
+              markEntriesSettled(
+                burned.map(e => e.id),
+                now,
+              ),
+          ]),
+        );
+      } catch (error) {
+        bookkeepingError =
+          error instanceof PhaseError
+            ? error
+            : new PhaseError(PHASE_RECORDING_PAYMENT, error);
+      }
 
       for (const proof of minted.change) {
         const nonce = nonceFromSecret(proof.secret);
@@ -820,6 +848,17 @@ export async function executeCharge({
             // the next tap's reconcile finds the nonce in a slot and marks it.
           }
         }
+      }
+
+      if (bookkeepingError) {
+        // Every load landed (a failed one threw above). With change on the
+        // card, say so: "change not on card" would be false.
+        throw changeLoaded > 0
+          ? new PhaseError(
+              PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD,
+              bookkeepingError.cause,
+            )
+          : bookkeepingError;
       }
     }
 

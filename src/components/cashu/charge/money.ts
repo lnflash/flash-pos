@@ -43,6 +43,24 @@ const CARD_FULL = /card is full/i;
  */
 const CHANGE_UNRECORDED = /^writing change to card \(unrecorded\)$/i;
 
+/**
+ * `executeCharge` reports a failed post-swap bookkeeping write under this
+ * phase when every piece of change was then written onto the card anyway
+ * (`cashuCharge.ts`, `PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD`): the loads
+ * run whether or not the bookkeeping landed. The change is on the card;
+ * the title and body must not say otherwise.
+ */
+const CHANGE_ON_CARD = /^recording the payment \(change on card\)$/i;
+
+/**
+ * The charge failed after the swap, but its change is on the card: only
+ * the payment bookkeeping did not land. BODY AND TITLE COPY ONLY, like
+ * `failedAfterSwap`; `PhaseError.paid` says whether the bill is paid.
+ */
+export function changeOnCard(failure: Failure): boolean {
+  return CHANGE_ON_CARD.test(failure.phase ?? '');
+}
+
 export interface Failure {
   /** The phase the charge died on, from executeCharge's "[phase] …" prefix. */
   phase: string | null;
@@ -150,9 +168,14 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
   if (ctx.paid) {
     // Paid, but not on a change write: the payment bookkeeping or a later
     // step failed. The bill must read as paid — never "hold the card again",
-    // which would charge it twice. Any change had not been written yet (the
-    // bookkeeping runs before the change goes on), so promise nothing.
+    // which would charge it twice. The change loads run even when the
+    // bookkeeping fails, and a failed load is reported under its own phase
+    // above; a bookkeeping failure whose change all landed says so in its
+    // phase. Anything else promises nothing about the change.
     const paid = `${ctx.fmt(ctx.paidSat)} ${verb} paid.`;
+    if (ctx.changeSat > 0 && changeOnCard(failure)) {
+      return `${paid} Your ${ctx.fmt(ctx.changeSat)} change is on the card.`;
+    }
     return ctx.changeSat > 0
       ? `${paid} Your ${ctx.fmt(ctx.changeSat)} change did not reach the card.`
       : `${paid} There is nothing more to do.`;

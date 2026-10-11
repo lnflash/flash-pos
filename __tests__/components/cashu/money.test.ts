@@ -1,4 +1,5 @@
 import {
+  changeOnCard,
   changePieces,
   failedAfterSwap,
   failureBody,
@@ -356,6 +357,28 @@ describe('failureBody for a charge executeCharge flagged paid (ENG-642)', () => 
         paid(4),
       ),
     ).toBe('16 sats are paid. Your 4 sats change did not reach the card.');
+  });
+
+  it('the payment bookkeeping refused but the change landed: paid, the change on the card', () => {
+    const failure = parseFailure(
+      '[recording the payment (change on card)] keychain write denied',
+    );
+    expect(changeOnCard(failure)).toBe(true);
+    expect(failedAfterSwap(failure)).toBe(false);
+    const body = failureBody(failure, paid(4));
+    expect(body).toBe('16 sats are paid. Your 4 sats change is on the card.');
+    expect(body).not.toMatch(/did not reach|saved/i);
+  });
+
+  it('changeOnCard keys on the change-on-card phase only', () => {
+    for (const message of [
+      '[recording the payment] keychain write denied',
+      '[writing change to card] Tag was lost.',
+      '[writing change to card (unrecorded)] Tag was lost.',
+      'keychain write denied',
+    ]) {
+      expect(changeOnCard(parseFailure(message))).toBe(false);
+    }
   });
 
   it('a change write keeps its own copy: saved on the terminal', () => {

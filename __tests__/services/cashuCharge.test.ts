@@ -21,6 +21,7 @@ import {
   isPaidFailure,
   owedChangePhase,
   PHASE_RECORDING_PAYMENT,
+  PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD,
   PHASE_WRITING_CHANGE,
   PHASE_WRITING_CHANGE_UNRECORDED,
   PhaseError,
@@ -41,7 +42,9 @@ import {
 } from '../../src/services/cashuSettlement';
 import {describeCardFailure} from '../../src/services/cashuCardNfc';
 import {
+  changeOnCard,
   failedAfterSwap,
+  failureBody,
   parseFailure,
 } from '../../src/components/cashu/charge/money';
 
@@ -2163,6 +2166,120 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       expect(card.burnCount).toBe(1);
     } finally {
       storage.setSecure.mockImplementation(realSet);
+    }
+  });
+
+  /**
+   * The Keychain refusing every write once the swap has settled (device
+   * locked, Keychain busy): the owed-change record, the till and the
+   * settlement queue all fail together. The change exists only in this
+   * process, and the card in the field is its only home left.
+   */
+  const refuseEveryWriteAfterSwap = () => {
+    let swapped = false;
+    const storage = jest.requireMock('../../src/services/secureStorage') as {
+      setSecure: jest.Mock;
+    };
+    const realSet = storage.setSecure.getMockImplementation()!;
+    storage.setSecure.mockImplementation(async (k: string, v: string) => {
+      if (swapped) {
+        throw new Error('keychain write denied');
+      }
+      return realSet(k, v);
+    });
+    mockMintChargeChange.mockImplementationOnce(async () => {
+      swapped = true;
+      return {
+        change: [
+          changeProof(4, '77'.repeat(32)),
+          changeProof(2, '78'.repeat(32)),
+        ],
+        till: [changeProof(10, '66'.repeat(32))],
+      };
+    });
+    return () => storage.setSecure.mockImplementation(realSet);
+  };
+
+  const paidBody = (failure: unknown) =>
+    failureBody(parseFailure(describeCardFailure(failure)), {
+      burnsDone: 1,
+      paidSat: 10,
+      changeSat: 6,
+      paid: isPaidFailure(failure),
+      fmt: (sat: number) => `${sat} sats`,
+    });
+
+  it('every write refused after the swap: the change still goes onto the card, the charge is paid, and the copy never calls the change missing', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const restore = refuseEveryWriteAfterSwap();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      // Both pieces reached the card despite the bookkeeping failing first.
+      expect(card.loads).toHaveLength(2);
+      expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+      expect(card.burnCount).toBe(1);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(
+        `[${PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD}] keychain write denied`,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      const parsed = parseFailure(describeCardFailure(failure));
+      expect(changeOnCard(parsed)).toBe(true);
+      expect(failedAfterSwap(parsed)).toBe(false);
+      const body = paidBody(failure);
+      expect(body).toBe('10 sats are paid. Your 6 sats change is on the card.');
+      expect(body).not.toMatch(/did not reach|could not be put|saved/i);
+    } finally {
+      restore();
+      warn.mockRestore();
+    }
+  });
+
+  it('bookkeeping refused AND a change LOAD refused: the load failure is the one thrown, still paid', async () => {
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      refuseLoad: n => n === 1,
+    });
+    const restore = refuseEveryWriteAfterSwap();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      // The first piece landed; the second was refused.
+      expect(card.loads).toHaveLength(1);
+      expect(failure).toBeInstanceOf(PhaseError);
+      // The owed-change record was refused too, so the load reports the
+      // change as unrecorded — the more specific story for the body copy.
+      expect(failure.message).toBe(
+        `[${PHASE_WRITING_CHANGE_UNRECORDED}] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
+      );
+      expect(failure.message).not.toMatch(/recording the payment/);
+      expect(isPaidFailure(failure)).toBe(true);
+      expect(changeOnCard(parseFailure(describeCardFailure(failure)))).toBe(
+        false,
+      );
+      expect(paidBody(failure)).toBe(
+        '10 sats are paid. Your 6 sats change could not be put on the card.',
+      );
+    } finally {
+      restore();
+      warn.mockRestore();
     }
   });
 
