@@ -5,7 +5,7 @@
  * @format
  */
 
-import React from 'react';
+import React, {useEffect} from 'react';
 import {StatusBar, StyleSheet} from 'react-native';
 import {Provider} from 'react-redux';
 import {ApolloProvider} from '@apollo/client';
@@ -34,6 +34,9 @@ import EdgeTint from './src/components/EdgeTint';
 // utils
 import {toastConfig} from './src/utils/toast';
 
+// simulator e2e: the card bridge's deep link
+import {installCardBridgeDeepLinks} from './src/services/cardBridge'; // __DEV__-only listener
+
 /**
  * The colour under the status-bar icons, on every platform, OS version and
  * system theme. The icons are dark, so it must stay light (ENG-613).
@@ -57,6 +60,10 @@ import {toastConfig} from './src/utils/toast';
 export const STATUS_BAR_BAND = '#FFFFFF';
 
 function App(): React.JSX.Element {
+  // flashpos://dev/card-bridge?url=… routes card APDUs to a cardsim bridge
+  // for the simulator e2e flows (docs/10-testing.md). Dev builds only.
+  useEffect(() => (__DEV__ ? installCardBridgeDeepLinks() : undefined), []);
+
   return (
     <SafeAreaView style={styles.container}>
       <EdgeTint />

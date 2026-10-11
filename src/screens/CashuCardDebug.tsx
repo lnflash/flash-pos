@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, ScrollView} from 'react-native';
+import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
 import styled from 'styled-components/native';
 
 // components
@@ -17,11 +17,17 @@ import {
   readCardOverNfc,
 } from '../services/cashuCardNfc';
 import type {CardSummary} from '../services/cashuCard';
+import {getCardBridge, setCardBridge} from '../services/cardBridge'; // __DEV__-only screen; null in release
 
 const contentStyle = {padding: 20};
 const readButtonStyle = {marginTop: 24, marginBottom: 16};
 const cancelButtonStyle = {marginTop: 12, marginBottom: 8};
 const pubkeyLabelStyle = {marginTop: 12};
+const bridgeButtonStyle = {marginTop: 8, marginRight: 16};
+const bridgeLabelStyle = {marginTop: 32};
+
+/** Where `tools/cardsim` listens by default (lnflash/cashu-javacard). */
+const BRIDGE_PLACEHOLDER = 'http://127.0.0.1:9876';
 
 /**
  * Cashu NFC card bring-up screen (dev builds only).
@@ -39,6 +45,9 @@ const CashuCardDebug = () => {
   const [reading, setReading] = useState(false);
   const [summary, setSummary] = useState<CardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bridgeUrl, setBridgeUrl] = useState(() => getCardBridge()?.url ?? '');
+  const [bridgeOn, setBridgeOn] = useState(() => getCardBridge()?.url ?? null);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
 
   // `reading` drives the UI; the ref is what `onRead` reads, so the guard is
   // correct even for two presses inside a single render tick.
@@ -52,6 +61,26 @@ const CashuCardDebug = () => {
 
   useEffect(() => {
     isCardReadingSupported().then(setSupported);
+  }, [bridgeOn]);
+
+  // Simulator e2e (docs/10-testing.md): every card APDU — this screen's
+  // read and the production charge and balance paths — goes to a cardsim
+  // bridge instead of NFC until cleared or the app restarts.
+  const onSaveBridge = useCallback(() => {
+    try {
+      setCardBridge({url: bridgeUrl});
+      setBridgeOn(getCardBridge()?.url ?? null);
+      setBridgeError(null);
+    } catch (err) {
+      setBridgeError(err instanceof Error ? err.message : String(err));
+    }
+  }, [bridgeUrl]);
+
+  const onClearBridge = useCallback(() => {
+    setCardBridge(null);
+    setBridgeOn(null);
+    setBridgeError(null);
+    setBridgeUrl('');
   }, []);
 
   // An IsoDep request never times out on Android — it stays pending until a
@@ -183,6 +212,42 @@ const CashuCardDebug = () => {
           <Mono selectable>{summary.pubkey}</Mono>
         </Results>
       )}
+      <Label style={bridgeLabelStyle}>Card bridge</Label>
+      <Caption>
+        Routes every card APDU to a cardsim bridge instead of NFC.
+      </Caption>
+      <BridgeInput
+        testID="card-bridge-url"
+        value={bridgeUrl}
+        onChangeText={setBridgeUrl}
+        placeholder={BRIDGE_PLACEHOLDER}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+      />
+      <ButtonRow>
+        <TextButton
+          icon="check"
+          title="Save"
+          btnStyle={bridgeButtonStyle}
+          onPress={onSaveBridge}
+        />
+        <TextButton
+          icon="xmark"
+          title="Clear"
+          btnStyle={bridgeButtonStyle}
+          onPress={onClearBridge}
+        />
+      </ButtonRow>
+      <Row>
+        <Label>Card source</Label>
+        <Value testID="card-bridge-state">{bridgeOn ?? 'NFC'}</Value>
+      </Row>
+      {bridgeError && (
+        <ErrorBox>
+          <ErrorText>{bridgeError}</ErrorText>
+        </ErrorBox>
+      )}
     </Wrapper>
   );
 };
@@ -244,6 +309,19 @@ const ErrorBox = styled.View`
   border-radius: 8px;
   padding: 12px;
   margin-top: 8px;
+`;
+
+const BridgeInput = styled(TextInput)`
+  border-width: 1px;
+  border-color: #ececf1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #1f2328;
+`;
+
+const ButtonRow = styled.View`
+  flex-direction: row;
 `;
 
 const ErrorText = styled.Text`
