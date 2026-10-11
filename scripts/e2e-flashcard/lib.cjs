@@ -189,7 +189,7 @@ const CARDSIM_CLIENT_IN_CHECKOUT = 'tools/cardsim/client.cjs';
  * repo root), then a sibling cashu-javacard checkout. `exists` is injected
  * (fs.existsSync in the runner) so jest can pin the order. Returns null when
  * nothing is found; an explicit flag or env path is returned as given, so a
- * typo fails loudly in `loadCardSim` instead of falling through.
+ * typo fails loudly in `requireCardSimClient` instead of falling through.
  */
 function resolveCardSimClient({flag, env, root, exists}) {
   if (flag) {
@@ -205,12 +205,6 @@ function resolveCardSimClient({flag, env, root, exists}) {
   return candidates.find(candidate => exists(candidate)) || null;
 }
 
-/**
- * Loads the reference client and returns a `CardSim` on `bridgeUrl`. Throws
- * when the path is missing or the module is not the cardsim client (no
- * `CardSim` with reset/fixture/state). `options` go to the CardSim
- * constructor ({fetch, timeoutMs}).
- */
 /**
  * Loads the cardsim client module and checks it is the one the runner was
  * written against: a CardSim with reset/fixture/state, and the
@@ -253,9 +247,16 @@ function requireCardSimClient(clientPath, requireFn) {
   return mod;
 }
 
+/**
+ * The client module (through `requireCardSimClient`, so the same checks and
+ * errors) and a `CardSim` on `bridgeUrl` built from it. The runner needs
+ * both: the sim for reset/fixture/state, the module's `validateFixture` for
+ * the stages the flows post themselves. `options` go to the CardSim
+ * constructor ({fetch, timeoutMs}).
+ */
 function loadCardSim(clientPath, bridgeUrl, requireFn, options) {
-  const {CardSim} = requireCardSimClient(clientPath, requireFn);
-  return new CardSim(bridgeUrl, options);
+  const client = requireCardSimClient(clientPath, requireFn);
+  return {client, sim: new client.CardSim(bridgeUrl, options)};
 }
 
 /**

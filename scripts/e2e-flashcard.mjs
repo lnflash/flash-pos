@@ -122,12 +122,7 @@ function parseArgs(argv) {
 
 // ---------------------------------------------------------------- cardsim
 
-/**
- * The bridge, through the merged reference client (lnflash/cashu-javacard
- * tools/cardsim/client.cjs): every request has its 5 s deadline, and a
- * fixture is validated locally before it is posted. A 409 (a fixture step
- * the applet refused) arrives as its CardSimError naming the step.
- */
+/** Client path: --cardsim-client, CARDSIM_CLIENT, cardsim/, ../cashu-javacard. */
 function cardSimClientPath(opts) {
   return lib.resolveCardSimClient({
     flag: opts.cardsimClient && resolve(opts.cardsimClient),
@@ -138,13 +133,16 @@ function cardSimClientPath(opts) {
 }
 
 /**
- * The bridge's CardSim, and the client module it came from: the module's
+ * The bridge's CardSim, through the merged reference client
+ * (lnflash/cashu-javacard tools/cardsim/client.cjs): every request has its
+ * 5 s deadline, a fixture is validated locally before it is posted, and a
+ * 409 (a fixture step the applet refused) arrives as its CardSimError naming
+ * the step. Returned with the client module it came from: the module's
  * `validateFixture` checks the stages the flows post themselves (through
  * Maestro's http), which never pass through the CardSim.
  */
 function openCardSim(opts) {
-  const client = lib.requireCardSimClient(cardSimClientPath(opts), require);
-  return {client, sim: new client.CardSim(opts.bridge)};
+  return lib.loadCardSim(cardSimClientPath(opts), opts.bridge, require);
 }
 
 /** /reset, then prove the card key survived it (minted proofs depend on it). */

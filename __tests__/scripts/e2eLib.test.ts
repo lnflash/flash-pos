@@ -243,7 +243,7 @@ describe('the cardsim client', () => {
       expect(lib.requireCardSimClient(file, require).marker).toBe(7);
     });
 
-    it("builds the client's CardSim on the bridge URL with the options", () => {
+    it('returns the client module and its CardSim on the bridge URL with the options', () => {
       const file = write(
         'client.cjs',
         `class CardSim {
@@ -252,9 +252,14 @@ describe('the cardsim client', () => {
          }
          module.exports = {CardSim, validateFixture: f => f};`,
       );
-      const sim = lib.loadCardSim(file, 'http://127.0.0.1:9876', require, {
-        timeoutMs: 1234,
-      });
+      const {client, sim} = lib.loadCardSim(
+        file,
+        'http://127.0.0.1:9876',
+        require,
+        {timeoutMs: 1234},
+      );
+      expect(sim).toBeInstanceOf(client.CardSim);
+      expect(client.validateFixture).toEqual(expect.any(Function));
       expect(sim.url).toBe('http://127.0.0.1:9876');
       expect(sim.opts).toEqual({timeoutMs: 1234});
     });
@@ -311,7 +316,7 @@ describe('the cardsim client', () => {
             reject(new Error('aborted by the deadline')),
           );
         });
-      const sim = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
+      const {sim} = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
         fetch: wedged,
         timeoutMs: 50,
       });
@@ -321,7 +326,7 @@ describe('the cardsim client', () => {
 
     it('refuses a malformed fixture before anything is posted', async () => {
       const fetch = jest.fn();
-      const sim = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
+      const {sim} = lib.loadCardSim(real, 'http://127.0.0.1:9876', require, {
         fetch,
       });
       expect(() =>
