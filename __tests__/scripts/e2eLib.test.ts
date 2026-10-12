@@ -121,6 +121,32 @@ describe('bridgeLink', () => {
     );
   });
 
+  it('adds holdLoad only to the Back-mid-write flow (ENG-645)', () => {
+    expect(lib.HOLD_LOAD_MS).toBe(4000);
+    expect(
+      lib.bridgeLink('http://127.0.0.1:9876', 'back-during-change-write'),
+    ).toBe(
+      'flashpos://dev/card-bridge?url=http%3A%2F%2F127.0.0.1%3A9876&holdLoad=4000',
+    );
+    const held = lib.FLOW_NAMES.filter((flow: string) =>
+      lib.bridgeLink('http://x', flow).includes('holdLoad'),
+    );
+    expect(held).toEqual(['back-during-change-write']);
+    const {
+      parseCardBridgeLink,
+      MAX_HOLD_LOAD_MS,
+    } = require('../../src/services/cardBridge');
+    expect(lib.HOLD_LOAD_MS).toBeLessThanOrEqual(MAX_HOLD_LOAD_MS);
+    expect(
+      parseCardBridgeLink(
+        lib.bridgeLink('http://127.0.0.1:9876', 'back-during-change-write'),
+      ),
+    ).toEqual({
+      action: 'set',
+      config: {url: 'http://127.0.0.1:9876', holdLoadMs: 4000},
+    });
+  });
+
   it('builds links the app parses back to the same bridge', () => {
     const {parseCardBridgeLink} = require('../../src/services/cardBridge');
     expect(
@@ -449,6 +475,41 @@ describe('the cardsim client', () => {
         }
       }
     });
+  });
+});
+
+describe('back-during-change-write (ENG-645)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const text: string = fs.readFileSync(
+    path.join(
+      __dirname,
+      '../../.maestro/flashcard/back-during-change-write.yaml',
+    ),
+    'utf8',
+  );
+  const at = (needle: string) => {
+    const i = text.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it('swipes back only once the change write is on screen, then asserts the charge screen held', () => {
+    const writing = at("text: 'Putting 5 sats on the card'");
+    const swipe = at('- swipe:');
+    const held = at("id: 'charge-view'");
+    const success = at("visible: 'Charged 3 sats — paid by eCash card'");
+    expect(writing).toBeLessThan(swipe);
+    expect(swipe).toBeLessThan(held);
+    expect(held).toBeLessThan(success);
+    // Still mid-write after the swipe: the same title, on the same screen.
+    expect(text.slice(swipe, success)).toContain(
+      "text: 'Putting 5 sats on the card'",
+    );
+  });
+
+  it('checks the card: one burn, the change written once', () => {
+    expect(text).toContain('"unspent":[4,1],"spentLabels":["P8"]');
   });
 });
 

@@ -452,6 +452,7 @@ cannot.
 | `full-card-refusal` | 8 + 31 spent | refused before the burn ("The card is full"); the 8 stays unspent |
 | `owed-change-next-tap` | 8, then full, then 4 | the change LOAD answers 6A84 after the swap; the 5 sats are kept on the terminal and written first on the next charge (4 + 1, then the 4-sat proof pays the bill exactly) |
 | `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance shows 4 sats + "Change waiting · 1 sat" |
+| `back-during-change-write` | 8, PIN, `holdLoad=4000` | the edge swipe mid change-write is held: the charge screen stays, finishes on screen and hands off to Success; the card has one burn and 4 + 1 written once |
 
 **A change write that fails after the swap ends the charge as paid
 (ENG-642).** The swap has settled the bill by then, so `owed-change-next-tap`
@@ -474,6 +475,20 @@ status-bar band, where a tap goes to the system.
 `dropLoad=n` makes the bridge forward the n-th LOAD_PROOF and then report the
 tag lost: the transport twin of `loseAnswerOnLoad` in
 `__tests__/services/cashuCharge.test.ts`.
+
+`holdLoad=<ms>` (1 to 10000) makes the bridge hold every LOAD_PROOF that long
+before forwarding it, so a flow can act while the change write is in flight.
+
+**Back after the first burn is held (ENG-645).** From `executeCharge`'s
+`onBurnStart` (just before the first SPEND_PROOF) until the charge settles,
+the charge screen refuses every exit: the header arrow is disabled, hardware
+Back is swallowed and `beforeRemove` prevents the edge swipe. A pop there
+would unmount the screen mid-charge and land on the Invoice with "Pay by
+Flashcard" live. The charge then leaves through Success, or through Done on
+a paid failure; a failure that is not paid releases the hold. Before the
+burn (the read, the PIN pad, the PIN verify) Back leaves as before.
+`back-during-change-write` swipes back mid-write; the screen tests cover the
+header arrow, hardware Back and `beforeRemove` on both paths.
 
 ### Running it locally
 

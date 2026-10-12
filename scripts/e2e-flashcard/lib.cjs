@@ -27,6 +27,14 @@ const NEXT_SAT = 4;
 const CARD_SLOTS = 32;
 
 /**
+ * How long `back-during-change-write` holds each change LOAD at the bridge
+ * (`holdLoad`, src/services/cardBridge.ts): long enough for Maestro to see
+ * the change-write title and swipe while the write is in flight on a slow
+ * runner, well under the bridge's 10 s cap.
+ */
+const HOLD_LOAD_MS = 4000;
+
+/**
  * The NUT-10 secret for a proof locked to the card, byte-identical to
  * `buildCardP2PKSecret` (src/services/cashuMint.ts). The app rebuilds this
  * string from the nonce and pubkey the card reports when it spends the slot;
@@ -118,6 +126,14 @@ const FLOWS = {
     stages: {INITIAL: {pin: PIN, proofs: ['P8']}},
     link: {dropLoad: 1},
   },
+  'back-during-change-write': {
+    mint: {P8: CARD_SAT},
+    stages: {INITIAL: {pin: PIN, proofs: ['P8']}},
+    // Every change LOAD is held before it reaches the card, so the flow can
+    // swipe back while the change write is in flight (ENG-645). Two pieces
+    // (4 + 1): an 8 s window from the first "Putting 5 sats on the card".
+    link: {holdLoad: HOLD_LOAD_MS},
+  },
 };
 
 const FLOW_NAMES = Object.keys(FLOWS);
@@ -169,6 +185,9 @@ function bridgeLink(bridgeUrl, flow) {
   const link = FLOWS[flow].link || {};
   if (link.dropLoad) {
     params.push(`dropLoad=${link.dropLoad}`);
+  }
+  if (link.holdLoad) {
+    params.push(`holdLoad=${link.holdLoad}`);
   }
   return `flashpos://dev/card-bridge?${params.join('&')}`;
 }
@@ -333,6 +352,7 @@ module.exports = {
   BILL_SAT,
   CARD_SAT,
   CARD_SLOTS,
+  HOLD_LOAD_MS,
   NEXT_SAT,
   FLOWS,
   FLOW_NAMES,

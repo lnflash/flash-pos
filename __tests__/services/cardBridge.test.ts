@@ -4,6 +4,7 @@ import {NfcError} from 'react-native-nfc-manager';
 import {
   BRIDGE_TAG,
   CARD_BRIDGE_TIMEOUT_MS,
+  MAX_HOLD_LOAD_MS,
   bridgeTransceiver,
   getCardBridge,
   installCardBridgeDeepLinks,
@@ -253,6 +254,91 @@ describe('bridgeTransceiver', () => {
       }
     });
   });
+});
+
+describe('holdLoadMs fault injection (ENG-645)', () => {
+  const sentHex = () =>
+    fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body).hex);
+
+  it('holds every LOAD for the configured ms before forwarding it, and nothing else', async () => {
+    jest.useFakeTimers();
+    setCardBridge({url: URL_, holdLoadMs: 4000});
+    expect(getCardBridge()).toEqual({url: URL_, holdLoadMs: 4000});
+    const transceive = bridgeTransceiver(getCardBridge()!);
+
+    // Other instructions go straight out.
+    await expect(transceive(SELECT)).resolves.toEqual([0x90, 0x00]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    for (let n = 1; n <= 2; n++) {
+      let settled = false;
+      const load = transceive(LOAD).then(r => {
+        settled = true;
+        return r;
+      });
+      await jest.advanceTimersByTimeAsync(3999);
+      // Not sent yet: the card has not been asked to write the slot.
+      expect(fetchMock).toHaveBeenCalledTimes(n);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(load).resolves.toEqual([0x90, 0x00]);
+      expect(fetchMock).toHaveBeenCalledTimes(n + 1);
+    }
+    expect(sentHex().filter(h => h.slice(2, 4) === '30')).toHaveLength(2);
+  });
+
+  it('composes with dropLoad: the held LOAD still reaches the card, then reads as a lost tag', async () => {
+    jest.useFakeTimers();
+    setCardBridge({url: URL_, dropLoad: 1, holdLoadMs: 50});
+    const transceive = bridgeTransceiver(getCardBridge()!);
+    const lost = transceive(LOAD).catch(e => e);
+    await jest.advanceTimersByTimeAsync(50);
+    expect(await lost).toBeInstanceOf(NfcError.TagConnectionLost);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1, 1.5, NaN, MAX_HOLD_LOAD_MS + 1])(
+    'refuses holdLoadMs %p and keeps the previous setting',
+    bad => {
+      setCardBridge({url: URL_});
+      expect(() => setCardBridge({url: URL_, holdLoadMs: bad})).toThrow(
+        /holdLoadMs must be a whole number of ms/,
+      );
+      expect(getCardBridge()).toEqual({url: URL_});
+    },
+  );
+
+  it('takes the maximum', () => {
+    setCardBridge({url: URL_, holdLoadMs: MAX_HOLD_LOAD_MS});
+    expect(getCardBridge()).toEqual({url: URL_, holdLoadMs: MAX_HOLD_LOAD_MS});
+  });
+
+  it('parses holdLoad from the deep link, alone or beside dropLoad', () => {
+    expect(
+      parseCardBridgeLink(
+        'flashpos://dev/card-bridge?url=http://127.0.0.1:9876&holdLoad=4000',
+      ),
+    ).toEqual({action: 'set', config: {url: URL_, holdLoadMs: 4000}});
+    expect(
+      parseCardBridgeLink(
+        'flashpos://dev/card-bridge?holdLoad=250&dropLoad=2&url=http://127.0.0.1:9876',
+      ),
+    ).toEqual({
+      action: 'set',
+      config: {url: URL_, dropLoad: 2, holdLoadMs: 250},
+    });
+  });
+
+  it.each(['0', '-5', '1.5', 'soon', '', `${MAX_HOLD_LOAD_MS + 1}`])(
+    'ignores a link whose holdLoad is %p',
+    bad => {
+      expect(
+        parseCardBridgeLink(
+          `flashpos://dev/card-bridge?url=http://127.0.0.1:9876&holdLoad=${bad}`,
+        ),
+      ).toBeNull();
+    },
+  );
 });
 
 describe('parseCardBridgeLink', () => {
