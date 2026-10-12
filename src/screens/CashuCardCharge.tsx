@@ -138,7 +138,23 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   // again for this bill, whatever the UI shows.
   const [settled, setSettled] = useState(false);
   const settledRef = useRef(false);
+  // The card has been touched for this bill and the charge has not settled
+  // (ENG-645): from `executeCharge`'s `onBurnStart` until it resolves (then
+  // through the paid frame to the hand-off) or fails. Every exit is held
+  // meanwhile — header arrow, hardware Back, the stack's swipe — since a pop
+  // would unmount the screen mid-charge and land on the Invoice with "Pay
+  // by Flashcard" live. The ref is what the exits check; the state drives
+  // the view.
+  const [holding, setHolding] = useState(false);
+  const holdingRef = useRef(false);
+  const setHold = useCallback((on: boolean) => {
+    holdingRef.current = on;
+    setHolding(on);
+  }, []);
 
+  // Set just before this screen's own exits (Done, the Success hand-off):
+  // `beforeRemove` lets those through.
+  const leavingRef = useRef(false);
   const chargingRef = useRef(false);
   const cancelledRef = useRef(false);
   // Distinct from cancelledRef: a Cancel press that lands after the last APDU
@@ -239,24 +255,37 @@ const CashuCardCharge = ({navigation, route}: Props) => {
 
   const finish = useCallback(
     async (planned: Planned, customerPin?: string) => {
-      await withCardSession(
-        transceive =>
-          executeCharge({
-            transceive,
-            amountSat: satAmount,
-            plan: planned.plan,
-            unspent: planned.unspent as never,
-            cardPubkey: planned.cardPubkey,
-            pin: customerPin,
-            pinRequired: planned.pinRequired,
-            owedChange: planned.owedChange as never,
-            mintUrl: FLASH_CASHU_MINT_URL,
-            onPhase,
-          }),
-        {
-          alertMessage: 'Finishing the charge — hold the card',
-        },
-      );
+      setHold(false);
+      try {
+        await withCardSession(
+          transceive =>
+            executeCharge({
+              transceive,
+              amountSat: satAmount,
+              plan: planned.plan,
+              unspent: planned.unspent as never,
+              cardPubkey: planned.cardPubkey,
+              pin: customerPin,
+              pinRequired: planned.pinRequired,
+              owedChange: planned.owedChange as never,
+              mintUrl: FLASH_CASHU_MINT_URL,
+              onPhase,
+              // The first burn is going out: hold every exit (ENG-645).
+              onBurnStart: () => setHold(true),
+            }),
+          {
+            alertMessage: 'Finishing the charge — hold the card',
+          },
+        );
+      } catch (err) {
+        // A paid failure stays held: `endPaid` takes over and every exit
+        // becomes Done. Any other failure is a charge that did not go
+        // through, and Back leaves as it did before the tap.
+        if (!isPaidFailure(err)) {
+          setHold(false);
+        }
+        throw err;
+      }
       // The card is done the moment the session resolves: say so now. The
       // finale starts on this commit; the bookkeeping waits a frame so its
       // JS burst cannot delay the finale's first frame (the finale itself
@@ -271,12 +300,14 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         startSettlement();
         return;
       }
+      // The hand-off is the held charge's own exit.
+      leavingRef.current = true;
       handOffToSuccess(navigation, {
         title: `Charged ${formatSatAmount(satAmount)} — paid by eCash card`,
       });
       setTimeout(startSettlement, SETTLE_AFTER_HANDOFF_MS);
     },
-    [satAmount, navigation, onPhase, recordPaid, startSettlement],
+    [satAmount, navigation, onPhase, recordPaid, startSettlement, setHold],
   );
 
   /**
@@ -297,6 +328,9 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       const message = describeCardFailure(err);
       settledRef.current = true;
       setSettled(true);
+      // The hold hands over to the settled state: every exit is Done now
+      // (the header arrow included), no longer refused.
+      setHold(false);
       setFlow('done');
       setPin('');
       // A Cancel pressed during the change write does not hide this: the
@@ -306,7 +340,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       startSettlement();
       return true;
     },
-    [recordPaid, startSettlement],
+    [recordPaid, startSettlement, setHold],
   );
 
   // Session 1: the silent read + plan. A PIN-less card completes in this one
@@ -482,7 +516,6 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   // The paid-after-swap error's one way out: the bill is settled, so back to
   // a fresh keypad (it clears the amount on focus), as Success's Done does.
   // Home is the existing route object (same key), so it does not remount.
-  const leavingRef = useRef(false);
   const onDone = useCallback(() => {
     leavingRef.current = true;
     const routes = navigation.getState?.()?.routes ?? [];
@@ -494,18 +527,41 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   // → "Pay by Flashcard" → router → this screen: a plain pop (edge swipe,
   // a stray goBack) would land on the Invoice with the amount still in the
   // store and "Pay by Flashcard" live — one more tap burns the card again
-  // for a bill already paid (ENG-642). Done's own reset passes through.
+  // for a bill already paid (ENG-642). While the charge is still in flight
+  // after the first burn, a pop is refused outright (ENG-645): the charge
+  // ends where the merchant can see it, then Done or the hand-off leaves.
+  // Done's own reset and the hand-off pass through.
   useEffect(
     () =>
       navigation.addListener('beforeRemove', e => {
-        if (!settledRef.current || leavingRef.current) {
+        if (leavingRef.current) {
           return;
         }
-        e.preventDefault();
-        onDone();
+        if (settledRef.current) {
+          e.preventDefault();
+          onDone();
+          return;
+        }
+        if (holdingRef.current) {
+          e.preventDefault();
+        }
       }),
     [navigation, onDone],
   );
+
+  // The header arrow: Done once paid, nothing while the charge is in flight
+  // after the burn (the view disables it too; the ref closes the frame
+  // before that render lands), a plain pop otherwise.
+  const onBack = useCallback(() => {
+    if (settledRef.current) {
+      onDone();
+      return;
+    }
+    if (holdingRef.current) {
+      return;
+    }
+    navigation.goBack();
+  }, [navigation, onDone]);
 
   const onPinDigit = useCallback((d: string) => {
     // The first digit after a failed attempt starts a new one.
@@ -563,7 +619,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       error={error}
       stalled={stalled}
       nfcSupported={supported}
-      onBack={settled ? onDone : () => navigation.goBack()}
+      onBack={onBack}
       onCharge={onCharge}
       onCancel={onCancel}
       onRetry={onRetry}
@@ -574,6 +630,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       onOpenNfcSettings={onOpenNfcSettings}
       settled={settled}
       onDone={onDone}
+      holding={holding}
     />
   );
 };
