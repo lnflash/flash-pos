@@ -29,10 +29,12 @@ const CARD_SLOTS = 32;
 /**
  * How long `back-during-change-write` holds each change LOAD at the bridge
  * (`holdLoad`, src/services/cardBridge.ts): long enough for Maestro to see
- * the change-write title and swipe while the write is in flight on a slow
- * runner, well under the bridge's 10 s cap.
+ * the change-write title, swipe and read the screen again while the write is
+ * still in flight on a slow hosted runner. 4 s was not (run 38200361080: the
+ * charge had reached Success by the time Maestro looked), so this is the
+ * bridge's 10 s cap.
  */
-const HOLD_LOAD_MS = 4000;
+const HOLD_LOAD_MS = 10000;
 
 /**
  * The NUT-10 secret for a proof locked to the card, byte-identical to

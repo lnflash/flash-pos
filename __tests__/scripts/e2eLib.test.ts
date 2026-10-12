@@ -122,11 +122,11 @@ describe('bridgeLink', () => {
   });
 
   it('adds holdLoad only to the Back-mid-write flow (ENG-645)', () => {
-    expect(lib.HOLD_LOAD_MS).toBe(4000);
+    expect(lib.HOLD_LOAD_MS).toBe(10000);
     expect(
       lib.bridgeLink('http://127.0.0.1:9876', 'back-during-change-write'),
     ).toBe(
-      'flashpos://dev/card-bridge?url=http%3A%2F%2F127.0.0.1%3A9876&holdLoad=4000',
+      'flashpos://dev/card-bridge?url=http%3A%2F%2F127.0.0.1%3A9876&holdLoad=10000',
     );
     const held = lib.FLOW_NAMES.filter((flow: string) =>
       lib.bridgeLink('http://x', flow).includes('holdLoad'),
@@ -143,7 +143,7 @@ describe('bridgeLink', () => {
       ),
     ).toEqual({
       action: 'set',
-      config: {url: 'http://127.0.0.1:9876', holdLoadMs: 4000},
+      config: {url: 'http://127.0.0.1:9876', holdLoadMs: 10000},
     });
   });
 

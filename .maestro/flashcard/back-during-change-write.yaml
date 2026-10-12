@@ -1,5 +1,5 @@
 # Back while the change is being written (ENG-645). Every change LOAD is
-# held 4 s at the bridge (deep link holdLoad=4000), so the card is burned,
+# held 10 s at the bridge (deep link holdLoad=10000), so the card is burned,
 # the swap has settled and the change write is in flight when the flow
 # swipes back. The charge screen must hold: no pop onto the keypad with the
 # bill live, the charge finishes on screen and hands off to Success, and
