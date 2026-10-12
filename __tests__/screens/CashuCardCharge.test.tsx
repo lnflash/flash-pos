@@ -598,9 +598,17 @@ describe('CashuCardCharge', () => {
     /** Phases up to the change write, then the card's answer. */
     const failsWritingChange =
       (message: string) =>
-      async ({onPhase}: {onPhase: (p: string) => void}) => {
+      async ({
+        onPhase,
+        onBurnStart,
+      }: {
+        onPhase: (p: string) => void;
+        onBurnStart?: () => void;
+      }) => {
         onPhase('reading card');
         onPhase('verifying PIN');
+        // The service's burn point (ENG-645).
+        onBurnStart?.();
         onPhase('burning 16 sat (proof 1/2)');
         onPhase('burning 8 sat (proof 2/2)');
         onPhase('settling payment and minting change');
@@ -759,8 +767,16 @@ describe('CashuCardCharge', () => {
       jest.useFakeTimers(FAKE_TIMERS);
       let fail!: () => void;
       mockExecuteCharge.mockImplementation(
-        ({onPhase}: {onPhase: (p: string) => void}) => {
+        ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
           onPhase('reading card');
+          // The service's burn point (ENG-645).
+          onBurnStart?.();
           onPhase('burning 16 sat (proof 1/2)');
           onPhase('settling payment and minting change');
           onPhase('writing change to card');
@@ -899,8 +915,16 @@ describe('CashuCardCharge', () => {
       jest.useFakeTimers(FAKE_TIMERS);
       mockReadAndPlan.mockResolvedValue(EXACT);
       mockExecuteCharge.mockImplementation(
-        async ({onPhase}: {onPhase: (p: string) => void}) => {
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
           onPhase('reading card');
+          // The service's burn point (ENG-645).
+          onBurnStart?.();
           onPhase('burning 16 sat (proof 1/1)');
           onPhase('settling payment and minting change');
           onPhase('reading card');
@@ -931,12 +955,28 @@ describe('CashuCardCharge', () => {
       expect(mockReadAndPlan).toHaveBeenCalledTimes(1);
     });
 
-    it('a PIN card whose payment bookkeeping fails after the swap: paid, no PIN pad, change not promised', async () => {
+    /**
+     * A fallback, not a state the service reaches today: with change in the
+     * plan, `executeCharge` reports a bookkeeping failure as a change-write
+     * failure (a LOAD failed) or as "(change on card)" (every LOAD landed),
+     * never as a bare "[recording the payment]". The screen must still end
+     * any paid failure it cannot place as paid, with nothing promised about
+     * the change (ENG-645 review).
+     */
+    it('fallback: a bare "[recording the payment]" paid failure with change in the plan still ends paid, no PIN pad, change not promised', async () => {
       jest.useFakeTimers(FAKE_TIMERS);
       mockExecuteCharge.mockImplementation(
-        async ({onPhase}: {onPhase: (p: string) => void}) => {
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
           onPhase('reading card');
           onPhase('verifying PIN');
+          // The service's burn point (ENG-645).
+          onBurnStart?.();
           onPhase('burning 16 sat (proof 1/2)');
           onPhase('burning 8 sat (proof 2/2)');
           onPhase('settling payment and minting change');
@@ -960,9 +1000,17 @@ describe('CashuCardCharge', () => {
     it('a PIN card whose bookkeeping fails but whose change landed: headlined "Paid", the change on the card, no PIN pad', async () => {
       jest.useFakeTimers(FAKE_TIMERS);
       mockExecuteCharge.mockImplementation(
-        async ({onPhase}: {onPhase: (p: string) => void}) => {
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
           onPhase('reading card');
           onPhase('verifying PIN');
+          // The service's burn point (ENG-645).
+          onBurnStart?.();
           onPhase('burning 16 sat (proof 1/2)');
           onPhase('burning 8 sat (proof 2/2)');
           onPhase('settling payment and minting change');
@@ -1033,6 +1081,304 @@ describe('CashuCardCharge', () => {
       await enterPin(getByLabelText);
       expect(mockExecuteCharge).toHaveBeenCalledTimes(4);
       expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
+    });
+  });
+
+  describe('Back while the charge is in flight after the burn (ENG-645)', () => {
+    type ExecArgs = {
+      onPhase: (p: string) => void;
+      onBurnStart?: () => void;
+    };
+
+    /**
+     * executeCharge, held open mid change-write: past the PIN verify and the
+     * first burn (`onBurnStart` called as the service does, before the first
+     * SPEND_PROOF), the swap done, the change LOAD outstanding. `succeed` /
+     * `failPaid` / `failUnpaid` settle it.
+     */
+    const heldAfterBurn = () => {
+      const ctl = {
+        succeed: () => {},
+        failPaid: (_message: string) => {},
+        failUnpaid: (_message: string) => {},
+      };
+      mockExecuteCharge.mockImplementation(
+        ({onPhase, onBurnStart}: ExecArgs) => {
+          onPhase('reading card');
+          onPhase('verifying PIN');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/2)');
+          onPhase('burning 8 sat (proof 2/2)');
+          onPhase('settling payment and minting change');
+          onPhase('writing change to card');
+          return new Promise((resolve, reject) => {
+            ctl.succeed = () =>
+              resolve({
+                amountSat: 16,
+                burned: [],
+                changeSat: 8,
+                changeLoaded: 1,
+                balanceAfter: 8,
+              });
+            ctl.failPaid = message => reject(paidFailure(message));
+            ctl.failUnpaid = message => reject(new Error(message));
+          });
+        },
+      );
+      return ctl;
+    };
+
+    /** Held before the burn: the PIN verify is still outstanding. */
+    const heldBeforeBurn = () => {
+      const ctl = {fail: (_message: string) => {}};
+      mockExecuteCharge.mockImplementation(({onPhase}: ExecArgs) => {
+        onPhase('reading card');
+        onPhase('verifying PIN');
+        return new Promise((_, reject) => {
+          ctl.fail = message => reject(new Error(message));
+        });
+      });
+      return ctl;
+    };
+
+    const enterPin = async (getByLabelText: (label: string) => any) => {
+      for (const digit of ['1', '9', '8', '4']) {
+        fireEvent.press(getByLabelText(digit));
+      }
+      await act(async () => {
+        jest.advanceTimersByTime(700);
+      });
+    };
+
+    /**
+     * The navigator's own hardware-Back handler, as react-navigation
+     * registers it (before any screen's, so it runs last): a pop that
+     * `beforeRemove` may prevent. Returns its remover.
+     */
+    const installNavigatorBack = (
+      navigation: Awaited<ReturnType<typeof renderScreen>>['navigation'],
+    ) =>
+      BackHandler.addEventListener('hardwareBackPress', () => {
+        if (!navigation.emitBeforeRemove('GO_BACK')) {
+          navigation.goBack();
+        }
+        return true;
+      });
+    const pressHardwareBack = () =>
+      (BackHandler as unknown as {mockPressBack: () => void}).mockPressBack();
+
+    /** PIN card from the router, PIN entered, charge held after the burn. */
+    const inFlight = async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      const ctl = heldAfterBurn();
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      const navigatorBack = installNavigatorBack(utils.navigation);
+      await enterPin(utils.getByLabelText);
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      expect(title(utils.getByTestId)).toBe('Putting 8 sats on the card');
+      return {...utils, ctl, navigatorBack};
+    };
+
+    const expectNoNavigation = (navigation: {
+      goBack: jest.Mock;
+      pop: jest.Mock;
+      navigate: jest.Mock;
+      reset: jest.Mock;
+    }) => {
+      expect(navigation.goBack).not.toHaveBeenCalled();
+      expect(navigation.pop).not.toHaveBeenCalled();
+      expect(navigation.navigate).not.toHaveBeenCalled();
+      expect(navigation.reset).not.toHaveBeenCalled();
+    };
+
+    /** Success's hand-off, ONE reset to [Home, Success]. */
+    const expectHandedOffToSuccess = async (navigation: {reset: jest.Mock}) => {
+      await act(async () => {
+        jest.advanceTimersByTime(LIFT_HOLD_MS);
+      });
+      expect(navigation.reset).toHaveBeenCalledTimes(1);
+      const [{index, routes}] = navigation.reset.mock.calls[0];
+      expect(index).toBe(1);
+      expect(routes[0]).toBe(HOME);
+      expect(routes[1]).toMatchObject({name: 'Success'});
+    };
+
+    it('the header back arrow does nothing: the charge finishes on screen and hands off to Success', async () => {
+      const utils = await inFlight();
+      const {getByTestId, getByText, navigation, ctl, navigatorBack} = utils;
+      try {
+        expect(getByTestId('charge-back').props.accessibilityState).toEqual(
+          expect.objectContaining({disabled: true}),
+        );
+        await act(async () => {
+          fireEvent.press(getByTestId('charge-back'));
+        });
+        // The press is refused even when it reaches the handler.
+        await act(async () => {
+          getByTestId('charge-back').props.onPress?.();
+        });
+        expectNoNavigation(navigation);
+        expect(getByTestId('charge-view')).toBeTruthy();
+
+        await act(async () => {
+          ctl.succeed();
+        });
+        expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
+        await expectHandedOffToSuccess(navigation);
+        expect(navigation.goBack).not.toHaveBeenCalled();
+        expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it('hardware Back is swallowed, and the paid failure then ends on Done (Home), never the Invoice', async () => {
+      const utils = await inFlight();
+      const {getByText, navigation, ctl, navigatorBack} = utils;
+      try {
+        await act(async () => {
+          pressHardwareBack();
+        });
+        expectNoNavigation(navigation);
+        expect(utils.getByTestId('charge-view')).toBeTruthy();
+
+        await act(async () => {
+          ctl.failPaid('[writing change to card] Tag was lost.');
+        });
+        expect(getByText('Done', visible)).toBeTruthy();
+        expect(utils.queryByText('Tap card again', all)).toBeNull();
+        expect(navigation.goBack).not.toHaveBeenCalled();
+
+        // Once paid, hardware Back is Done (ENG-642), still never a pop.
+        await act(async () => {
+          pressHardwareBack();
+        });
+        expect(navigation.goBack).not.toHaveBeenCalled();
+        expect(navigation.reset).toHaveBeenCalledTimes(1);
+        const [{index, routes}] = navigation.reset.mock.calls[0];
+        expect(index).toBe(0);
+        expect(routes).toEqual([HOME]);
+        expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it('an edge swipe (any pop) is prevented while in flight, then becomes Done once paid', async () => {
+      const utils = await inFlight();
+      const {getByTestId, navigation, ctl, navigatorBack} = utils;
+      try {
+        let prevented = false;
+        await act(async () => {
+          prevented = navigation.emitBeforeRemove('POP');
+        });
+        expect(prevented).toBe(true);
+        expectNoNavigation(navigation);
+
+        await act(async () => {
+          ctl.failPaid('[writing change to card] Tag was lost.');
+        });
+        // The header arrow is live again, as Done (ENG-642).
+        expect(
+          getByTestId('charge-back').props.accessibilityState?.disabled,
+        ).toBeFalsy();
+        await act(async () => {
+          prevented = navigation.emitBeforeRemove('POP');
+        });
+        expect(prevented).toBe(true);
+        expect(navigation.reset).toHaveBeenCalledTimes(1);
+        expect(navigation.reset.mock.calls[0][0].routes).toEqual([HOME]);
+        // Done's own reset passes through.
+        expect(navigation.emitBeforeRemove('RESET')).toBe(false);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it("the Success hand-off's own reset passes through the hold", async () => {
+      const utils = await inFlight();
+      const {navigation, ctl, navigatorBack} = utils;
+      try {
+        await act(async () => {
+          ctl.succeed();
+        });
+        // During the held paid frame a pop is still refused …
+        expect(navigation.emitBeforeRemove('POP')).toBe(true);
+        await expectHandedOffToSuccess(navigation);
+        // … and the hand-off's reset is not.
+        expect(navigation.emitBeforeRemove('RESET')).toBe(false);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it('a PIN-less charge the router pre-read holds the same way', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      const ctl = heldAfterBurn();
+      const utils = await renderScreen({preRead: PLAN});
+      const navigatorBack = installNavigatorBack(utils.navigation);
+      try {
+        await act(async () => {});
+        expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          fireEvent.press(utils.getByTestId('charge-back'));
+          pressHardwareBack();
+        });
+        expect(utils.navigation.emitBeforeRemove('POP')).toBe(true);
+        expectNoNavigation(utils.navigation);
+        await act(async () => {
+          ctl.succeed();
+        });
+        await expectHandedOffToSuccess(utils.navigation);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it('before the burn (PIN verify outstanding), Back still leaves: header, hardware and swipe', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      heldBeforeBurn();
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      const navigatorBack = installNavigatorBack(utils.navigation);
+      try {
+        await enterPin(utils.getByLabelText);
+        expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+        expect(
+          utils.getByTestId('charge-back').props.accessibilityState?.disabled,
+        ).toBeFalsy();
+        expect(utils.navigation.emitBeforeRemove('POP')).toBe(false);
+        fireEvent.press(utils.getByTestId('charge-back'));
+        expect(utils.navigation.goBack).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          pressHardwareBack();
+        });
+        expect(utils.navigation.goBack).toHaveBeenCalledTimes(2);
+        expect(utils.navigation.reset).not.toHaveBeenCalled();
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
+    it('a failure after the burn that is NOT paid releases the hold: Back leaves as before', async () => {
+      const utils = await inFlight();
+      const {getByTestId, getByText, navigation, ctl, navigatorBack} = utils;
+      try {
+        expect(navigation.emitBeforeRemove('POP')).toBe(true);
+        await act(async () => {
+          ctl.failUnpaid('[settling payment and minting change] offline');
+        });
+        expect(getByText('Enter the card PIN', visible)).toBeTruthy();
+        expect(navigation.emitBeforeRemove('POP')).toBe(false);
+        fireEvent.press(getByTestId('charge-back'));
+        expect(navigation.goBack).toHaveBeenCalledTimes(1);
+        expect(navigation.reset).not.toHaveBeenCalled();
+      } finally {
+        navigatorBack.remove();
+      }
     });
   });
 

@@ -270,6 +270,31 @@ export const PHASE_WRITING_CHANGE_UNRECORDED =
   'writing change to card (unrecorded)';
 
 /**
+ * The phase a change-write failure is thrown under. Pieces the card already
+ * took this session are named in it (`(4 sat on card)`, or
+ * `(unrecorded, 4 sat on card)`), so the body can say how much of the change
+ * landed and how much did not instead of calling the whole change missing
+ * (ENG-645). With nothing landed it is `PHASE_WRITING_CHANGE` or
+ * `PHASE_WRITING_CHANGE_UNRECORDED` exactly. Only pieces the card ANSWERED
+ * count: a piece whose answer was lost may be on the card too, and the next
+ * tap's reconcile finds it, but the copy promises only what is known.
+ */
+export function changeWriteFailurePhase({
+  recorded,
+  landedSat,
+}: {
+  recorded: boolean;
+  landedSat: number;
+}): string {
+  if (landedSat <= 0) {
+    return recorded ? PHASE_WRITING_CHANGE : PHASE_WRITING_CHANGE_UNRECORDED;
+  }
+  return recorded
+    ? `${PHASE_WRITING_CHANGE} (${landedSat} sat on card)`
+    : `${PHASE_WRITING_CHANGE} (unrecorded, ${landedSat} sat on card)`;
+}
+
+/**
  * The phase a failure of the post-swap bookkeeping (the burned entries
  * marked settled, the merchant's take into the till) is reported under. It
  * is never emitted to the stage: it only names the step on the thrown, paid
@@ -603,6 +628,15 @@ export interface ExecuteChargeArgs {
   unit?: string;
   now?: number;
   onPhase?: (phase: string) => void;
+  /**
+   * Called once, synchronously, just before the first burn APDU goes out:
+   * from here on the card may be spent, so the charge must run to its end
+   * where the merchant can see it. The screen holds every exit (header
+   * Back, hardware Back, the stack's swipe) from this call until
+   * `executeCharge` settles (ENG-645). Not called when the charge fails
+   * earlier: a failed PIN verify or owed-change write burns nothing.
+   */
+  onBurnStart?: () => void;
 }
 
 /**
@@ -623,6 +657,7 @@ export async function executeCharge({
   unit = DEFAULT_UNIT,
   now = Date.now(),
   onPhase = () => {},
+  onBurnStart = () => {},
 }: ExecuteChargeArgs): Promise<ChargeResult> {
   const step = makeStep(onPhase);
 
@@ -686,6 +721,9 @@ export async function executeCharge({
     }
   }
 
+  // The card is about to be mutated for this bill: the screen must hold
+  // every exit from here until this function settles (ENG-645).
+  onBurnStart();
   const burned: SettlementEntry[] = [];
   for (const [index, slot] of plan.slots.entries()) {
     const proof = unspent.find(p => p.slot === slot)!;
@@ -709,6 +747,8 @@ export async function executeCharge({
   }
 
   let changeLoaded = 0;
+  /** Sats of change the card has answered for this session. */
+  let changeLoadedSat = 0;
   const changeSat = plan.changeSat;
   // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
   // (witnessed) go in; the outputs come out as P2PK change for THIS card
@@ -838,13 +878,15 @@ export async function executeCharge({
             );
           }
           throw new PhaseError(
-            changeRecorded
-              ? PHASE_WRITING_CHANGE
-              : PHASE_WRITING_CHANGE_UNRECORDED,
+            changeWriteFailurePhase({
+              recorded: changeRecorded,
+              landedSat: changeLoadedSat,
+            }),
             error,
           );
         }
         changeLoaded += 1;
+        changeLoadedSat += proof.amount;
         if (changeRecorded) {
           try {
             await markOwedChangeWritten(

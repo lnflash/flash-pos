@@ -1,4 +1,5 @@
 import {
+  changeLandedSat,
   changeOnCard,
   changePieces,
   failedAfterSwap,
@@ -303,6 +304,93 @@ describe('failureBody', () => {
     ).toMatchObject({
       phase: 'writing change to card (unrecorded)',
       cardFull: true,
+    });
+  });
+
+  describe('part of the change landed before the write failed (ENG-645)', () => {
+    const FULL = 'LOAD_PROOF failed: card is full — no free slot (0x6A84)';
+    const body = (phase: string, reason: string, changeSat = 6) =>
+      failureBody(parseFailure(`[${phase}] ${reason}`), {
+        ...ctx({changeSat}),
+        paidSat: 10,
+        paid: true,
+      });
+
+    it('reads how much landed from the phase, and nothing from any other phase', () => {
+      const landed = (message: string) =>
+        changeLandedSat(parseFailure(message));
+      expect(
+        landed('[writing change to card (4 sat on card)] Tag was lost.'),
+      ).toBe(4);
+      expect(
+        landed('[writing change to card (unrecorded, 12 sat on card)] x'),
+      ).toBe(12);
+      expect(landed('[writing change to card] Tag was lost.')).toBe(0);
+      expect(
+        landed('[writing change to card (unrecorded)] Tag was lost.'),
+      ).toBe(0);
+      expect(landed('[recording the payment] keychain write denied')).toBe(0);
+      expect(landed('[burning 4 sat on card (proof 1/1)] x')).toBe(0);
+      expect(landed('Tag was lost.')).toBe(0);
+    });
+
+    it('both variants are still change writes after the swap', () => {
+      for (const phase of [
+        'writing change to card (4 sat on card)',
+        'writing change to card (unrecorded, 4 sat on card)',
+      ]) {
+        expect(failedAfterSwap(parseFailure(`[${phase}] Tag was lost.`))).toBe(
+          true,
+        );
+      }
+    });
+
+    it('unrecorded: says how much is on the card and how much could not be put on it', () => {
+      const expected =
+        '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats could not be put on the card.';
+      for (const reason of ['Tag was lost.', FULL, '']) {
+        const text = body(
+          'writing change to card (unrecorded, 4 sat on card)',
+          reason,
+        );
+        expect(text).toBe(expected);
+        expect(text).not.toMatch(/saved|next time/i);
+        expect(text).not.toMatch(/Your 6 sats change/);
+        expect(text).not.toMatch(/LOAD_PROOF|0x6A84|Tag was lost/);
+      }
+    });
+
+    it('recorded: says how much is on the card and that only the rest is saved', () => {
+      expect(
+        body('writing change to card (4 sat on card)', 'Tag was lost.'),
+      ).toBe(
+        '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats are saved on this terminal and will be added the next time this card is charged.',
+      );
+      expect(body('writing change to card (4 sat on card)', FULL)).toBe(
+        '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats are saved on this terminal and will be added once the card has a free slot.',
+      );
+    });
+
+    it('singular: 1 sat landed, 1 sat left', () => {
+      expect(
+        body('writing change to card (unrecorded, 1 sat on card)', 'x', 2),
+      ).toBe(
+        '10 sats are paid. 1 sat of your 2 sats change is on the card. The other 1 sat could not be put on the card.',
+      );
+      expect(body('writing change to card (1 sat on card)', 'x', 2)).toBe(
+        '10 sats are paid. 1 sat of your 2 sats change is on the card. The other 1 sat is saved on this terminal and will be added the next time this card is charged.',
+      );
+    });
+
+    it('a landed count that does not fit the change falls back to the whole-change copy', () => {
+      expect(
+        body('writing change to card (unrecorded, 6 sat on card)', 'x'),
+      ).toBe(
+        '10 sats are paid. Your 6 sats change could not be put on the card.',
+      );
+      expect(body('writing change to card (9 sat on card)', 'x')).toBe(
+        '10 sats are paid. Your 6 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
     });
   });
 

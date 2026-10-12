@@ -35,12 +35,27 @@ export interface CardBridgeConfig {
    * `loseAnswerOnLoad` (`__tests__/services/cashuCharge.test.ts`).
    */
   dropLoad?: number;
+  /**
+   * Fault injection: every LOAD_PROOF is held this many milliseconds before
+   * it is forwarded, so a flow can act while the change write is in flight
+   * (ENG-645: Back mid-write). At most `MAX_HOLD_LOAD_MS`.
+   */
+  holdLoadMs?: number;
 }
+
+/** The longest `holdLoadMs` the bridge takes: a flow, not a hang. */
+export const MAX_HOLD_LOAD_MS = 10000;
+
+const validHoldLoad = (ms: number): boolean =>
+  Number.isInteger(ms) && ms > 0 && ms <= MAX_HOLD_LOAD_MS;
 
 /** A dead bridge fails the session; it must never leave a charge hanging. */
 export const CARD_BRIDGE_TIMEOUT_MS = 5000;
 
-/** Where the deep link lives: `flashpos://dev/card-bridge?url=…&dropLoad=…`. */
+/**
+ * Where the deep link lives:
+ * `flashpos://dev/card-bridge?url=…&dropLoad=…&holdLoad=<ms>`.
+ */
 export const CARD_BRIDGE_LINK = 'flashpos://dev/card-bridge';
 
 /** cashu-javacard's LOAD_PROOF instruction byte (`INS` in cashuCard.ts). */
@@ -95,7 +110,17 @@ export function setCardBridge(config: CardBridgeConfig | null): void {
       `card bridge: dropLoad must be a positive integer, got ${dropLoad}`,
     );
   }
-  bridge = {url: url.replace(/\/+$/, ''), ...(dropLoad ? {dropLoad} : {})};
+  const {holdLoadMs} = config;
+  if (holdLoadMs !== undefined && !validHoldLoad(holdLoadMs)) {
+    throw new Error(
+      `card bridge: holdLoadMs must be a whole number of ms from 1 to ${MAX_HOLD_LOAD_MS}, got ${holdLoadMs}`,
+    );
+  }
+  bridge = {
+    url: url.replace(/\/+$/, ''),
+    ...(dropLoad ? {dropLoad} : {}),
+    ...(holdLoadMs ? {holdLoadMs} : {}),
+  };
   loadsSent = 0;
 }
 
@@ -180,6 +205,12 @@ export function bridgeTransceiver(config: CardBridgeConfig): Transceiver {
     if (apdu[1] === INS_LOAD_PROOF) {
       loadsSent += 1;
       drop = config.dropLoad === loadsSent;
+      if (config.holdLoadMs) {
+        // Held before it is sent: the card has not written the slot yet.
+        await new Promise<void>(resolve =>
+          setTimeout(resolve, config.holdLoadMs),
+        );
+      }
     }
     const reply = await postApdu(config.url, toHex(apdu));
     if (drop) {
@@ -195,9 +226,10 @@ export type CardBridgeLink =
   | {action: 'clear'};
 
 /**
- * Reads `flashpos://dev/card-bridge?url=<bridge>[&dropLoad=<n>]` or
- * `…?off=1`. Anything else — another link, a missing or non-http URL, a
- * `dropLoad` that is not a positive integer — answers `null`. The URL may
+ * Reads `flashpos://dev/card-bridge?url=<bridge>[&dropLoad=<n>][&holdLoad=<ms>]`
+ * or `…?off=1`. Anything else — another link, a missing or non-http URL, a
+ * `dropLoad` that is not a positive integer, a `holdLoad` that is not a
+ * whole number of ms up to `MAX_HOLD_LOAD_MS` — answers `null`. The URL may
  * arrive percent-encoded or raw (`url=http://127.0.0.1:9876`).
  */
 export function parseCardBridgeLink(link: string): CardBridgeLink | null {
@@ -239,6 +271,14 @@ export function parseCardBridgeLink(link: string): CardBridgeLink | null {
     }
     config.dropLoad = dropLoad;
   }
+  const holdLoadRaw = params.get('holdLoad');
+  if (holdLoadRaw !== undefined) {
+    const holdLoadMs = Number(holdLoadRaw);
+    if (holdLoadRaw.trim() === '' || !validHoldLoad(holdLoadMs)) {
+      return null;
+    }
+    config.holdLoadMs = holdLoadMs;
+  }
   return {action: 'set', config};
 }
 
@@ -267,6 +307,9 @@ function applyCardBridgeLink(link: string | null | undefined): void {
     `[card-bridge] on: card sessions use ${parsed.config.url}` +
       (parsed.config.dropLoad
         ? ` (dropping the answer to LOAD #${parsed.config.dropLoad})`
+        : '') +
+      (parsed.config.holdLoadMs
+        ? ` (holding every LOAD ${parsed.config.holdLoadMs} ms)`
         : ''),
   );
 }

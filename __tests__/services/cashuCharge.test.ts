@@ -1027,10 +1027,26 @@ describe('owed change (ENG-630)', () => {
     }).catch(e => e);
 
     expect(failure).toBeInstanceOf(PhaseError);
+    // The 4-sat piece the card took before the refusal is named in the
+    // phase, so the body can say how much landed (ENG-645).
     expect(failure.message).toMatch(
-      /^\[writing change to card\] LOAD_PROOF failed: card is full/,
+      /^\[writing change to card \(4 sat on card\)\] LOAD_PROOF failed: card is full/,
     );
     expectCardFull(failure);
+    expect(failedAfterSwap(parseFailure(describeCardFailure(failure)))).toBe(
+      true,
+    );
+    expect(
+      failureBody(parseFailure(describeCardFailure(failure)), {
+        burnsDone: 1,
+        paidSat: 10,
+        changeSat: 6,
+        paid: isPaidFailure(failure),
+        fmt: (sat: number) => `${sat} sats`,
+      }),
+    ).toBe(
+      '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats are saved on this terminal and will be added once the card has a free slot.',
+    );
     // The burn settled at the mint: the merchant's money is accounted for.
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
@@ -1850,7 +1866,7 @@ describe('owed change (ENG-630)', () => {
     }
   });
 
-  it('a change write that fails with NO record landed is reported under the unrecorded phase', async () => {
+  it('a change write that fails with NO record landed is reported under the unrecorded phase, naming the piece that landed', async () => {
     const card = fakeCard({
       slots: [{amount: 16, status: 0x01}],
       pin: '1234',
@@ -1886,8 +1902,9 @@ describe('owed change (ENG-630)', () => {
       }).catch(e => e);
 
       expect(failure).toBeInstanceOf(PhaseError);
+      // The first piece (4 sat) landed before the refusal (ENG-645).
       expect(failure.message).toBe(
-        `[${PHASE_WRITING_CHANGE_UNRECORDED}] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
+        '[writing change to card (unrecorded, 4 sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
       );
       expectCardFull(failure);
       // The stage still saw the ordinary change-write phase, once per piece.
@@ -1895,6 +1912,7 @@ describe('owed change (ENG-630)', () => {
         2,
       );
       expect(phases).not.toContain(PHASE_WRITING_CHANGE_UNRECORDED);
+      expect(phases.filter(p => /unrecorded/.test(p))).toEqual([]);
       expect(mockStore[OWED_CHANGE_KEY]).toBeUndefined();
     } finally {
       storage.setSecure.mockImplementation(realSet);
@@ -2265,18 +2283,22 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       expect(card.loads).toHaveLength(1);
       expect(failure).toBeInstanceOf(PhaseError);
       // The owed-change record was refused too, so the load reports the
-      // change as unrecorded — the more specific story for the body copy.
+      // change as unrecorded — the more specific story for the body copy —
+      // and names the 4 sats the card already took (ENG-645).
       expect(failure.message).toBe(
-        `[${PHASE_WRITING_CHANGE_UNRECORDED}] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
+        '[writing change to card (unrecorded, 4 sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
       );
       expect(failure.message).not.toMatch(/recording the payment/);
       expect(isPaidFailure(failure)).toBe(true);
       expect(changeOnCard(parseFailure(describeCardFailure(failure)))).toBe(
         false,
       );
+      // How much landed and how much did not: never the whole 6 sats
+      // called missing when 4 of them are on the card (ENG-645).
       expect(paidBody(failure)).toBe(
-        '10 sats are paid. Your 6 sats change could not be put on the card.',
+        '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats could not be put on the card.',
       );
+      expect(paidBody(failure)).not.toMatch(/Your 6 sats change/);
       // The superseded bookkeeping failure (the refused till write) is
       // logged, not silently dropped.
       expect(warn).toHaveBeenCalledWith(
@@ -2372,5 +2394,114 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     expect(failure).toBeInstanceOf(PhaseError);
     expect(failure.message).toMatch(/^\[settling payment/);
     expect(isPaidFailure(failure)).toBe(false);
+  });
+});
+
+describe('the burn point: onBurnStart (ENG-645)', () => {
+  it('fires once, after the PIN verify and before the first burn APDU', async () => {
+    const card = fakeCard({
+      slots: [
+        {amount: 8, status: 0x01},
+        {amount: 4, status: 0x01},
+      ],
+      pin: '1234',
+    });
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 12,
+    });
+    expect(preRead.plan.slots).toHaveLength(2);
+    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+    const before = card.sent.length;
+    const sentAtBurnStart: number[][] = [];
+    const phases: string[] = [];
+    const onBurnStart = jest.fn(() => {
+      sentAtBurnStart.push(card.sent.slice(before).map(insOf));
+    });
+
+    await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 12,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+      onPhase: p => phases.push(p),
+      onBurnStart,
+    });
+
+    // Once, for both burns.
+    expect(onBurnStart).toHaveBeenCalledTimes(1);
+    // The PIN was verified (0x40) and no SPEND_PROOF (0x20) had gone out.
+    expect(sentAtBurnStart[0]).toContain(0x40);
+    expect(sentAtBurnStart[0]).not.toContain(0x20);
+    // Every burn went out after it.
+    const session = card.sent.slice(before).map(insOf);
+    expect(session.filter(i => i === 0x20)).toHaveLength(2);
+    expect(session.slice(0, sentAtBurnStart[0].length)).not.toContain(0x20);
+    // On the stage, it lands between the verify and the first burn.
+    expect(phases).toContain('verifying PIN');
+    expect(phases.some(p => p.startsWith('burning'))).toBe(true);
+  });
+
+  it('is not called when the charge fails before the burn: a wrong PIN', async () => {
+    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    const onBurnStart = jest.fn();
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '9999',
+      mintUrl: MINT_URL,
+      now: 1000,
+      onBurnStart,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[verifying PIN\]/);
+    expect(onBurnStart).not.toHaveBeenCalled();
+    expect(card.burnCount).toBe(0);
+  });
+
+  it('is not called when owed change from an earlier charge is refused before the burn', async () => {
+    await recordOwedChange(
+      CARD_PUBKEY_HEX,
+      [changeProof(4, '71'.repeat(32))],
+      {mintUrl: MINT_URL, unit: 'sat'},
+      1000,
+    );
+    const card = fakeCard({
+      slots: [{amount: 16, status: 0x01}],
+      pin: '1234',
+      maxSlots: 4,
+      refuseLoad: () => true,
+    });
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.owedChange).toHaveLength(1);
+    const onBurnStart = jest.fn();
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 2000,
+      onBurnStart,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[adding 4 sat of change owed/);
+    expect(isPaidFailure(failure)).toBe(false);
+    expect(onBurnStart).not.toHaveBeenCalled();
+    expect(card.burnCount).toBe(0);
   });
 });

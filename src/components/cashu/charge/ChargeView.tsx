@@ -90,6 +90,14 @@ export interface ChargeViewProps {
    */
   settled?: boolean;
   onDone?: () => void;
+  /**
+   * The card has been touched for this bill (the first burn is going out)
+   * and the charge has not settled: every exit is held (ENG-645). The header
+   * arrow is disabled and hardware Back is swallowed until the charge ends,
+   * on Success or on the paid error's Done. Before the burn (the read, the
+   * PIN pad) this is false and Back leaves as usual.
+   */
+  holding?: boolean;
   onHeaderLongPress?: () => void;
   /** Overrides the system setting (the preview's toggle). */
   reduceMotion?: boolean;
@@ -279,6 +287,18 @@ const ChargeView = (props: ChargeViewProps) => {
     return () => sub.remove();
   }, [settled, onDone]);
 
+  // Card touched, charge in flight (ENG-645): Back is swallowed until the
+  // charge settles. A pop now would leave the charge running on an
+  // unmounted screen and land on a screen that can charge the bill again.
+  const {holding} = props;
+  useEffect(() => {
+    if (!holding) {
+      return;
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [holding]);
+
   const complete = mode === 'complete';
   const header = (
     <Pressable
@@ -290,7 +310,7 @@ const ChargeView = (props: ChargeViewProps) => {
         testID="charge-back"
         accessibilityRole="button"
         accessibilityLabel="Back"
-        disabled={complete}
+        disabled={complete || !!holding}
         onPress={props.onBack}
         style={styles.back}>
         <BackArrow />

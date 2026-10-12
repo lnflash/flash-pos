@@ -1,0 +1,53 @@
+# Back while the change is being written (ENG-645). Every change LOAD is
+# held 10 s at the bridge (deep link holdLoad=10000), so the card is burned,
+# the swap has settled and the change write is in flight when the flow
+# swipes back. The charge screen must hold: no pop onto the keypad with the
+# bill live, the charge finishes on screen and hands off to Success, and
+# the card ends with exactly one burn and the change written once.
+appId: com.flash.pos
+name: 'eCash card: Back during the change write is held'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- runFlow: common/enter-pin.yaml
+# The burn is done and the first change LOAD is held at the bridge.
+- extendedWaitUntil:
+    visible:
+      id: 'phase-title'
+      text: 'Putting 5 sats on the card'
+    timeout: 60000
+# The stack's back gesture, mid-write. Before ENG-645 this popped the
+# charge screen onto the keypad while the charge ran on unmounted.
+- swipe:
+    start: '1%, 50%'
+    end: '90%, 50%'
+    duration: 400
+# A pop unmounts the charge screen: it must still be here, mid-write. (On
+# the old code the screen is gone and Success never comes: the charge ran
+# on an unmounted screen, which never hands off.)
+- assertVisible:
+    id: 'charge-view'
+- assertVisible:
+    id: 'phase-title'
+    text: 'Putting 5 sats on the card'
+# The charge ends where the merchant can see it.
+- extendedWaitUntil:
+    visible: 'Charged 3 sats — paid by eCash card'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'
+- tapOn: 'Done'
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '5'
+- assertNotVisible:
+    id: 'balance-owed'
