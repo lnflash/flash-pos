@@ -41,7 +41,26 @@ const CARD_FULL = /card is full/i;
  * `PHASE_WRITING_CHANGE_UNRECORDED`). The change is then nowhere but the
  * dead process; the body must not say it is saved.
  */
-const CHANGE_UNRECORDED = /^writing change to card \(unrecorded\)$/i;
+const CHANGE_UNRECORDED =
+  /^writing change to card \(unrecorded(?:, \d+ sat on card)?\)$/i;
+
+/**
+ * Pieces of the change the card took before the write failed, as
+ * `executeCharge` names them in the phase (`changeWriteFailurePhase`:
+ * "writing change to card (4 sat on card)", or "(unrecorded, 4 sat on
+ * card)"). Absent when nothing landed.
+ */
+const CHANGE_LANDED =
+  /^writing change to card \((?:unrecorded, )?(\d+) sat on card\)$/i;
+
+/**
+ * Sats of change already on the card when the change write failed (ENG-645),
+ * from the phase. 0 when nothing landed or the phase is not a change write.
+ */
+export function changeLandedSat(failure: Failure): number {
+  const match = CHANGE_LANDED.exec(failure.phase ?? '');
+  return match ? Number(match[1]) : 0;
+}
 
 /**
  * `executeCharge` reports a failed post-swap bookkeeping write under this
@@ -136,7 +155,20 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     return 'Nothing was taken from the card. It has no free slot for the change.';
   }
   const verb = ctx.paidSat === 1 ? 'is' : 'are';
+  // Part of the change landed before the write failed (ENG-645): say how
+  // much is on the card and how much is not, never the whole change missing.
+  const landed = changeLandedSat(failure);
+  const partial = landed > 0 && landed < ctx.changeSat;
+  const rest = ctx.changeSat - landed;
+  const landedLead = `${ctx.fmt(ctx.paidSat)} ${verb} paid. ${ctx.fmt(
+    landed,
+  )} of your ${ctx.fmt(ctx.changeSat)} change ${
+    landed === 1 ? 'is' : 'are'
+  } on the card. The other ${ctx.fmt(rest)}`;
   if (CHANGE_UNRECORDED.test(phase)) {
+    if (partial) {
+      return `${landedLead} could not be put on the card.`;
+    }
     // The bill is paid but the change was never recorded and did not land:
     // it is not saved anywhere. Say the one thing the customer needs to
     // hear — the bill is paid — and that the change did not reach the card;
@@ -158,9 +190,11 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     // spend leaves its slot 'spent', not free, and nothing in the app
     // clears spent slots until ENG-631) — so promise only what is true: it
     // is saved here and goes on once the card has room.
-    const saved = `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
-      ctx.changeSat,
-    )} change is saved on this terminal`;
+    const saved = partial
+      ? `${landedLead} ${rest === 1 ? 'is' : 'are'} saved on this terminal`
+      : `${ctx.fmt(ctx.paidSat)} ${verb} paid. Your ${ctx.fmt(
+          ctx.changeSat,
+        )} change is saved on this terminal`;
     return failure.cardFull
       ? `${saved} and will be added once the card has a free slot.`
       : `${saved} and will be added the next time this card is charged.`;
