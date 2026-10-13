@@ -35,6 +35,7 @@ import {
   rebalanceTill,
   RECONCILE_MIN_INTERVAL_MS,
   reconcileTill,
+  refreshKeysets,
   saveKeysets,
   sigAllMessage,
   swapSigned,
@@ -1178,6 +1179,30 @@ describe('the kept keysets', () => {
     expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 0}, 3)).toBe(0);
     expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 100}, 2)).toBe(1);
     expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 100}, 11)).toBe(2);
+  });
+
+  describe('refreshKeysets (ENG-674 should-fix)', () => {
+    it('overwrites a stale cache with what the mint lists now', async () => {
+      await saveKeysets(MINT_URL, [{...mint.cachedKeyset(), active: false}]);
+      walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+
+      await expect(refreshKeysets(MINT_URL)).resolves.toBe(true);
+
+      expect(walletMocks.loadMint).toHaveBeenCalledWith(true);
+      const kept = await cachedKeysets(MINT_URL);
+      expect(kept.find(k => k.id === KEYSET_ID)?.active).toBe(true);
+    });
+
+    it('is best effort: a mint that will not answer leaves the cache untouched', async () => {
+      await saveKeysets(MINT_URL, [mint.cachedKeyset()]);
+      walletMocks.loadMint.mockRejectedValue(new TypeError('offline'));
+
+      await expect(refreshKeysets(MINT_URL)).resolves.toBe(false);
+
+      await expect(cachedKeysets(MINT_URL)).resolves.toEqual([
+        mint.cachedKeyset(),
+      ]);
+    });
   });
 });
 

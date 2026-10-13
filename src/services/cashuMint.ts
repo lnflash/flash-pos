@@ -429,6 +429,27 @@ export async function keysetFor(
 }
 
 /**
+ * Force a fresh listing of `mintUrl`'s keysets from the mint, overwriting
+ * whatever is cached (ENG-674 should-fix): `keysetFor`'s offline-first
+ * lookup returns a cached keyset as soon as it has keys, never checking
+ * whether the mint has since rotated it — and SIG_ALL binds the change
+ * keyset's `active` flag and its fee into the swap's outputs for good, so a
+ * charge about to build them must not trust a cache that might be stale.
+ * Best effort: resolves without writing anything when the mint will not
+ * answer, leaving whatever is cached untouched.
+ */
+export async function refreshKeysets(mintUrl: string): Promise<boolean> {
+  try {
+    const wallet = await getWallet(mintUrl);
+    await wallet.loadMint(true);
+    await persistKeysets(mintUrl, wallet);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the mint answers at all, within `timeoutMs` — asked before a card
  * pays with pieces this terminal cannot check offline (no DLEQ, or no keys
  * kept): such a payment must be swapped in the same tap. A transport or
