@@ -423,8 +423,9 @@ for the hardware and the money:
 
 | Piece | What it is | Where |
 |---|---|---|
-| Card | The real cashu-javacard applet in jCardSim, served over HTTP (`cardsim`) | `lnflash/cashu-javacard` `tools/cardsim`, port 9876 |
-| Mint | Nutshell 0.19.2 on FakeWallet: quotes pay themselves, no fees | port 3338 |
+| Card | The real cashu-javacard applet (protocol 2.0) in jCardSim, served over HTTP (`cardsim`) | `lnflash/cashu-javacard` `tools/cardsim`, port 9876 |
+| Mint | Nutshell 0.20.3 on FakeWallet: quotes pay themselves, no fees | port 3338 |
+| Block headers | A stub the runner serves on an ephemeral port: the tip is the newest of the applet's `spec/vectors/headers.json` | `scripts/e2e-flashcard.mjs` |
 | App | A Debug build with the JS bundle embedded, driven by Maestro | `.maestro/flashcard/` |
 
 The app reaches the card through the **card bridge** (`src/services/cardBridge.ts`):
@@ -439,19 +440,24 @@ the `flashpos://` scheme is registered only in the Debug configuration
 ### What the flows prove
 
 Every flow logs in on SAT (a sub-cent SAT bill skips the BTCPay invoice and
-opens the card charge directly), charges a 3-sat bill against an 8-sat proof
-(change 5 = 4 + 1) and, after the UI step, reads the card's own state from
-cardsim (`scripts/assert-state.js`): copy on screen can lie about money, slots
-cannot.
+opens the card charge directly), charges a 3-sat bill against an 8-sat piece
+(change 5 = 4 + 1, made by the card itself) and, after the UI step, reads the
+card's own state from cardsim (`scripts/assert-state.js`): copy on screen can
+lie about money, slots cannot. Every card is set up as a holder's phone sets
+one up (protocol 2.0): the record (the mint), the TEST owner anchored at the
+tip header, and format-4 SIG_ALL pieces loaded with the mint's DLEQ. The app
+is shown the same tip by the header stub (the deep link's `headers=`), so a
+card's clock never moves under a flow.
 
 | Flow | Card | Proves |
 |---|---|---|
 | `balance-read` | 8, PIN | Card balance shows "8 sats", nothing written |
 | `charge-with-change` | 8, PIN | read → PIN → burn → swap → 4 + 1 written; balance "5 sats" |
 | `charge-no-pin` | 8 | one tap, no PIN sheet |
-| `full-card-refusal` | 8 + 31 spent | refused before the burn ("The card is full"); the 8 stays unspent |
-| `owed-change-next-tap` | 8, then full, then 4 | the change LOAD answers 6A84 after the swap; the 5 sats are kept on the terminal and written first on the next charge (4 + 1, then the 4-sat proof pays the bill exactly) |
-| `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance shows 4 sats + "Change waiting · 1 sat" |
+| `full-card-refusal` | 8 + 127 spent | refused before the burn ("The card is full"); the 8 stays unspent |
+| `owed-change-next-tap` | 8, then full, then (the same card, spent slots freed) 4 | the change LOAD answers 6A84 after the swap; the mint's half of the 5 sats is kept on the terminal, the card keeps its openings, and the next charge finishes and writes them first (4 + 1, then the 4-sat piece pays the bill exactly) |
+| `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance tap after the charge (the card's change grant) adds the 1 sat still owed with no PIN: "5 sats", "Change added · 1 sat" |
+| `limit-refusal` | 8, PIN, a daily limit of 2 | refused before the PIN pad: "This card has reached today's spending limit."; the 8 stays unspent |
 | `back-during-change-write` | 8, PIN, `holdLoad=4000` | the edge swipe mid change-write is held: the charge screen stays, finishes on screen and hands off to Success; the card has one burn and 4 + 1 written once |
 
 **A change write that fails after the swap ends the charge as paid
@@ -473,14 +479,22 @@ error state, Done): on notched iPhones the header's back arrow sits in the
 status-bar band, where a tap goes to the system.
 
 `dropLoad=n` makes the bridge forward the n-th LOAD_PROOF and then report the
-tag lost: the transport twin of `loseAnswerOnLoad` in
-`__tests__/services/cashuCharge.test.ts`.
+tag lost: the transport twin of `loseLoadAnswer` in the jest card model
+(`__tests__/support/cardProtocol2.ts`).
+
+`headers=<api>` points the app's block-header source (`src/services/blockHeader.ts`)
+at an Esplora stand-in in place of mempool.space and blockstream.info. Dev
+builds only, like the bridge.
+
+The card side of every flow is also run in jest against a real cardsim and
+a real mint, with no simulator (`__tests__/integration/cardsimMint.test.ts`,
+skipped unless `CARD_E2E_CARDSIM` and `CARD_E2E_MINT` are set).
 
 `holdLoad=<ms>` (1 to 10000) makes the bridge hold every LOAD_PROOF that long
 before forwarding it, so a flow can act while the change write is in flight.
 
 **Back after the first burn is held (ENG-645).** From `executeCharge`'s
-`onBurnStart` (just before the first SPEND_PROOF) until the charge settles,
+`onBurnStart` (just before SPEND_ALL_SIGN, which burns the payment) until the charge settles,
 the charge screen refuses every exit: the header arrow is disabled, hardware
 Back is swallowed and `beforeRemove` prevents the edge swipe. A pop there
 would unmount the screen mid-charge and land on the Invoice with "Pay by
@@ -497,9 +511,12 @@ header arrow, hardware Back and `beforeRemove` on both paths.
 mvn -B -f tools/cardsim/pom.xml package -DskipTests
 java -jar tools/cardsim/target/cardsim.jar --port 9876
 
-# 2. The mint (Python 3.10+; the constraints pin Nutshell's own lockfile)
-python3 -m venv /tmp/nutshell && /tmp/nutshell/bin/pip install \
-  -c scripts/e2e-flashcard/nutshell-constraints.txt cashu==0.19.2
+# 2. The mint (Python 3.10+; the constraints pin Nutshell's own lockfile, but
+#    the breez-sdk-spark release it pins, which PyPI no longer has)
+python3 -m venv /tmp/nutshell && \
+  /tmp/nutshell/bin/pip install -r scripts/e2e-flashcard/nutshell-constraints.txt && \
+  /tmp/nutshell/bin/pip install breez-sdk-spark==0.17.0 && \
+  /tmp/nutshell/bin/pip install --no-deps cashu==0.20.3
 mkdir -p /tmp/mint && cd /tmp/mint && cat > .env <<'ENV'
 MINT_LISTEN_PORT=3338
 MINT_PRIVATE_KEY=local-e2e-throwaway
@@ -526,7 +543,7 @@ xcrun simctl install booted "ios/build/Build/Products/Debug-iphonesimulator/Flas
 # 4. The flows (maestro 2.10.0 on PATH). The runner reaches cardsim only through
 #    its reference client, tools/cardsim/client.cjs: found in ../cashu-javacard
 #    or ./cardsim, else pass --cardsim-client <path> (or CARDSIM_CLIENT).
-yarn e2e:flashcard --username <TEST merchant>             # all six
+yarn e2e:flashcard --username <TEST merchant>             # all eight
 yarn e2e:flashcard --username <TEST merchant> --flow charge-with-change
 yarn e2e:flashcard --dry-run                              # the plan, no network
 ```
@@ -539,12 +556,15 @@ unreadable: Internal error when a required entitlement isn't present") and
 every charge fails closed. `yarn ios` with Metro running works too. Pass
 `--device <simulator id>` when more than one simulator is booted.
 
-The runner (`scripts/e2e-flashcard.mjs`) mints each flow's proofs P2PK-locked to
-the card exactly as the app rebuilds them (`buildCardP2PKSecret`; the
-byte-identity is pinned in `__tests__/scripts/e2eLib.test.ts`), resets the
+The runner (`scripts/e2e-flashcard.mjs`) mints each flow's pieces locked to
+the card in the format-4 SIG_ALL form the card and the app rebuild
+(`buildCardSigAllSecret`; the byte-identity is pinned in
+`__tests__/scripts/e2eLib.test.ts`), each with the mint's DLEQ, resets the
 card (its key survives `/reset`, which the runner checks), posts the starting
 fixture, and hands later fixtures to the flow (`FIXTURE_FULL`,
-`FIXTURE_AFTER`). Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
+`FIXTURE_AFTER`). `FIXTURE_AFTER` is applied on top of the card the flow
+left (no `/reset`, after a `CLEAR_SPENT`): a 2.0 card's change openings,
+the other half of the change it is owed, live on the card. Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
 The runner's own bridge calls (`/state`, `/reset` and the starting
 `/fixture`) go through cashu-javacard's `client.cjs`, with its 5 s deadline
 per request, so a wedged bridge fails the flow instead of hanging the run.
@@ -574,10 +594,14 @@ Maestro's output and the cardsim and mint logs are uploaded as the
 - iOS only. On Android the keypad keeps a card session armed while focused;
   with the bridge's implicit tap that loop would spin, so the bridge is not
   meant for the emulator yet.
-- The flows pin customer-facing copy ("The card is full", "Change waiting · 1
-  sat — added on the next charge", "… change is saved on this terminal and
-  will be added the next time this card is charged."). A copy change updates the flow in the same
-  PR. The `/state` assertions are the durable half.
+- The flows pin customer-facing copy ("The card is full", "Change added · 1
+  sat", "This card has reached today's spending limit.", "… change is saved
+  on this terminal and will be added the next time this card is charged.").
+  A copy change updates the flow in the same PR. The `/state` assertions are
+  the durable half.
+- A 0.x card cannot be hosted: cardsim always answers the 2.0 AID. "This
+  card needs an update" is covered by jest only (the card layer, the router,
+  the keypad and the charge screen).
 - The card key is the same after every `/reset`, and the owed-change store is
   keyed by it: every flow starts with `clearState` and `clearKeychain`.
 
