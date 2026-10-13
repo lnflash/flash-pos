@@ -1,0 +1,12 @@
+# iOS asks "Open in “Flash POS”?" before the app opens its own custom-scheme
+# link. On a cold CI simulator the prompt can arrive 30 s or more after the
+# link, and a prompt left up is a system alert: it outlives relaunches and
+# covers every later flow (run 38455178746). Answer it wherever it is.
+# env: ANSWER ("Open" after our link, "Cancel" for one left by an earlier flow)
+appId: com.flash.pos
+---
+- runFlow:
+    when:
+      visible: 'Open in .Flash POS.\?'
+    commands:
+      - tapOn: ${ANSWER}

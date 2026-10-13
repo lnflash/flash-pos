@@ -154,6 +154,8 @@ function fakeCard(
     selectVersion?: number[];
     /** The 2.0 AIDs' SELECT answers this status word. */
     selectSw?: number;
+    /** The package AID's SELECT answers exactly this (body + status word). */
+    packageAnswer?: number[];
     legacyAnswers?: boolean;
     /** Only this old AID answers (9000). */
     legacyAid?: number[];
@@ -190,6 +192,12 @@ function fakeCard(
       }
       if (overrides.selectSw !== undefined) {
         return sw(overrides.selectSw);
+      }
+      if (
+        overrides.packageAnswer !== undefined &&
+        toHex(aid) === toHex(PACKAGE_AID)
+      ) {
+        return overrides.packageAnswer;
       }
       if (overrides.selectFails?.includes(aidLength)) {
         return sw(0x6a82);
@@ -238,6 +246,41 @@ function fakeCard(
     return sw(0x6d00);
   };
   return {transceive, sent};
+}
+
+/**
+ * A J3R180 provisioned as cashu-javacard 2.0.0-rc.1 documents it (ENG-681):
+ * the opener `F0 CASHUCARD 4D` installed first, then the applet
+ * `F0 CASHUCARD 01`. A SELECT by the package AID prefix reaches the opener,
+ * which answers 9000 with no body; any command while the opener is selected
+ * answers 6D00. A SELECT by the full applet AID reaches the applet (here the
+ * `fakeCard` applet). Records every answer it gives.
+ */
+function j3r180WithOpener() {
+  const applet = fakeCard();
+  const sent: number[][] = [];
+  const answers: number[][] = [];
+  let openerSelected = false;
+  const answer = async (apdu: number[]): Promise<number[]> => {
+    if (apdu[0] === 0x00 && apdu[1] === 0xa4) {
+      const aid = apdu.slice(5, 5 + apdu[4]);
+      openerSelected = toHex(aid) === toHex(PACKAGE_AID);
+      if (openerSelected) {
+        return [0x90, 0x00];
+      }
+      return toHex(aid) === toHex(APPLET_AID)
+        ? applet.transceive(apdu)
+        : sw(0x6a82);
+    }
+    return openerSelected ? sw(0x6d00) : applet.transceive(apdu);
+  };
+  const transceive: Transceiver = async apdu => {
+    sent.push(apdu);
+    const result = await answer(apdu);
+    answers.push(result);
+    return result;
+  };
+  return {transceive, sent, answers};
 }
 
 /** A transceiver that answers each APDU from a list, recording what was sent. */
@@ -459,11 +502,30 @@ describe('isAppletNotFound', () => {
 });
 
 describe('selectApplet', () => {
-  it('selects with the 2.0 package AID first ("CASHUCARD" after F0)', async () => {
+  // ENG-681: the full AID ("CASHUCARD" after F0, then 01) is the first
+  // SELECT sent, as Foxy's wallet does. The package AID is a prefix that a
+  // card provisioned as documented resolves to its opener, not the applet.
+  it('selects with the 2.0 full applet AID first (F0 CASHUCARD 01)', async () => {
     const card = fakeCard();
     await selectApplet(card.transceive);
     expect(card.sent).toHaveLength(1);
     expect(card.sent[0]).toEqual([
+      0x00,
+      0xa4,
+      0x04,
+      0x00,
+      APPLET_AID.length,
+      ...APPLET_AID,
+      0x00,
+    ]);
+    expect(toHex(card.sent[0])).toBe('00a404000bf04341534855434152440100');
+  });
+
+  it('falls back to the package AID when the full applet AID answers 6A82', async () => {
+    const card = fakeCard({selectFails: [APPLET_AID.length]});
+    expect(await selectApplet(card.transceive)).toEqual([2, 0]);
+    expect(card.sent).toHaveLength(2);
+    expect(card.sent[1]).toEqual([
       0x00,
       0xa4,
       0x04,
@@ -473,22 +535,7 @@ describe('selectApplet', () => {
       0x00,
     ]);
     // Byte for byte the applet transcript's own SELECT, plus the Le.
-    expect(toHex(card.sent[0])).toBe(`${step(0).apdu}00`);
-  });
-
-  it('falls back to the full applet AID when prefix select is unsupported', async () => {
-    const card = fakeCard({selectFails: [PACKAGE_AID.length]});
-    await selectApplet(card.transceive);
-    expect(card.sent).toHaveLength(2);
-    expect(card.sent[1]).toEqual([
-      0x00,
-      0xa4,
-      0x04,
-      0x00,
-      APPLET_AID.length,
-      ...APPLET_AID,
-      0x00,
-    ]);
+    expect(toHex(card.sent[1])).toBe(`${step(0).apdu}00`);
   });
 
   it('surfaces the card error when no AID selects', async () => {
@@ -521,10 +568,11 @@ describe('selectApplet', () => {
     expect(isCardNeedsUpdate(failure)).toBe(true);
     expect(isAppletNotFound(failure)).toBe(false);
     expect(card.sent.every(a => a[0] === 0x00 && a[1] === 0xa4)).toBe(true);
-    // The 2.0 AIDs first, then the 0.x package AID, which answered.
+    // The 2.0 AIDs first (full, then package), then the 0.x package AID,
+    // which answered.
     expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
-      toHex(PACKAGE_AID),
       toHex(APPLET_AID),
+      toHex(PACKAGE_AID),
       toHex(LEGACY_AIDS[0]),
     ]);
   });
@@ -555,7 +603,7 @@ describe('selectApplet', () => {
     const version = await selectApplet(card.transceive);
 
     expect(card.sent[0][card.sent[0].length - 1]).toBe(0x00);
-    expect(card.sent[0]).toHaveLength(5 + PACKAGE_AID.length + 1);
+    expect(card.sent[0]).toHaveLength(5 + APPLET_AID.length + 1);
     expect(version).toEqual([2, 0]);
   });
 
@@ -637,6 +685,123 @@ describe('selectApplet', () => {
     const failure = await selectApplet(card.transceive).catch(e => e);
     expect(isAppletNotFound(failure)).toBe(true);
     expect(card.sent).toHaveLength(2 + LEGACY_AIDS.length);
+  });
+
+  // ENG-681. A real J3R180 with cashu-javacard 2.0.0-rc.1 installed as
+  // documented: the opener F0 CASHUCARD 4D first, then the applet
+  // F0 CASHUCARD 01. SELECT by the package AID prefix reaches the opener,
+  // which answers 9000 with no body and 6D00 to the next command; SELECT by
+  // the full AID reaches the applet and answers 0200 9000.
+  it('a provisioned card whose package AID reaches the opener is read as 2.0', async () => {
+    const card = j3r180WithOpener();
+    expect(await selectApplet(card.transceive)).toEqual([2, 0]);
+    expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
+      toHex(APPLET_AID),
+    ]);
+  });
+
+  it('a full read of the provisioned card succeeds (the applet stays selected)', async () => {
+    const card = j3r180WithOpener();
+    const summary = await readCard(card.transceive);
+    expect(summary.appletVersion).toBe('2.0');
+    expect(summary.balance).toBe(500);
+    // The opener was never selected, so nothing came back 6D00.
+    expect(card.answers.map(toHex)).not.toContain('6d00');
+  });
+
+  it('a full-AID answer of version 03 00 needs an update, with no fallback AID tried', async () => {
+    const card = fakeCard({selectVersion: [3, 0]});
+    const failure = await selectApplet(card.transceive).catch(e => e);
+
+    expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+    expect(failure.message).toBe(CARD_NEEDS_UPDATE);
+    expect(card.sent).toHaveLength(1);
+    expect(toHex(card.sent[0].slice(5, 5 + card.sent[0][4]))).toBe(
+      toHex(APPLET_AID),
+    );
+  });
+
+  it('a package-AID 9000 with no version falls through: not an eCash card when no old AID answers', async () => {
+    const card = fakeCard({
+      selectFails: [APPLET_AID.length],
+      packageAnswer: [0x90, 0x00],
+    });
+    const failure = await selectApplet(card.transceive).catch(e => e);
+
+    expect(isCardNeedsUpdate(failure)).toBe(false);
+    expect(isAppletNotFound(failure)).toBe(true);
+    expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
+      toHex(APPLET_AID),
+      toHex(PACKAGE_AID),
+      ...LEGACY_AIDS.map(toHex),
+    ]);
+  });
+
+  it.each([['no body', [0x90, 0x00]]])(
+    'a package-AID 9000 with %s falls through to the old-AID probe',
+    async (_, answer) => {
+      const card = fakeCard({
+        selectFails: [APPLET_AID.length],
+        packageAnswer: answer,
+        legacyAnswers: true,
+      });
+      const failure = await selectApplet(card.transceive).catch(e => e);
+
+      // Needs an update because the 0.x AID answered, not because of the
+      // package AID's answer: the probe ran.
+      expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+      expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
+        toHex(APPLET_AID),
+        toHex(PACKAGE_AID),
+        toHex(LEGACY_AIDS[0]),
+      ]);
+    },
+  );
+
+  it.each([
+    ['version 03 00', [0x03, 0x00, 0x90, 0x00]],
+    ['version 01 14', [0x01, 0x14, 0x90, 0x00]],
+    ['a one-byte body', [0x02, 0x90, 0x00]],
+  ])(
+    'a package-AID versioned non-2.0 answer (%s) needs an update, no legacy probe',
+    async (_, answer) => {
+      const card = fakeCard({
+        selectFails: [APPLET_AID.length],
+        packageAnswer: answer,
+      });
+      const failure = await selectApplet(card.transceive).catch(e => e);
+
+      // The package AID reached an applet running other software: that is
+      // "needs an update" on its own, not a fall-through to 6A82 and LNURLw.
+      expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+      expect(failure.message).toBe(CARD_NEEDS_UPDATE);
+      expect(isAppletNotFound(failure)).toBe(false);
+      expect(card.sent).toHaveLength(2);
+      expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
+        toHex(APPLET_AID),
+        toHex(PACKAGE_AID),
+      ]);
+    },
+  );
+
+  it('a package-AID answer of 02 xx 9000 after a full-AID 6A82 is 2.0', async () => {
+    const card = fakeCard({
+      selectFails: [APPLET_AID.length],
+      packageAnswer: [0x02, 0x03, 0x90, 0x00],
+    });
+    await expect(selectApplet(card.transceive)).resolves.toEqual([2, 3]);
+    expect(card.sent).toHaveLength(2);
+  });
+
+  it('a package-AID status word other than 9000 or 6A82 still needs an update', async () => {
+    const card = fakeCard({
+      selectFails: [APPLET_AID.length],
+      packageAnswer: sw(0x6e00),
+    });
+    const failure = await selectApplet(card.transceive).catch(e => e);
+
+    expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+    expect(card.sent).toHaveLength(2);
   });
 });
 
@@ -1727,8 +1892,8 @@ describe('APDU timing', () => {
     expect(getApduTimings().map(s => s.context)).toEqual(['SPEND_ALL_SIGN']);
   });
 
-  it('a SELECT that falls back to the applet AID is timed twice', async () => {
-    const card = fakeCard({selectFails: [PACKAGE_AID.length]});
+  it('a SELECT that falls back to the package AID is timed twice', async () => {
+    const card = fakeCard({selectFails: [APPLET_AID.length]});
     await selectApplet(card.transceive);
     expect(getApduTimings().map(s => s.context)).toEqual(['SELECT', 'SELECT']);
   });

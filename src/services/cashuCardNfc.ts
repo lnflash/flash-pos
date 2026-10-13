@@ -9,8 +9,8 @@
  * Platform notes:
  *  - Android — nothing extra; `NfcTech.IsoDep` needs no manifest entry.
  *  - iOS: requires the `com.apple.developer.nfc.readersession.iso7816.select-identifiers`
- *    entitlement listing our AIDs in Info.plist — the 2.0 AID
- *    (`F0434153485543415244`) first, and the 0.x AID (`D2760000850102`) kept
+ *    entitlement listing our AIDs in Info.plist — the 2.0 applet AID
+ *    (`F043415348554341524401`) first, and the 0.x AID (`D2760000850102`) kept
  *    so a 0.x card is told it needs an update — or `requestTechnology`
  *    rejects. See `docs/06-nfc-integration.md` and `docs/13-cashu-card.md`.
  *

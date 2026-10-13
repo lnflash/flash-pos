@@ -39,7 +39,9 @@ if (typeof RESET === 'undefined' || RESET !== 'false') {
 }
 
 if (typeof CLEAR_SPENT !== 'undefined' && CLEAR_SPENT === 'true') {
-  apdu('00A404000AF043415348554341524400');
+  // The card's applet by its whole AID: a package-AID SELECT reaches the
+  // opener, on the J3R180 and in cardsim (ENG-681).
+  apdu('00A404000BF04341534855434152440100');
   var freed = apdu('B031000001');
   console.log('cleared spent slots: ' + parseInt(freed.slice(0, 2), 16));
 }

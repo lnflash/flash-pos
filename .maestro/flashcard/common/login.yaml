@@ -7,42 +7,77 @@ appId: com.flash.pos
     # The owed-change store lives in the keychain, keyed by card pubkey, and
     # cardsim's key is the same on every reset: start every flow clean.
     clearKeychain: true
-- extendedWaitUntil:
-    visible: 'Enter your flash username'
-    timeout: 120000
+# A prompt left up by an earlier flow survives the relaunch and hides the
+# app: cancel it while waiting. 3 x 40 s is a ceiling for a slow boot.
+- retry:
+    maxRetries: 3
+    commands:
+      - runFlow:
+          file: dismiss-open-prompt.yaml
+          env:
+            ANSWER: Cancel
+      - extendedWaitUntil:
+          visible: 'Enter your flash username'
+          timeout: 40000
 # After JS is up, so the Linking listener is there to hear it.
 - openLink: ${BRIDGE_LINK}
-# iOS asks before an app opens its own custom-scheme link. The prompt can
-# take several seconds on a cold CI simulator: wait for it, not the few
-# seconds an optional tap looks for. A prompt left up covers the app.
-- extendedWaitUntil:
-    visible: 'Open'
-    timeout: 30000
-    optional: true
-- tapOn:
-    text: 'Open'
-    optional: true
-- extendedWaitUntil:
-    notVisible: 'Open'
-    timeout: 10000
-# Once more, now iOS remembers the choice and opens it with no prompt. On
-# the hosted runner the first link, through the prompt, did not set the
-# bridge: LogBox stayed on, and its toast over Start took the tap. Setting
-# the bridge twice is harmless (same config, LOAD count from zero, nothing
-# sent yet).
-- openLink: ${BRIDGE_LINK}
-- tapOn:
-    text: 'Open'
-    optional: true
-- tapOn:
-    id: 'auth-username'
+# iOS asks before an app opens its own custom-scheme link, and the prompt
+# slides in a moment later: let it settle, then answer it.
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow:
+    file: dismiss-open-prompt.yaml
+    env:
+      ANSWER: Open
+# On a cold hosted simulator a link that went through the prompt can fail
+# to set the bridge, even twice (run 38470275973): LogBox stayed on, and its
+# toast over Start took the tap. Setting the bridge calls
+# LogBox.ignoreAllLogs(true) (cardBridge.ts), so a toast still up means the
+# bridge is not set yet: open the link again until it is gone. Setting the
+# bridge more than once is harmless (same config, LOAD count from zero,
+# nothing sent yet).
+- retry:
+    maxRetries: 3
+    commands:
+      - openLink: ${BRIDGE_LINK}
+      - waitForAnimationToEnd:
+          timeout: 3000
+      - runFlow:
+          file: dismiss-open-prompt.yaml
+          env:
+            ANSWER: Open
+      - extendedWaitUntil:
+          notVisible: 'Open debugger to view warnings'
+          timeout: 10000
+# A prompt that came late for a link is answered here; the field is tapped
+# only once nothing covers it.
+- retry:
+    maxRetries: 3
+    commands:
+      - runFlow:
+          file: dismiss-open-prompt.yaml
+          env:
+            ANSWER: Open
+      - tapOn:
+          id: 'auth-username'
 - inputText: ${FLASH_USERNAME}
 - tapOn: 'flash POS'
 # The picker button reads "JMD" plus its caret glyph.
 - tapOn: 'JMD.*'
 - tapOn:
     id: 'currency-SAT'
+- runFlow:
+    file: dismiss-open-prompt.yaml
+    env:
+      ANSWER: Open
 - tapOn: 'Start'
-- extendedWaitUntil:
-    visible: '.*Card balance'
-    timeout: 60000
+- retry:
+    maxRetries: 2
+    commands:
+      - runFlow:
+          file: dismiss-open-prompt.yaml
+          env:
+            ANSWER: Open
+      - extendedWaitUntil:
+          visible: '.*Card balance'
+          timeout: 30000
