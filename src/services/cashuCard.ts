@@ -1664,8 +1664,10 @@ export interface CardSummary {
  *
  * Touches nothing on the card. AUTH makes the read honest: the balance shown
  * is the balance of the card that proved it holds the key, and a signature
- * that does not verify fails the read (`CardAuthError`). Charges need no
- * AUTH: the SIG_ALL signature itself proves the key.
+ * that does not verify fails the read (`CardAuthError`). A charge runs AUTH
+ * too, in its second tap before the PIN or anything else goes to the card
+ * (`executeCharge` in `cashuCharge.ts`): the SIG_ALL signature proves the
+ * key as well, but only after the card has burned.
  */
 export async function readCard(transceive: Transceiver): Promise<CardSummary> {
   const version = await selectApplet(transceive);
