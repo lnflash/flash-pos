@@ -34,6 +34,8 @@ type RootStackType = {
     preRead?: {
       plan: {slots: number[]; burnedSat: number; changeSat: number};
       unspent: unknown[];
+      /** Protocol 2.0: the planned pieces whole (CardProofSlot[]). */
+      pieces?: unknown[];
       cardPubkey: string;
       pinRequired: boolean;
       /** Change from an earlier charge the card is still owed (OwedChangeEntry[]). */

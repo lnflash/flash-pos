@@ -9,7 +9,8 @@
  * everything the card signed, and only then does anything say "paid". The
  * mint adapter is the unit seam — its wire behaviour is cashuMint.test.ts's.
  */
-import {bytesToHex} from '@noble/hashes/utils';
+import {schnorrSignDigest} from '@cashu/cashu-ts';
+import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
 
 import {CardError, type Transceiver} from '../../src/services/cashuCard';
 import {
@@ -307,11 +308,46 @@ describe('spendAll', () => {
       expect(entry.witness).toBeUndefined();
     });
 
-    it('a card whose signature does not verify is asked again, and recorded needs-card when that fails too', async () => {
+    it('a card that answers SIGN with a signature that does not verify is asked again, and recorded failed (not needs-card) when that fails too', async () => {
+      // An HCE emulator replaying pieces read off a real card (GET_PIECES and
+      // GET_DLEQ need no PIN) answers SIGN and AGAIN with bytes that are no
+      // signature of this payment: there is no lost answer to recover.
       const card = cardWithPieces([8], {badSignature: true});
-      const {entry} = await spendAll(paymentArgs(card, [0], 8));
+      const {entry, signed} = await spendAll(paymentArgs(card, [0], 8));
       expect(card.insSent).toContain(0x25);
-      expect(entry.status).toBe('needs-card');
+      expect(signed).toBeNull();
+      expect(entry.status).toBe('failed');
+      expect(entry.witness).toBeUndefined();
+      expect(entry.lastError).toMatch(/does not verify/);
+      const [stored] = await listSettlements();
+      expect(stored.status).toBe('failed');
+      // Never offered to SPEND_ALL_AGAIN again at a later tap.
+      await expect(
+        recoverNeedsCard({
+          transceive: card.transceive,
+          cardPubkey: card.pubkey,
+        }),
+      ).resolves.toEqual([]);
+      expect(card.insSent.filter(i => i === 0x25)).toHaveLength(1);
+    });
+
+    it('a garbled SIGN answer that AGAIN then gives correctly is pending', async () => {
+      // The card's answer to SIGN was corrupted, its kept signature is good:
+      // AGAIN's answer verifies, so this is an ordinary payment.
+      const card = cardWithPieces([8], {badSignature: true});
+      const args = paymentArgs(card, [0], 8);
+      const good = schnorrSignDigest(
+        sigAllMessage(args.inputs, args.merchant.outputs),
+        card.priv,
+      );
+      args.transceive = async apdu =>
+        apdu[1] === 0x25
+          ? [...Array.from(hexToBytes(good)), 0x90, 0x00]
+          : card.transceive(apdu);
+      const {entry, signed} = await spendAll(args);
+      expect(entry.status).toBe('pending');
+      expect(entry.witness).toBe(good);
+      expect(signed).not.toBeNull();
     });
   });
 });

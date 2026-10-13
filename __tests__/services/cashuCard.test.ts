@@ -25,7 +25,10 @@ import {
   getDleqs,
   getInfo,
   getPieces,
+  getPiecesNamed,
   getPiecesPage,
+  getPiecesShort,
+  getPiecesShortPage,
   getProof,
   getPubkey,
   getSlotStatuses,
@@ -38,6 +41,7 @@ import {
   parseChangePage,
   parseInfo,
   parsePiecesPage,
+  parseShortListing,
   parseResponse,
   readCard,
   selectApplet,
@@ -148,7 +152,11 @@ function fakeCard(
     selectFails?: number[];
     selectThrows?: unknown;
     selectVersion?: number[];
+    /** The 2.0 AIDs' SELECT answers this status word. */
+    selectSw?: number;
     legacyAnswers?: boolean;
+    /** Only this old AID answers (9000). */
+    legacyAid?: number[];
     infoBody?: number[];
     pubkeyBody?: number[];
     balanceBody?: number[];
@@ -175,7 +183,13 @@ function fakeCard(
         l => l.length === aid.length && l.every((b, i) => aid[i] === b),
       );
       if (legacy) {
-        return overrides.legacyAnswers ? ok([0, 2]) : sw(0x6a82);
+        const answers = overrides.legacyAid
+          ? toHex(overrides.legacyAid) === toHex(aid)
+          : overrides.legacyAnswers;
+        return answers ? ok([0, 2]) : sw(0x6a82);
+      }
+      if (overrides.selectSw !== undefined) {
+        return sw(overrides.selectSw);
       }
       if (overrides.selectFails?.includes(aidLength)) {
         return sw(0x6a82);
@@ -554,11 +568,75 @@ describe('selectApplet', () => {
     expect(card.sent).toHaveLength(1);
   });
 
-  it('rethrows a non-6A82 status word without trying the fallback AID', async () => {
+  // tools/cardsim/README.md, "Old cards": an old AID through jCardSim
+  // answers 6E00 or 6999 where a real card's runtime answers 6A82 — "treat
+  // any SELECT answer that is not 02xx 9000 as 'This card needs an update'".
+  it.each([0x6e00, 0x6999, 0x6d00, 0x6f00])(
+    'a 2.0 AID answered %s needs an update, with no fallback AID tried',
+    async code => {
+      const card = fakeCard({selectSw: code});
+      const failure = await selectApplet(card.transceive).catch(e => e);
+
+      expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+      expect(failure.message).toBe(CARD_NEEDS_UPDATE);
+      expect(isAppletNotFound(failure)).toBe(false);
+      expect(card.sent).toHaveLength(1);
+    },
+  );
+
+  it('a status word thrown as a CardError is classed the same way', async () => {
     const card = fakeCard({selectThrows: new CardError(0x6e00, 'SELECT')});
 
-    await expect(selectApplet(card.transceive)).rejects.toThrow(/wrong CLA/);
+    await expect(selectApplet(card.transceive)).rejects.toBeInstanceOf(
+      CardNeedsUpdateError,
+    );
     expect(card.sent).toHaveLength(1);
+  });
+
+  it.each([
+    ['an empty version', []],
+    ['a one-byte version', [2]],
+    ['version 3.0', [3, 0]],
+    ['version 1.20', [1, 20]],
+    ['three bytes', [2, 0, 0]],
+  ])('a 9000 with %s needs an update', async (_, version) => {
+    const card = fakeCard({selectVersion: version});
+
+    await expect(selectApplet(card.transceive)).rejects.toBeInstanceOf(
+      CardNeedsUpdateError,
+    );
+    expect(card.sent).toHaveLength(1);
+  });
+
+  it('accepts any 2.0 minor', async () => {
+    const card = fakeCard({selectVersion: [2, 7]});
+    await expect(selectApplet(card.transceive)).resolves.toEqual([2, 7]);
+  });
+
+  it("a Foxy 1.x card (F0 46 4F 58 59 43 41 52 44 answers) needs an update, not 'not a Flash card'", async () => {
+    const FOXY = [0xf0, 0x46, 0x4f, 0x58, 0x59, 0x43, 0x41, 0x52, 0x44];
+    expect(LEGACY_AIDS.map(toHex)).toContain(toHex(FOXY));
+    const card = fakeCard({
+      selectFails: [PACKAGE_AID.length, APPLET_AID.length],
+      legacyAid: FOXY,
+    });
+    const failure = await selectApplet(card.transceive).catch(e => e);
+
+    expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+    expect(isAppletNotFound(failure)).toBe(false);
+    expect(card.sent.every(a => a[0] === 0x00 && a[1] === 0xa4)).toBe(true);
+    expect(toHex(card.sent[card.sent.length - 1].slice(5, 14))).toBe(
+      toHex(FOXY),
+    );
+  });
+
+  it('a card that answers 6A82 to every AID, old ones too, is not an eCash card', async () => {
+    const card = fakeCard({
+      selectFails: [PACKAGE_AID.length, APPLET_AID.length],
+    });
+    const failure = await selectApplet(card.transceive).catch(e => e);
+    expect(isAppletNotFound(failure)).toBe(true);
+    expect(card.sent).toHaveLength(2 + LEGACY_AIDS.length);
   });
 });
 
@@ -641,7 +719,7 @@ describe('getInfo', () => {
   it.each([
     [0, 'unset'],
     [1, 'set'],
-    [2, 'locked'],
+    [2, 'blocked'],
     [9, 'unknown'],
   ])('maps PIN state byte %i to %s', async (byte, expected) => {
     const body = [...INFO_BODY];
@@ -1122,6 +1200,157 @@ describe('GET_PIECES', () => {
     const {transceive, sent} = scripted([[0x80, 0x90, 0x00]]);
     await getPiecesPage(transceive, 3);
     expect(sent[0]).toEqual([0xb0, 0x17, 0x03, 0x00, 0x00]);
+  });
+});
+
+describe('GET_PIECES, the short listing (P2 = 3)', () => {
+  it('frames P1 as the first slot, P2 = 3, Le 00 (transcript 588)', async () => {
+    const {transceive, sent} = scripted([answerOf(588)]);
+    await getPiecesShortPage(transceive, 0);
+    expect(toHex(sent[0])).toBe(step(588).apdu);
+  });
+
+  it("reads the transcript's listing: named keysets and dates, then a place and a size (588)", async () => {
+    const {transceive} = scripted([answerOf(588)]);
+    await expect(getPiecesShort(transceive)).resolves.toEqual([
+      {slot: 0, keysetId: '0059534ce0bfa19a', amount: 1, date: 0},
+      {slot: 1, keysetId: '0059534ce0bfa19a', amount: 8, date: 0x713fb300},
+      {slot: 2, keysetId: '0059534ce0bfa19a', amount: 32, date: 0},
+      {slot: 3, keysetId: '0059534ce0bfa19a', amount: 16, date: 0},
+    ]);
+  });
+
+  it('an answer from a later place begins with the twelve bytes again (589)', () => {
+    expect(parseShortListing(hexBytes(step(589).data), 1)).toEqual({
+      next: 128,
+      pieces: [
+        {slot: 1, keysetId: '0059534ce0bfa19a', amount: 8, date: 0x713fb300},
+        {slot: 2, keysetId: '0059534ce0bfa19a', amount: 32, date: 0},
+        {slot: 3, keysetId: '0059534ce0bfa19a', amount: 16, date: 0},
+      ],
+    });
+  });
+
+  it('a card past 63 places: FF and an amount, sizes up the powers, spent places left out (657)', () => {
+    const {next, pieces} = parseShortListing(hexBytes(step(657).data), 0);
+    expect(next).toBe(128);
+    const bySlot = new Map(pieces.map(p => [p.slot, p]));
+    expect(bySlot.get(20)?.amount).toBe(1000);
+    expect(bySlot.get(10)?.keysetId).toBe('00ab12cd34ef5678');
+    expect(bySlot.has(65)).toBe(false);
+    // Every slot in order, none twice.
+    const slots = pieces.map(p => p.slot);
+    expect(slots).toEqual([...slots].sort((a, b) => a - b));
+    expect(new Set(slots).size).toBe(slots.length);
+  });
+
+  it('reads answer after answer until 128, each from where the last ended', async () => {
+    const {transceive, sent} = scripted([
+      // slots 0 (8) and 1 (16); the next answer starts at 2
+      [0x02, 0x80, ...KEYSET_BYTES, 0, 0, 0, 0, 0x03, 0x01, 0x04, 0x90, 0x00],
+      // slot 5: 1,000 sat, no power of two
+      [
+        0x80,
+        0x85,
+        ...KEYSET_BYTES,
+        0,
+        0,
+        0,
+        0,
+        0xff,
+        0,
+        0,
+        0x03,
+        0xe8,
+        0x90,
+        0x00,
+      ],
+    ]);
+    const pieces = await getPiecesShort(transceive);
+    expect(sent.map(a => toHex(a))).toEqual(['b017000300', 'b017020300']);
+    expect(pieces.map(p => [p.slot, p.amount])).toEqual([
+      [0, 8],
+      [1, 16],
+      [5, 1000],
+    ]);
+  });
+
+  it('an empty card is one byte, 128 (619); past the pieces too (659)', async () => {
+    expect(parseShortListing(hexBytes(step(619).data), 0)).toEqual({
+      next: 128,
+      pieces: [],
+    });
+    expect(parseShortListing(hexBytes(step(659).data), 0x42)).toEqual({
+      next: 128,
+      pieces: [],
+    });
+  });
+
+  it("a first slot past 127 is refused before any APDU; the card's own answer is 6A83 (590)", async () => {
+    const {transceive, sent} = scripted([]);
+    await expect(getPiecesShortPage(transceive, 128)).rejects.toThrow(
+      CardProtocolError,
+    );
+    expect(sent).toEqual([]);
+    expect(() => parseResponse(answerOf(590), 'GET_PIECES')).toThrow(CardError);
+  });
+
+  it('refuses an answer that does not move on, a first entry with no keyset, or one cut short', () => {
+    expect(() => parseShortListing([0x05], 5)).toThrow(CardProtocolError);
+    expect(() => parseShortListing([0x80, 0x00, 0x03], 0)).toThrow(
+      /names no keyset/,
+    );
+    expect(() => parseShortListing([0x80, 0x80, 0, 0x59, 0x53], 0)).toThrow(
+      /cut short/,
+    );
+    expect(() =>
+      parseShortListing(
+        [0x80, 0x81, ...new Array(12).fill(0), 0, 0x00, 0x01],
+        0,
+      ),
+    ).toThrow(/out of order/);
+  });
+});
+
+describe('GET_PIECES by name (P2 = 2)', () => {
+  it('frames the slots as data, Le 00, and reads each whole in the order asked (591)', async () => {
+    const {transceive, sent} = scripted([answerOf(591)]);
+    const named = await getPiecesNamed(transceive, [1, 0]);
+    expect(toHex(sent[0])).toBe(step(591).apdu);
+    expect(named.map(n => [n.slot, n.status, n.piece?.amount])).toEqual([
+      [1, 'unspent', 8],
+      [0, 'unspent', 1],
+    ]);
+    expect(named[0].piece?.date).toBe(0x713fb300);
+    expect(named[0].piece?.keysetId).toBe('0059534ce0bfa19a');
+  });
+
+  it('an empty slot is answered as it is: status 00 (662)', async () => {
+    const {transceive, sent} = scripted([answerOf(662)]);
+    const named = await getPiecesNamed(transceive, [127, 64]);
+    expect(toHex(sent[0])).toBe(step(662).apdu);
+    expect(named[0]).toEqual({slot: 127, status: 'empty', piece: null});
+    expect(named[1].status).toBe('unspent');
+  });
+
+  it('asks three slots to an APDU', async () => {
+    const {transceive, sent} = scripted([
+      [...proofBody(), ...proofBody(), ...proofBody(), 0x90, 0x00],
+      [...proofBody(), 0x90, 0x00],
+    ]);
+    const named = await getPiecesNamed(transceive, [5, 6, 7, 8]);
+    expect(sent.map(a => a.slice(0, 5))).toEqual([
+      [0xb0, 0x17, 0x00, 0x02, 0x03],
+      [0xb0, 0x17, 0x00, 0x02, 0x01],
+    ]);
+    expect(named.map(n => n.slot)).toEqual([5, 6, 7, 8]);
+  });
+
+  it('refuses an answer of the wrong length', async () => {
+    const {transceive} = scripted([[...proofBody(), 0x90, 0x00]]);
+    await expect(getPiecesNamed(transceive, [1, 2])).rejects.toThrow(
+      CardProtocolError,
+    );
   });
 });
 

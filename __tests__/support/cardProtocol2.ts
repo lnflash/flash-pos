@@ -351,6 +351,7 @@ const PACKAGE_AID = [
   0xf0, 0x43, 0x41, 0x53, 0x48, 0x55, 0x43, 0x41, 0x52, 0x44,
 ];
 const LEGACY_AID = [0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x02];
+const FOXY_AID = [0xf0, 0x46, 0x4f, 0x58, 0x59, 0x43, 0x41, 0x52, 0x44];
 
 interface Slot extends Required<Omit<PieceSpec, 'dleq'>> {
   status: 1 | 2;
@@ -390,6 +391,20 @@ export interface FakeCardOptions {
   privateKey?: string;
   /** A 0.x card: refuses the 2.0 AID, answers the 0.x one. */
   legacy?: boolean;
+  /** A Foxy 1.x card: refuses the 2.0 AID, answers F0 46 4F 58 59 43 41 52 44. */
+  foxy?: boolean;
+  /** The 2.0 AID's SELECT answers this status word (jCardSim's 6E00 / 6999 for an old card). */
+  selectSw?: number;
+  /** The 2.0 AID's SELECT answers 9000 with this body instead of the version. */
+  selectBody?: number[];
+  /** The owner has locked the card (LOCK_CARD): GET_INFO byte 10. */
+  locked?: boolean;
+  /** The piece format GET_INFO (byte 8) and GET_CARD (byte 0) report; 4 by default. */
+  format?: number;
+  /** GET_CARD's unit byte; 0 (sat) by default. */
+  unit?: number;
+  /** GET_PIECES P2 = 2 answers this slot as something else (a card whose listing lies). */
+  namedOverride?: (slot: number) => number[] | undefined;
   /** Not an eCash card: refuses every AID. */
   notCashu?: boolean;
   /** The SELECT version (default 2.0). */
@@ -609,7 +624,7 @@ export class FakeCard2 {
       case 0x16:
         return this.getCard();
       case 0x17:
-        return this.getPieces(p1, p2);
+        return this.getPieces(p1, p2, data);
       case 0x19:
         return this.getChange(p1);
       case 0x1a:
@@ -660,16 +675,22 @@ export class FakeCard2 {
     const is = (a: number[]) =>
       aid.length >= a.length && a.every((b, i) => aid[i] === b);
     if (is(PACKAGE_AID)) {
-      if (this.opts.legacy || this.opts.notCashu) {
+      if (this.opts.legacy || this.opts.foxy || this.opts.notCashu) {
         return sw(0x6a82);
+      }
+      if (this.opts.selectSw !== undefined) {
+        return sw(this.opts.selectSw);
       }
       this.pinVerified = false;
       this.dropPayment();
       this.changeGrant = this.changeDue;
-      return ok(this.opts.version ?? [2, 0]);
+      return ok(this.opts.selectBody ?? this.opts.version ?? [2, 0]);
     }
     if (is(LEGACY_AID)) {
       return this.opts.legacy ? ok([0, 2]) : sw(0x6a82);
+    }
+    if (is(FOXY_AID)) {
+      return this.opts.foxy ? ok([1, 20]) : sw(0x6a82);
     }
     return sw(0x6a82);
   }
@@ -697,9 +718,9 @@ export class FakeCard2 {
       empty,
       0xff,
       this.pinState,
-      0x04,
+      this.opts.format ?? 0x04,
       this.tries,
-      0,
+      this.opts.locked ? 1 : 0,
       1,
       ...u32(this.opts.dailyLimit ?? 0),
       1,
@@ -724,9 +745,9 @@ export class FakeCard2 {
       ? bytes(this.opts.refundKey)
       : new Array(33).fill(0);
     return ok([
-      0x04,
+      this.opts.format ?? 0x04,
       1,
-      0,
+      this.opts.unit ?? 0,
       ...u32(this.opts.dailyLimit ?? 0),
       ...refund,
       0,
@@ -746,9 +767,15 @@ export class FakeCard2 {
     ]);
   }
 
-  private getPieces(from: number, form: number): number[] {
+  private getPieces(from: number, form: number, data: number[]): number[] {
+    if (form === 2) {
+      return this.getNamed(data);
+    }
     if (from >= 128) {
       return sw(0x6a83);
+    }
+    if (form === 3) {
+      return this.getShort(from);
     }
     if (form !== 0) {
       return sw(0x6a86);
@@ -772,6 +799,62 @@ export class FakeCard2 {
       next++;
     }
     return ok([next, ...out]);
+  }
+
+  /**
+   * GET_PIECES P2 = 3, as the applet's `processGetShort` gives it: `next`,
+   * then each unspent place's number (0x80 where its keyset and date
+   * follow), then its power of two, or FF and its amount.
+   */
+  private getShort(from: number): number[] {
+    const out: number[] = [];
+    let at = 1;
+    let next = from;
+    let prev: Slot | null = null;
+    while (next < 128) {
+      const s = next < this.slots.length ? this.slots[next] : null;
+      if (s && s.status === 1) {
+        const named =
+          !prev || prev.keysetId !== s.keysetId || prev.date !== s.date;
+        const power =
+          s.amount > 0 && (s.amount & (s.amount - 1)) === 0
+            ? Math.log2(s.amount)
+            : -1;
+        const cost = 2 + (named ? 12 : 0) + (power < 0 ? 4 : 0);
+        if (at + cost > 255) {
+          break;
+        }
+        out.push(named ? next | 0x80 : next);
+        if (named) {
+          out.push(...bytes(s.keysetId), ...u32(s.date));
+        }
+        out.push(...(power < 0 ? [0xff, ...u32(s.amount)] : [power]));
+        at += cost;
+        prev = s;
+      }
+      next++;
+    }
+    return ok([next, ...out]);
+  }
+
+  /** GET_PIECES P2 = 2: one to three places whole, in the order asked. */
+  private getNamed(data: number[]): number[] {
+    if (data.length < 1 || data.length > 3) {
+      return sw(0x6700);
+    }
+    if (data.some(x => x >= 128)) {
+      return sw(0x6a83);
+    }
+    return ok(
+      data.flatMap(x => {
+        const override = this.opts.namedOverride?.(x);
+        if (override) {
+          return override;
+        }
+        const s = x < this.slots.length ? this.slots[x] : null;
+        return s ? [s.status, ...this.pieceBytes(s)] : new Array(82).fill(0);
+      }),
+    );
   }
 
   private onCard(nonce: string): boolean {

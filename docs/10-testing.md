@@ -488,7 +488,13 @@ builds only, like the bridge.
 
 The card side of every flow is also run in jest against a real cardsim and
 a real mint, with no simulator (`__tests__/integration/cardsimMint.test.ts`,
-skipped unless `CARD_E2E_CARDSIM` and `CARD_E2E_MINT` are set).
+skipped unless `CARD_E2E_CARDSIM` and `CARD_E2E_MINT` are set). The e2e
+workflow runs it before the iOS build, against the cardsim and Nutshell it
+has just started, then resets the card for the flows:
+`CARD_E2E_CARDSIM=… CARD_E2E_MINT=… yarn jest __tests__/integration/cardsimMint.test.ts --selectProjects ios`
+(the path goes before `--selectProjects`, which takes every word after it as
+a project name). The CI mint runs with `MINT_RATE_LIMIT=FALSE`: everything
+comes from 127.0.0.1 and the default per-IP limit answers `429` part way.
 
 `holdLoad=<ms>` (1 to 10000) makes the bridge hold every LOAD_PROOF that long
 before forwarding it, so a flow can act while the change write is in flight.

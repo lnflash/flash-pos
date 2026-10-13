@@ -37,6 +37,16 @@ const TAG_LOST =
 const DAILY_LIMIT =
   /over the card's daily limit|reached today's spending limit/i;
 
+/**
+ * The card's owner has locked it (`CARD_LOCKED` in `cashuCharge.ts`): the
+ * till refuses it before anything is planned or burned.
+ */
+const CARD_LOCKED = /card is locked and can't be used to pay/i;
+
+/** The copy for a locked card: nothing was taken, and nothing will be. */
+export const CARD_LOCKED_BODY =
+  "Nothing was taken from the card. This card is locked and can't be used to pay.";
+
 /** The copy for a bill over the card's daily limit (decision 2, Flash voice). */
 export const DAILY_LIMIT_BODY = "This card has reached today's spending limit.";
 
@@ -168,6 +178,21 @@ export function settleUnconfirmed(failure: Failure): boolean {
   return SETTLING_UNCONFIRMED.test(failure.phase ?? '');
 }
 
+/**
+ * ENG-674: the card signed and burned, and the mint then refused the swap
+ * for good — `PHASE_SETTLING_REFUSED` in `cashuCharge.ts`, thrown with
+ * `PhaseError.refused`. Not paid; the payment is kept on the terminal for a
+ * human; the card must not be charged again for it (it would burn again).
+ */
+const SETTLING_REFUSED = /mint refused it/i;
+
+export function settleRefused(failure: Failure): boolean {
+  return SETTLING_REFUSED.test(failure.phase ?? '');
+}
+
+export const REFUSED_BODY =
+  "The mint refused this payment after the card paid it, so this bill is not paid. Don't charge the card again. The payment is saved on this terminal for review.";
+
 export const UNCONFIRMED_BODY =
   "The card has paid, but the mint hasn't confirmed this payment yet. Hold the goods until it settles: the terminal keeps trying while it is online. Don't charge the card again.";
 
@@ -198,6 +223,10 @@ export interface FailureContext {
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
   const phase = failure.phase ?? '';
+  if (!ctx.paid && CARD_LOCKED.test(failure.detail)) {
+    // Refused on GET_INFO's lock byte, before anything was planned.
+    return CARD_LOCKED_BODY;
+  }
   if (!ctx.paid && DAILY_LIMIT.test(failure.detail)) {
     // The card refuses before it burns (6A8F, or the pre-flight): nothing
     // was taken, and another tap today will be refused the same way.
@@ -257,6 +286,10 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
   if (settleUnconfirmed(failure)) {
     // Never "paid": the mint has not confirmed it (ENG-674).
     return UNCONFIRMED_BODY;
+  }
+  if (settleRefused(failure)) {
+    // Never "paid", never "try again": the mint said no after the burn.
+    return REFUSED_BODY;
   }
   if (ctx.paid) {
     // Paid, but not on a change write: the payment bookkeeping or a later

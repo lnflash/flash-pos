@@ -95,6 +95,11 @@
 		     dropping them would hide 0.x cards from CoreNFC entirely. -->
 		<string>D2760000850102</string>
 		<string>D276000085010201</string>
+		<!-- Foxy 1.x ("FOXYCARD" after F0): spec/APDU.md names it "needs an
+		     update" too. Listed so CoreNFC lets the legacy probe SELECT it;
+		     a card that is neither still answers 6A82 to all of these, and
+		     the BoltCard/LNURLw fallback reads it as before. -->
+		<string>F0464F585943415244</string>
 	</array>
 </dict>
 </plist>

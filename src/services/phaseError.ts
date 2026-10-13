@@ -23,17 +23,38 @@ export class PhaseError extends Error {
    * again", or the card is burned twice (ENG-642).
    */
   paid: boolean;
+  /**
+   * The card signed and burned for the bill, and the mint then refused the
+   * swap for good (a mint error, any HTTP 4xx). The bill is NOT paid, but
+   * the card has spent: like a paid failure, it must never run the charge
+   * again (a retry burns the card a second time for the same bill), and it
+   * is never recorded as a paid sale. Set only by `executeCharge`.
+   */
+  refused: boolean;
 
-  constructor(phase: string, cause: unknown, {paid = false} = {}) {
+  constructor(
+    phase: string,
+    cause: unknown,
+    {paid = false, refused = false} = {},
+  ) {
     const message = cause instanceof Error ? cause.message : String(cause);
     super(`[${phase}] ${message}`);
     this.name = 'PhaseError';
     this.cause = cause;
     this.paid = paid;
+    this.refused = refused;
   }
 }
 
 /** The charge failed after the swap: the bill is paid (see `PhaseError.paid`). */
 export function isPaidFailure(error: unknown): boolean {
   return error instanceof PhaseError && error.paid;
+}
+
+/**
+ * The card burned for the bill and the mint refused the swap (see
+ * `PhaseError.refused`): not paid, and never charged again.
+ */
+export function isRefusedAfterBurn(error: unknown): boolean {
+  return error instanceof PhaseError && error.refused && !error.paid;
 }

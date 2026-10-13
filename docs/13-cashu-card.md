@@ -170,6 +170,7 @@ the exact platform where the operator has no other way to cancel.
     <!-- … the BoltCard NDEF AIDs … -->
     <string>D2760000850102</string>          <!-- 0.x package AID: detection only -->
     <string>D276000085010201</string>        <!-- 0.x applet AID: detection only -->
+    <string>F0464F585943415244</string>      <!-- Foxy 1.x AID: detection only -->
 </array>
 ```
 
@@ -182,22 +183,47 @@ AID first (prefix match, matching `cardctl`) and falls back to the full applet
 AID for cards that do not support partial selection.
 
 **Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
-protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 AID is tried first. A
-card that refuses it (`6A82`) is asked for the 0.x AID; one that answers is a
-0.x card, and the terminal says **"This card needs an update"** and sends
-nothing else — no PIN pad, no write, no spend (`CardNeedsUpdateError`). The
-0.x AIDs stay in the list for exactly that: dropping them would hide a 0.x
-card from CoreNFC instead of telling its holder. A 0.x card's funds are swept
-by an operator (a release precondition), never by this app.
+protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 AID is tried first.
+Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"), any
+answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
+`6E00` or `6999` — is **"This card needs an update"**. A card that refuses
+both 2.0 AIDs with `6A82` is asked for the old AIDs (0.x, and Foxy's 1.x
+`F0 46 4F 58 59 43 41 52 44`, which `spec/APDU.md` also names); one that
+answers is an old card, and the terminal says **"This card needs an update"**
+and sends nothing else — no PIN pad, no write, no spend
+(`CardNeedsUpdateError`). The old AIDs stay in the list for exactly that:
+dropping them would hide an old card from CoreNFC instead of telling its
+holder. A card that answers `6A82` to all of them is not an eCash card, and
+the BoltCard/LNURLw path reads it. A 0.x card's funds are swept by an
+operator (a release precondition), never by this app.
+
+Before anything is planned, `readAndPlan` refuses a card its owner has
+locked (`LOCK_CARD`, GET_INFO byte 10: "This card is locked and can't be used
+to pay." — it loads nothing more, so a payment's change could never go back
+on), a card whose pieces are not format 4 (GET_INFO byte 8, GET_CARD byte 0:
+needs an update) and a card whose unit is not sat (GET_CARD byte 2). It plans
+from the short listing (`GET_PIECES` P2 = 3, `spec/APDU.md` "Payment Flow")
+and reads only the chosen slots whole, by name (P2 = 2), each held to what
+the listing said.
 
 On a 2.0 card a payment is ONE NUT-11 SIG_ALL signature (`SPEND_ALL_*`) over
 the pieces, the merchant's outputs and the card's own change, which the card
 makes for itself (`SPEND_ALL_CHANGE`) and the terminal finishes from the
 card's openings (`GET_CHANGE`) after the swap. Before a payment the till
-shows the card the Bitcoin tip header (`SET_HEADER`, from
-`FLASH_BLOCK_HEADER_APIS`: mempool.space, then blockstream.info), which is
-the clock the card's daily limit and no-PIN allowance run on. A balance read
-checks `AUTH`: a card that cannot prove its key fails the read.
+shows the card the Bitcoin tip header (`SET_HEADER`; mempool.space, then
+blockstream.info, or the build's optional `FLASH_HEADER_APIS`, read through
+`@env-optional` so a build without it still builds), which is the clock the
+card's daily limit and no-PIN allowance run on. A balance read checks `AUTH`:
+a card that cannot prove its key fails the read.
+
+A charge is never a success without a signature that verifies against the
+payment: a SIGN answer that was lost (`needs-card`) or one that does not
+verify (`failed`) ends the charge as "Not confirmed yet", never "Paid", and
+never offers a re-charge. A swap the mint refuses outright after the card
+signed ends as "Not paid — the mint refused it" with Done only: the card has
+burned, so "Tap card again" would burn it a second time. Whenever the mint
+answers, the cached keysets and fees are refreshed before the card signs,
+exact bills included.
 
 > ✅ **Verified on iOS (2026-09-23).** The entitlement and AID list worked
 > against a real card on the first hardware session — both SELECT identifiers

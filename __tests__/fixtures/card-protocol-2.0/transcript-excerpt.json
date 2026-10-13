@@ -269,6 +269,86 @@
    "index": 567
   },
   {
+   "name": "the short listing: the first entry names its keyset and date, the rest are a place and a size",
+   "kind": "exact",
+   "apdu": "b017000300",
+   "sw": "9000",
+   "data": "80800059534ce0bfa19a0000000000810059534ce0bfa19a713fb30003820059534ce0bfa19a00000000050304",
+   "index": 588
+  },
+  {
+   "name": "the short listing from the second place: it begins with the twelve bytes again",
+   "kind": "exact",
+   "apdu": "b017010300",
+   "sw": "9000",
+   "data": "80810059534ce0bfa19a713fb30003820059534ce0bfa19a00000000050304",
+   "index": 589
+  },
+  {
+   "name": "the short listing from a place there is not",
+   "kind": "exact",
+   "apdu": "b017800300",
+   "sw": "6a83",
+   "data": "",
+   "index": 590
+  },
+  {
+   "name": "two places, whole, in the order asked: the second and the first",
+   "kind": "exact",
+   "apdu": "b017000202010000",
+   "sw": "9000",
+   "data": "010059534ce0bfa19a00000008000000000001107fa5000ff0ff800801107fa5000ff0ff800801107fa5000ff0037fa5000ff0ff800801107fa5000ff0ff800801107fa5000ff0ff800801107fa5713fb300010059534ce0bfa19a00000001000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000",
+   "index": 591
+  },
+  {
+   "name": "four places are too many",
+   "kind": "exact",
+   "apdu": "b0170002040001020300",
+   "sw": "6700",
+   "data": "",
+   "index": 592
+  },
+  {
+   "name": "and the short listing is one byte: 128, nothing more to ask for",
+   "kind": "exact",
+   "apdu": "b017000300",
+   "sw": "9000",
+   "data": "80",
+   "index": 619
+  },
+  {
+   "name": "the short listing from the first place: one answer; places 10, 11, 30 and 31 name a keyset and date, place 20 gives 0xFF and its amount, 65 is spent and not listed",
+   "kind": "exact",
+   "apdu": "b017000300",
+   "sw": "9000",
+   "data": "80800059534ce0bfa19a00000000000101020203030404050506060707080009018a00ab12cd34ef567800000000028b0059534ce0bfa19a00000000030c040d050e060f07100011011202130314ff000003e8150516061707180019011a021b031c041d059e0059534ce0bfa19a713fb300069f0059534ce0bfa19a000000000720002101220223032404250526062707280029012a022b032c042d052e062f0730003101320233033404350536063707380039013a023b033c043d053e063f074000",
+   "index": 657
+  },
+  {
+   "name": "the short listing from place 64: it begins with the twelve bytes",
+   "kind": "exact",
+   "apdu": "b017400300",
+   "sw": "9000",
+   "data": "80c00059534ce0bfa19a0000000000",
+   "index": 658
+  },
+  {
+   "name": "the short listing from a place past the pieces: the single byte 128",
+   "kind": "exact",
+   "apdu": "b017420300",
+   "sw": "9000",
+   "data": "80",
+   "index": 659
+  },
+  {
+   "name": "two places by name above 63: 127, which is empty, and 64",
+   "kind": "exact",
+   "apdu": "b0170002027f4000",
+   "sw": "9000",
+   "data": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010059534ce0bfa19a0000000108090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262702090909090909090909090909090909090909090909090909090909090909090900000000",
+   "index": 662
+  },
+  {
    "name": "the last signature was given with the PIN: asked for again it is the PIN's",
    "kind": "exact",
    "apdu": "b025000040",

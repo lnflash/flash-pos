@@ -29,12 +29,14 @@ import {utf8ToBytes} from '@noble/hashes/utils';
 import {cachedTipHeader} from './blockHeader';
 import {
   CardNeedsUpdateError,
+  CardProtocolError,
   getBalance,
   getCard,
   getChange,
   getDleqs,
   getInfo,
-  getPieces,
+  getPiecesNamed,
+  getPiecesShort,
   getPubkey,
   isAlreadyOnCard,
   loadProof,
@@ -45,6 +47,7 @@ import {
   type CardProofSlot,
   type CardRecord,
   type ChangeOpening,
+  type ListedPiece,
   type Transceiver,
 } from './cashuCard';
 import {
@@ -78,6 +81,7 @@ import {
   owedCardChangeId,
   PermanentSettlementError,
   recordOwedCardChange,
+  recoverableForCard,
   type OwedChangeEntry,
   type SettlementEntry,
   type SettlementInput,
@@ -99,6 +103,24 @@ const DAY_SECONDS = 86400;
 /** The copy for a bill over the card's daily limit (decision 10: final wording reviewed in the PR). */
 export const DAILY_LIMIT_REACHED =
   "This card has reached today's spending limit.";
+
+/**
+ * The copy for a card its owner has locked (`LOCK_CARD`, GET_INFO byte 10).
+ * A locked card loads nothing more (spec/APDU.md LOAD_PROOF `6986`), so a
+ * payment with change would strand the change: it is refused before
+ * anything burns, whatever the bill.
+ */
+export const CARD_LOCKED = "This card is locked and can't be used to pay.";
+
+/**
+ * The copy for a card whose pieces are not in sats (GET_CARD's unit byte,
+ * spec/APDU.md GET_CARD: `00` sat). Refused before anything burns.
+ */
+export const CARD_NOT_SATS =
+  "This card's balance isn't in sats, and this terminal only takes sats.";
+
+/** The piece format this terminal signs for: format-4 SIG_ALL pieces (GET_INFO byte 8, GET_CARD byte 0). */
+export const CARD_PIECE_FORMAT = 4;
 
 /** The copy for a card whose pieces cannot be checked offline, with the mint out of reach. */
 export const ONLINE_ONLY =
@@ -412,6 +434,15 @@ export const PHASE_SETTLING_UNCONFIRMED =
   'settling payment — the mint has not confirmed it';
 
 /**
+ * ENG-674: the card signed and burned, and the mint then refused the swap
+ * for good (`PermanentSettlementError`: a mint error, any HTTP 4xx). The
+ * bill is not paid; the payment is marked `failed` for a human. Thrown with
+ * `PhaseError.refused`: the screen ends on the refusal with Done, never
+ * "Tap card again", since the card has already burned.
+ */
+export const PHASE_SETTLING_REFUSED = 'settling payment — the mint refused it';
+
+/**
  * ENG-674 (blocking 2b): the swap failed in a way that may or may not have
  * reached the mint (a transport failure, a 5xx, a timeout), for a payment
  * whose pieces all verified offline and whose change is due. The card has
@@ -678,11 +709,19 @@ export function allowanceCovers(
  */
 export interface PreReadCharge {
   plan: PurchasePlan;
-  unspent: CardProofSlot[];
+  /** Every unspent piece, as the short listing names it (GET_PIECES P2 = 3). */
+  unspent: ListedPiece[];
+  /**
+   * The planned pieces whole (GET_PIECES P2 = 2), each checked against the
+   * listing: what the payment's secrets are rebuilt from.
+   */
+  pieces: CardProofSlot[];
   cardPubkey: string;
   /**
-   * Ask for the PIN before session 2: the card has one and its no-PIN
-   * allowance does not cover the bill.
+   * Ask for the PIN before session 2: the card has one, and either its
+   * no-PIN allowance does not cover the bill or a payment it signed with
+   * its PIN lost its signature (`needs-card`): SPEND_ALL_AGAIN needs the PIN
+   * for that one (spec/APDU.md SPEND_ALL_AGAIN).
    */
   pinRequired: boolean;
   /** The card has a PIN (whether or not this bill needs it). */
@@ -728,16 +767,40 @@ export async function readAndPlan({
 
   await step('reading card', () => selectApplet(transceive));
   const info = await step('reading card', () => getInfo(transceive));
-  if (info.pinState === 'locked') {
+  // Refusals on the card's own word, before anything is planned or burned.
+  // The owner's lock (GET_INFO byte 10) is not the PIN's block (byte 7).
+  // The applet still lets a locked card sign (CashuApplet.java: "lock
+  // disables writes, not the bearer's ability to pay"), and spec/APDU.md
+  // says nothing of what a till should do with one; but LOCK_CARD is "no
+  // more loads", so a payment's change could never go back on: swapped,
+  // recorded owed, and stranded on this terminal. This till takes no
+  // payment from a locked card, exact or not.
+  if (info.locked) {
+    throw new Error(CARD_LOCKED);
+  }
+  if (info.pinState === 'blocked') {
     throw new Error('card PIN is blocked — the card must be re-provisioned');
   }
+  // NUT-XX: the secrets the till rebuilds are format-4. A card whose pieces
+  // are in another format would sign its own secrets, the till would rebuild
+  // others, and the mint would refuse the swap after the burn.
+  if (info.format !== CARD_PIECE_FORMAT) {
+    throw new CardNeedsUpdateError(`piece format ${info.format}`);
+  }
   const record = await step('reading card', () => getCard(transceive));
+  if (record.format !== CARD_PIECE_FORMAT) {
+    throw new CardNeedsUpdateError(`record format ${record.format}`);
+  }
+  if (record.unit !== 0) {
+    throw new Error(CARD_NOT_SATS);
+  }
   const cardPubkey = await step('reading card', () =>
     getPubkey(transceive).then(toHex),
   );
-  const {unspent, spent} = await step('reading card', () =>
-    getPieces(transceive),
-  );
+  // The short listing (spec/APDU.md "Payment Flow": GET_PIECES P2 = 3):
+  // what each piece is worth, its date and keyset — all a plan needs, in an
+  // answer or two where the whole form takes up to forty-three.
+  const unspent = await step('reading card', () => getPiecesShort(transceive));
   const openings = await step('reading card', () => getChange(transceive));
 
   const plans = planPurchase(unspent, amountSat);
@@ -759,7 +822,17 @@ export async function readAndPlan({
   }
 
   const pinSet = info.pinState === 'set';
-  const pinRequired = pinSet && !allowanceCovers(info, amountSat);
+  // A payment this card signed and whose signature was lost is recovered by
+  // SPEND_ALL_AGAIN before this one signs — and AGAIN needs the PIN unless
+  // that signature was given without it (spec/APDU.md SPEND_ALL_AGAIN). A
+  // bill the allowance covers would send no PIN, AGAIN would be refused, and
+  // this payment's SIGN would replace the card's last signature for good:
+  // the earlier payment, recoverable until then, would be lost. So a card
+  // with a PIN and such a payment outstanding is asked for its PIN.
+  const pinRequired =
+    pinSet &&
+    (!allowanceCovers(info, amountSat) ||
+      (await hasRecoverableSignature(cardPubkey)));
   // Owed change goes on only in a tap that may load: a card with no PIN, or
   // one whose PIN is verified before the burn. A bill the allowance pays
   // sends no PIN, so it writes nothing owed.
@@ -772,7 +845,7 @@ export async function readAndPlan({
   // needs more than are free is refused by the card at SPEND_ALL_CHANGE.
   // Change still owed from an earlier charge is written first, as much of it
   // as the card has room for, and takes those slots off the top.
-  const emptySlots = info.maxSlots - unspent.length - spent.length;
+  const emptySlots = info.empty;
   const freeOpenings = MAX_CHANGE_OPENINGS - openings.length;
   const stillOwed = await reconcileOwedChange({
     transceive,
@@ -815,11 +888,33 @@ export async function readAndPlan({
     );
   }
 
+  // The chosen pieces whole, by slot (GET_PIECES P2 = 2), each held to what
+  // the listing said: unspent, the same amount, date and keyset. Their nonce
+  // and C are what the payment's secrets are rebuilt from.
+  const chosen = await step('reading card', async () => {
+    const named = await getPiecesNamed(transceive, plan!.slots);
+    return plan!.slots.map(slot => {
+      const listed = unspent.find(p => p.slot === slot)!;
+      const got = named.find(n => n.slot === slot)?.piece;
+      if (
+        !got ||
+        got.status !== 'unspent' ||
+        got.amount !== listed.amount ||
+        got.date !== listed.date ||
+        got.keysetId !== listed.keysetId
+      ) {
+        throw new CardProtocolError(
+          `slot ${slot} does not hold the piece the card listed`,
+        );
+      }
+      return got;
+    });
+  });
+
   // NUT-12, offline: each planned piece's DLEQ, checked with the mint keys
   // kept on this terminal. A piece that cannot be checked here (no proof
   // kept with it, one that does not verify, no keys) is accepted only when
   // the mint is there to swap it in the same tap.
-  const chosen = plan.slots.map(slot => unspent.find(p => p.slot === slot)!);
   const dleqs = await step('reading card', () =>
     getDleqs(transceive, plan!.slots),
   );
@@ -858,8 +953,24 @@ export async function readAndPlan({
     refundKey: record.refundKey,
     requiresOnline,
     unspent,
+    pieces: chosen,
     owedChange,
   };
+}
+
+/**
+ * Whether this card has a SIG_ALL payment recorded `needs-card` (burned, its
+ * signature lost): SPEND_ALL_AGAIN at this tap is its only way back. An
+ * unreadable store says no: recovery is skipped then anyway.
+ */
+async function hasRecoverableSignature(cardPubkey: string): Promise<boolean> {
+  try {
+    return (await recoverableForCard(cardPubkey)).some(
+      e => e.sigflag === 'SIG_ALL' && !!e.message,
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -933,7 +1044,14 @@ export interface ExecuteChargeArgs {
   transceive: Transceiver;
   amountSat: number;
   plan: PurchasePlan;
-  unspent: CardProofSlot[];
+  /** Every unspent piece the read listed (`readAndPlan`'s `unspent`). */
+  unspent: ListedPiece[];
+  /**
+   * The planned pieces whole (`readAndPlan`'s `pieces`). A planned slot
+   * found in neither this nor `unspent` (as a whole piece) is refused before
+   * anything is sent to the card.
+   */
+  pieces?: CardProofSlot[];
   cardPubkey: string;
   pin?: string;
   pinRequired: boolean;
@@ -992,6 +1110,7 @@ export async function executeCharge({
   amountSat,
   plan,
   unspent,
+  pieces: readPieces = [],
   cardPubkey,
   pin,
   pinRequired,
@@ -1007,6 +1126,21 @@ export async function executeCharge({
   onBurnStart = () => {},
 }: ExecuteChargeArgs): Promise<ChargeResult> {
   const step = makeStep(onPhase);
+
+  // Every planned piece whole, as the read took it — before anything is
+  // sent: a plan this terminal cannot rebuild the secrets of must not reach
+  // the card.
+  const pieces = plan.slots.map(slot => {
+    const piece =
+      readPieces.find(p => p.slot === slot) ??
+      (unspent.find(p => p.slot === slot) as CardProofSlot | undefined);
+    if (!piece || !piece.nonce || !piece.C) {
+      throw new CardProtocolError(
+        `the plan names slot ${slot}, whose piece this terminal has not read`,
+      );
+    }
+    return piece;
+  });
 
   // Session 2 opens a FRESH IsoDep channel: the card's active applet resets
   // to the default, so the applet SELECT must run again before any gated
@@ -1069,18 +1203,16 @@ export async function executeCharge({
 
   // Everything the swap will produce, made BEFORE the card signs (SIG_ALL
   // binds the outputs): the inputs' secrets, the merchant's outputs. No APDU.
-  const pieces = plan.slots.map(slot => unspent.find(p => p.slot === slot)!);
   const changeSat = plan.changeSat;
   const prepared = await step(PHASE_PREPARING, async () => {
-    // Whenever this charge needs the mint at all — its pieces could not all
-    // be checked offline, or it is about to make the card's own change —
-    // ask once, up front, and refresh what is cached from the answer
-    // (ENG-674 should-fix: SIG_ALL binds the change keyset's `active` flag
-    // and fee into the outputs for good, so a stale cache must never decide
-    // them). A charge that needs neither never touches the network, exactly
-    // as before.
-    const needsMint = requiresOnline || changeSat > 0;
-    const online = needsMint && (await mintReachable(mintUrl));
+    // Ask the mint once, up front, whatever the bill, and refresh what is
+    // cached from its answer: SIG_ALL binds the outputs' keyset (its
+    // `active` flag) and the fee-adjusted amount into the signature for
+    // good, on an exact bill as much as on one with change, so a stale cache
+    // must never decide them while the mint can be asked (ENG-674). Out of
+    // reach, an exact bill whose pieces all verified offline is still taken
+    // on the cache; anything else is refused below, before anything burns.
+    const online = await mintReachable(mintUrl);
     if (requiresOnline && !online) {
       throw new Error(ONLINE_ONLY);
     }
@@ -1177,30 +1309,33 @@ export async function executeCharge({
   // under the card's one witness; out come the merchant's take and the
   // card's own change, exactly as the card signed them. Exact bills
   // (changeSat = 0) settle here too — deferring them to the drain left the
-  // merchant's money queued on a silent drain failure. OFFLINE (or a
-  // signature the card could not give again): the swap does not happen and,
-  // when nothing must be written back onto the card this session, the
-  // payment holds in the queue for the next online auto-run.
+  // merchant's money queued on a silent drain failure. A swap that fails
+  // ambiguously on an exact bill whose pieces all verified offline holds
+  // the payment in the queue for the next online auto-run. No verified
+  // signature at all is never a success.
   let swapped: SwapSignedResult | null = null;
   if (!signed) {
-    // The card burned the payment but its signature was lost: recorded
-    // `needs-card`, recovered by SPEND_ALL_AGAIN at this card's next tap
-    // (before a new payment begins). No swap was attempted, so there is
-    // nothing to classify — the card has already burned, so change due
-    // from THIS payment stays owed until the signature is recovered and the
-    // drain can swap it in; a retry would burn the card again for the same
-    // bill.
-    if (changeSat > 0) {
-      throw new PhaseError(
-        PHASE_SETTLING_CHANGE_OWED,
-        new Error(
-          "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
-        ),
-        {paid: true},
-      );
-    }
-    // Exact bill: nothing owed back onto the card either way — the
-    // needs-card entry recovers on its own at a later tap.
+    // No signature that verifies against this payment's message: the card
+    // burned (or says it did) but gave nothing the mint will take. Either
+    // its answer was lost (`needs-card`: SPEND_ALL_AGAIN at its next tap may
+    // still recover it) or it answered with a signature that does not verify
+    // (`failed`: a broken card, or one replaying pieces read off a real
+    // card). Neither is paid — nothing has reached the mint — and nothing
+    // may say so, on an exact bill as on one with change (NUT-XX: the till
+    // swaps, "and only then says paid"). But the card has burned, so a
+    // retry would burn it again for the same bill: `paid` stays set
+    // (ENG-642's no-re-charge rule) under the phase that reads "Not
+    // confirmed yet", never "Paid" (architect's ruling).
+    throw new PhaseError(
+      PHASE_SETTLING_UNCONFIRMED,
+      new Error(
+        entry.status === 'failed'
+          ? entry.lastError ??
+            "the card's signature does not verify against the payment"
+          : "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
+      ),
+      {paid: true},
+    );
   } else {
     let settleFailure: PhaseError | null = null;
     try {
@@ -1219,7 +1354,10 @@ export async function executeCharge({
       const mapped = mapSwapError(settleFailure.cause, entry);
       if (mapped instanceof PermanentSettlementError) {
         await markFailed(entry.id, mapped.message, now).catch(() => {});
-        throw new PhaseError(PHASE_SETTLING, mapped);
+        // Not paid, and never charged again: the card has burned for this
+        // bill, so a retry would burn it a second time — very likely for the
+        // same refusal. The screen ends on the mint's refusal with Done.
+        throw new PhaseError(PHASE_SETTLING_REFUSED, mapped, {refused: true});
       }
       // Ambiguous: a transport failure (provably unsent), a 5xx, a timeout
       // — the mint may or may not hold the swap. The card has already

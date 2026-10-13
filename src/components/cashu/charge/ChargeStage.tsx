@@ -13,6 +13,7 @@ import {
   changeOnCard,
   failureBody,
   parseFailure,
+  settleRefused,
   settleUnconfirmed,
 } from './money';
 import {friendlyLabel, type StageState} from './phaseToStation';
@@ -53,7 +54,11 @@ export interface ChargeStageProps {
   /** Mode 'error' in the PIN pose: the pad is the retry. */
   pinError: boolean;
   error: string | null;
-  /** The error came after the swap: the bill is paid (`isPaidFailure`). */
+  /**
+   * The error came after the card burned: the bill is paid
+   * (`isPaidFailure`), or the mint refused it (`isRefusedAfterBurn`, titled
+   * by its phase). Either way the charge is over.
+   */
   paid?: boolean;
   stalled: boolean;
   nfcSupported: boolean | null;
@@ -86,6 +91,11 @@ export const PAID_FAILURE_TITLE = 'Paid';
  * pieces could not be checked offline. Not "Paid": they may be forged.
  */
 export const UNCONFIRMED_TITLE = 'Not confirmed yet';
+/**
+ * ENG-674: the card burned and the mint refused the swap for good. Not
+ * paid, and the card must not be charged again for this bill.
+ */
+export const REFUSED_TITLE = 'Not paid — the mint refused it';
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -161,7 +171,9 @@ function ChargeStage(props: ChargeStageProps) {
       // A bookkeeping failure whose change all landed is plain "Paid": the
       // change is on the card (`changeOnCard`).
       errorTitle: paid
-        ? settleUnconfirmed(failure)
+        ? settleRefused(failure)
+          ? REFUSED_TITLE
+          : settleUnconfirmed(failure)
           ? UNCONFIRMED_TITLE
           : changeSat > 0 && !changeOnCard(failure)
           ? PAID_CHANGE_NOT_ON_CARD_TITLE

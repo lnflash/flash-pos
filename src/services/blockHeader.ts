@@ -5,10 +5,14 @@
  *
  * Source (architect's decision 7): an Esplora API — mempool.space first,
  * blockstream.info as the fallback — `GET <api>/blocks/tip/hash`, then
- * `GET <api>/block/<hash>/header`. A dev build can point it elsewhere
+ * `GET <api>/block/<hash>/header`. Configurable in every build, release
+ * included: `FLASH_HEADER_APIS` (comma-separated API bases, read through
+ * `@env-optional`, so a build whose .env lacks it still builds and uses the
+ * defaults) replaces the defaults when it names at least one http(s) base.
+ * A dev build can also point it elsewhere at run time
  * (`setHeaderApisOverride`, set by the card-bridge deep link's `headers=`)
- * so the e2e run stubs it; a release build always uses the defaults. When
- * every source fails the card is sent no header and keeps its clock.
+ * so the e2e run stubs it. When every source fails the card is sent no
+ * header and keeps its clock.
  *
  * Never fetched inside an NFC session: `refreshTipHeader` runs before the
  * tap (screen mount, the payment router) and the charge reads the cached tip
@@ -20,6 +24,8 @@
  */
 import {sha256} from '@noble/hashes/sha256';
 import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
+
+import {FLASH_HEADER_APIS} from '@env-optional';
 
 /** The default sources, in order (decision 7). */
 export const DEFAULT_HEADER_APIS = [
@@ -33,27 +39,50 @@ export const TIP_TTL_MS = 10 * 60 * 1000;
 /** Per request: a source that does not answer in this long is skipped. */
 export const HEADER_FETCH_TIMEOUT_MS = 4000;
 
+/**
+ * The http(s) API bases in `apis`, trimmed and without a trailing slash;
+ * anything else is dropped. `null` when none is left.
+ */
+export function parseHeaderApis(
+  apis: string | readonly string[] | null | undefined,
+): string[] | null {
+  const items = typeof apis === 'string' ? apis.split(/[,\s]+/) : apis ?? [];
+  const list = items
+    .map(a => a.trim().replace(/\/+$/, ''))
+    .filter(a => /^https?:\/\/[^\s/]+/i.test(a));
+  return list.length > 0 ? list : null;
+}
+
+/**
+ * The build's sources (`FLASH_HEADER_APIS`), or null to use the defaults:
+ * absent from the build, empty, or naming no http(s) base.
+ */
+export const configuredHeaderApis = (
+  raw: string | undefined = FLASH_HEADER_APIS,
+): string[] | null => parseHeaderApis(raw);
+
+let configured = configuredHeaderApis();
 let override: string[] | null = null;
 
 /**
- * Dev builds: take the tip from `apis` instead of the defaults (the e2e run's
- * stub), or back to the defaults with null. Ignored outside `__DEV__`. Drops
- * the cached tip, which came from the other source.
+ * Dev builds: take the tip from `apis` instead (the e2e run's stub), or back
+ * to the build's sources with null. Ignored outside `__DEV__`. Drops the
+ * cached tip, which came from the other source.
  */
 export function setHeaderApisOverride(apis: string[] | null): void {
   if (!__DEV__) {
     return;
   }
-  const list = (apis ?? [])
-    .map(a => a.trim().replace(/\/+$/, ''))
-    .filter(a => /^https?:\/\/[^\s/]+/i.test(a));
-  override = list.length > 0 ? list : null;
+  override = parseHeaderApis(apis);
   cache = null;
 }
 
-/** The sources a fetch tries, in order: the dev override, else the defaults. */
+/**
+ * The sources a fetch tries, in order: the dev override, else the build's
+ * `FLASH_HEADER_APIS`, else the defaults.
+ */
 export function headerApis(): string[] {
-  return override ?? DEFAULT_HEADER_APIS;
+  return override ?? configured ?? DEFAULT_HEADER_APIS;
 }
 
 /** The block hash of a header, as Bitcoin shows it (double SHA-256, reversed). */
@@ -178,4 +207,11 @@ export function __resetTipHeader(): void {
   cache = null;
   inFlight = null;
   override = null;
+  configured = configuredHeaderApis();
+}
+
+/** Test seam: the build's `FLASH_HEADER_APIS`, as if the build had it. */
+export function __setConfiguredHeaderApis(raw: string | undefined): void {
+  configured = configuredHeaderApis(raw);
+  cache = null;
 }

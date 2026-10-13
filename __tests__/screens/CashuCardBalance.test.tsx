@@ -144,7 +144,7 @@ describe('CashuCardBalance', () => {
 
   it.each([
     ['unset', 'Not set'],
-    ['locked', 'Locked'],
+    ['blocked', 'Blocked'],
     ['unknown', 'Unknown'],
   ] as const)('labels pinState %s as "%s"', (pinState, label) => {
     const {getByText} = renderScreen({

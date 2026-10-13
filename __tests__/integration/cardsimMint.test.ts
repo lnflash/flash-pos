@@ -36,6 +36,7 @@ import {
   __resetWalletCache,
   buildCardSigAllSecret,
   listSettledProofs,
+  refreshKeysets,
 } from '../../src/services/cashuMint';
 import {
   DAILY_LIMIT_REACHED,
@@ -266,11 +267,17 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
   it('an exact bill whose swap never reached the mint is drained later with exactly the outputs the card signed', async () => {
     const {pieces} = await mintToCard(cardKey, [8]);
     await bridge('/fixture', {mint: MINT_URL, owner: true, proofs: pieces});
+    // A terminal that has seen this mint keeps its keys, so the piece's DLEQ
+    // checks offline: only such a payment may be deferred to the drain (a
+    // payment the till could not check offline is never deferred as paid,
+    // ENG-674 blocking 1).
+    expect(await refreshKeysets(MINT_URL!)).toBe(true);
     const preRead = await readAndPlan({
       transceive,
       amountSat: 8,
       mintUrl: MINT_URL,
     });
+    expect(preRead.requiresOnline).toBe(false);
 
     // The swap request never leaves the device (offline at the moment of
     // the swap); everything else reaches the mint.
@@ -306,6 +313,43 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
     expect((await listSettledProofs()).reduce((t, p) => t + p.amount, 0)).toBe(
       8,
     );
+  });
+
+  it("plans from the applet's short listing (GET_PIECES P2 = 3) and reads only the chosen slots by name (P2 = 2)", async () => {
+    const amounts = [1, 2, 4, 8, 16, 32, 1, 2, 4, 8, 16, 32];
+    const {pieces} = await mintToCard(cardKey, amounts);
+    await bridge('/fixture', {mint: MINT_URL, owner: true, proofs: pieces});
+    const sent: number[][] = [];
+    const recording: Transceiver = async apdu => {
+      sent.push(apdu);
+      return transceive(apdu);
+    };
+    const preRead = await readAndPlan({
+      transceive: recording,
+      amountSat: 21,
+      mintUrl: MINT_URL,
+    });
+    const forms = sent.filter(a => a[1] === 0x17).map(a => a[3]);
+    expect(forms).not.toContain(0x00);
+    expect(forms.filter(f => f === 0x03)).toHaveLength(1);
+    expect(preRead.unspent).toHaveLength(amounts.length);
+    expect(preRead.plan.changeSat).toBe(0);
+    const named = sent
+      .filter(a => a[1] === 0x17 && a[3] === 0x02)
+      .flatMap(a => a.slice(5, 5 + a[4]));
+    expect([...named].sort((a, b) => a - b)).toEqual(
+      [...preRead.plan.slots].sort((a, b) => a - b),
+    );
+
+    const result = await executeCharge({
+      ...preRead,
+      transceive,
+      amountSat: 21,
+      mintUrl: MINT_URL!,
+    });
+    expect(result.changeSat).toBe(0);
+    const [entry] = await listSettlements();
+    expect(entry.status).toBe('settled');
   });
 
   const headers = (

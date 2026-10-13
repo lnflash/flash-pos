@@ -40,13 +40,17 @@ export const PACKAGE_AID = [
 export const APPLET_AID = [...PACKAGE_AID, 0x01];
 
 /**
- * The 0.x applet's AIDs. Selected only after the 2.0 AID is refused, and
- * only to tell a card that needs an update from a card that is not an eCash
- * card at all: nothing but the SELECT is ever sent to one.
+ * The AIDs of the applets 2.0 replaces: the 0.x applet's two, and Foxy's 1.x
+ * (`F0 46 4F 58 59 43 41 52 44`, "FOXYCARD" after F0). spec/APDU.md
+ * "SELECT APPLICATION" names both as "this card needs an update". Selected
+ * only after both 2.0 AIDs answer `6A82`, and only to tell a card that needs
+ * an update from a card that is not an eCash card at all: nothing but the
+ * SELECT is ever sent to one.
  */
 export const LEGACY_AIDS = [
   [0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x02],
   [0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x02, 0x01],
+  [0xf0, 0x46, 0x4f, 0x58, 0x59, 0x43, 0x41, 0x52, 0x44],
 ];
 
 /** The protocol major this layer speaks. */
@@ -487,13 +491,26 @@ const isNotFound = (error: unknown): boolean =>
  * reference driver does) and falls back to the full applet AID for cards that
  * do not support partial selection.
  *
- * Resolves to the 2-byte applet version the applet returns on SELECT.
+ * Resolves to the 2-byte applet version, `02 xx`.
  *
- * A card that refuses both with `6A82` is asked for the 0.x applet: if that
- * answers, the card needs an update and `CardNeedsUpdateError` is thrown with
- * nothing more sent. If it does not, the original `6A82` stands — not an
- * eCash card (a BoltCard, a bank card), which `isAppletNotFound` recognises.
- * A 2.0 AID that answers with a major below 2 needs an update too.
+ * The contract is cashu-javacard's (`tools/cardsim/README.md`, "Old cards"):
+ * any SELECT answer that is not `02xx 9000` is "This card needs an update".
+ * So, on a 2.0 AID:
+ *
+ *   - `9000` with a body that is not exactly `02 xx` (empty, one byte, a
+ *     major of 1 or 3) throws `CardNeedsUpdateError`;
+ *   - any status word but `9000` or `6A82` (jCardSim answers an old card
+ *     `6E00` or `6999`) throws `CardNeedsUpdateError`;
+ *   - `6A82` tries the next AID.
+ *
+ * Only `6A82` on both 2.0 AIDs goes on to the old AIDs (0.x and Foxy 1.x,
+ * spec/APDU.md "SELECT APPLICATION"): if one answers, the card needs an
+ * update and nothing more is sent. If none does, the original `6A82` stands
+ * — not an eCash card (a BoltCard, a bank card), which `isAppletNotFound`
+ * recognises and the LNURLw fallback reads.
+ *
+ * A transport failure (the card left the field mid-SELECT) surfaces as
+ * itself: a card that moved is not a card running the wrong software.
  *
  * The trailing 0x00 is Le, making this a Case-4 GlobalPlatform SELECT. It is
  * load-bearing on iOS: `NFCISO7816APDU initWithData:` parses a Case-3 command
@@ -503,24 +520,25 @@ const isNotFound = (error: unknown): boolean =>
 export async function selectApplet(transceive: Transceiver): Promise<number[]> {
   let notFound: unknown;
   for (const aid of [PACKAGE_AID, APPLET_AID]) {
+    let version: number[];
     try {
-      const version = await selectAid(transceive, aid);
-      if (version.length >= 1 && version[0] < PROTOCOL_MAJOR) {
-        throw new CardNeedsUpdateError(
-          `applet version ${version[0]}.${version[1] ?? 0}`,
-        );
-      }
-      return version;
+      version = await selectAid(transceive, aid);
     } catch (error) {
-      // Only "applet not found" earns a second attempt. A transport failure —
-      // the card left the field mid-SELECT — must surface as itself; retrying
-      // on a dead handle would report a card that moved as a card running the
-      // wrong software.
-      if (!isNotFound(error)) {
-        throw error;
+      if (isNotFound(error)) {
+        notFound = error;
+        continue;
       }
-      notFound = error;
+      if (error instanceof CardError) {
+        throw new CardNeedsUpdateError(`SELECT answered 0x${hex16(error.sw)}`);
+      }
+      throw error;
     }
+    if (version.length !== 2 || version[0] !== PROTOCOL_MAJOR) {
+      throw new CardNeedsUpdateError(
+        `SELECT answered version ${toHex(version) || '(none)'}`,
+      );
+    }
+    return version;
   }
   for (const aid of LEGACY_AIDS) {
     let answered = false;
@@ -533,7 +551,7 @@ export async function selectApplet(transceive: Transceiver): Promise<number[]> {
       }
     }
     if (answered) {
-      throw new CardNeedsUpdateError('0.x applet');
+      throw new CardNeedsUpdateError(`old applet ${toHex(aid)}`);
     }
   }
   throw notFound instanceof Error
@@ -555,11 +573,19 @@ export interface CardInfo {
   capabilities: number;
   secp256k1Native: boolean;
   schnorr: boolean;
-  pinState: 'unset' | 'set' | 'locked' | 'unknown';
+  /**
+   * The PIN (GET_INFO byte 7): none, set, or blocked after too many wrong
+   * tries. Not the card's lock (`locked`, byte 10, set by LOCK_CARD).
+   */
+  pinState: 'unset' | 'set' | 'blocked' | 'unknown';
   /** Piece format: 4 = SIG_ALL pieces. */
   format: number;
   /** PIN tries left, 0 to 3. */
   triesLeft: number;
+  /**
+   * The owner has locked the card (`LOCK_CARD`, GET_INFO byte 10): it pays
+   * nothing and loads nothing more (spec/APDU.md LOAD_PROOF `6986`).
+   */
   locked: boolean;
   recordSet: boolean;
   /** The owner's daily limit in sats; 0 is none. */
@@ -588,7 +614,7 @@ export interface CardInfo {
 const PIN_STATES: Record<number, CardInfo['pinState']> = {
   0: 'unset',
   1: 'set',
-  2: 'locked',
+  2: 'blocked',
 };
 
 /** GET_INFO's body: 30 bytes with P1 = 0, 42 with P1 = 1. */
@@ -890,6 +916,201 @@ export async function getPieces(
     from = page.next;
   }
   return {unspent, spent};
+}
+
+/**
+ * One unspent piece as the short listing (GET_PIECES, P2 = 3) names it: what
+ * choosing pieces needs, and no more. Its nonce and C are read afterwards by
+ * slot (`getPiecesNamed`), for the chosen pieces only.
+ */
+export interface ListedPiece {
+  slot: number;
+  /** The keyset as the card stores it: 16 hex chars (8 raw bytes). */
+  keysetId: string;
+  amount: number;
+  /** The piece's locktime, seconds; 0 for none. */
+  date: number;
+}
+
+/** One short-listing answer: where the next one starts, and its pieces. */
+export interface ShortListingPage {
+  /** The first slot this answer does not cover; 128 at the end. */
+  next: number;
+  pieces: ListedPiece[];
+}
+
+/** Bytes a short-listing entry's keyset and date take, after its slot. */
+const SHORT_NAMED_SIZE = 12;
+/** The size byte that says an amount (4 bytes) follows, not a power of two. */
+const SHORT_OTHER_AMOUNT = 0xff;
+
+/**
+ * GET_PIECES P2 = 3's body (spec/APDU.md GET_PIECES; the applet's
+ * `processGetShort`): `next` (1), then for each unspent slot from P1 up to
+ * `next`, in order: its number (1, with `0x80` where its keyset (8) and date
+ * (4) follow — always in an answer's first entry, and wherever they differ
+ * from the entry before), then the power of two it is worth (1), or `FF` and
+ * its amount (4). Spent and empty slots are not listed.
+ */
+export function parseShortListing(
+  body: number[],
+  from: number,
+): ShortListingPage {
+  if (body.length < 1) {
+    throw new CardProtocolError('GET_PIECES (short): empty answer');
+  }
+  const next = body[0];
+  if (next <= from || next > MAX_SLOTS) {
+    throw new CardProtocolError(
+      `GET_PIECES (short): an answer from ${from} says it ends at ${next}`,
+    );
+  }
+  const pieces: ListedPiece[] = [];
+  let keysetId: string | null = null;
+  let date = 0;
+  let last = from - 1;
+  let at = 1;
+  const need = (n: number, what: string) => {
+    if (at + n > body.length) {
+      throw new CardProtocolError(
+        `GET_PIECES (short): ${what} is cut short at byte ${at}`,
+      );
+    }
+  };
+  while (at < body.length) {
+    const tag = body[at++];
+    const slot = tag & 0x7f;
+    if (slot <= last || slot >= next) {
+      throw new CardProtocolError(
+        `GET_PIECES (short): slot ${slot} out of order in ${from}..${next - 1}`,
+      );
+    }
+    last = slot;
+    if ((tag & 0x80) !== 0) {
+      need(SHORT_NAMED_SIZE, `slot ${slot}'s keyset and date`);
+      keysetId = toHex(body.slice(at, at + 8));
+      date = readU32(body, at + 8);
+      at += SHORT_NAMED_SIZE;
+    } else if (keysetId === null) {
+      throw new CardProtocolError(
+        `GET_PIECES (short): slot ${slot} names no keyset and none came before it`,
+      );
+    }
+    need(1, `slot ${slot}'s size`);
+    const size = body[at++];
+    let amount: number;
+    if (size === SHORT_OTHER_AMOUNT) {
+      need(4, `slot ${slot}'s amount`);
+      amount = readU32(body, at);
+      at += 4;
+    } else if (size <= 31) {
+      amount = 2 ** size;
+    } else {
+      throw new CardProtocolError(
+        `GET_PIECES (short): slot ${slot}'s size byte 0x${size.toString(16)}`,
+      );
+    }
+    pieces.push({slot, keysetId, amount, date});
+  }
+  return {next, pieces};
+}
+
+/** One short-listing answer from slot `from` (GET_PIECES, P2 = 3). */
+export async function getPiecesShortPage(
+  transceive: Transceiver,
+  from = 0,
+): Promise<ShortListingPage> {
+  checkSlot(from, 'GET_PIECES first slot');
+  const body = await send(transceive, INS.GET_PIECES, {
+    p1: from,
+    p2: 0x03,
+    le: 0x00,
+    context: `GET_PIECES short from ${from}`,
+  });
+  return parseShortListing(body, from);
+}
+
+/**
+ * Every unspent piece's slot, keyset, date and amount: the short listing,
+ * answer by answer until `next` is 128. A card whose pieces share a keyset
+ * and a date and are powers of two is all 128 slots in two answers, where
+ * the whole form (`getPieces`) takes forty-three — the till reads this at
+ * every payment (spec/APDU.md "Payment Flow").
+ */
+export async function getPiecesShort(
+  transceive: Transceiver,
+): Promise<ListedPiece[]> {
+  const pieces: ListedPiece[] = [];
+  let from = 0;
+  while (from < MAX_SLOTS) {
+    const page = await getPiecesShortPage(transceive, from);
+    pieces.push(...page.pieces);
+    from = page.next;
+  }
+  return pieces;
+}
+
+/** A slot read by name (GET_PIECES P2 = 2): its state, and its piece if it holds one. */
+export interface NamedSlot {
+  slot: number;
+  status: SlotStatus;
+  /** The piece, for an unspent or spent slot; null for an empty one. */
+  piece: CardProofSlot | null;
+}
+
+/** Slots one GET_PIECES P2 = 2 names (the applet's BATCH_MOST). */
+const NAMED_PER_APDU = 3;
+
+/**
+ * GET_PIECES P2 = 2: the named slots whole, as GET_PROOF gives them (status,
+ * then its 81 bytes), in the order asked, three to an APDU. An empty or spent
+ * slot is answered as it is, so the caller sees for itself that it is not
+ * what the listing said.
+ */
+export async function getPiecesNamed(
+  transceive: Transceiver,
+  slots: number[],
+): Promise<NamedSlot[]> {
+  slots.forEach(slot => checkSlot(slot));
+  const out: NamedSlot[] = [];
+  for (let i = 0; i < slots.length; i += NAMED_PER_APDU) {
+    const asked = slots.slice(i, i + NAMED_PER_APDU);
+    const body = await send(transceive, INS.GET_PIECES, {
+      p2: 0x02,
+      data: asked,
+      le: 0x00,
+      context: `GET_PIECES slots ${asked.join(',')}`,
+    });
+    if (body.length !== asked.length * PROOF_SIZE) {
+      throw new CardProtocolError(
+        `GET_PIECES (named): expected ${asked.length * PROOF_SIZE} bytes, got ${
+          body.length
+        }`,
+      );
+    }
+    asked.forEach((slot, k) => {
+      const at = k * PROOF_SIZE;
+      const status = body[at];
+      if (status === 0x00) {
+        out.push({slot, status: 'empty', piece: null});
+        return;
+      }
+      if (status !== 0x01 && status !== 0x02) {
+        throw new CardProtocolError(
+          `GET_PIECES (named): slot ${slot} has status byte 0x${status.toString(
+            16,
+          )}`,
+        );
+      }
+      const state = status === 0x01 ? 'unspent' : 'spent';
+      out.push({
+        slot,
+        status: state,
+        piece: parsePiece(slot, state, body, at + 1),
+      });
+    });
+  }
+  return out;
 }
 
 /** The card's record (GET_CARD): what the terminal needs to rebuild its secrets. */

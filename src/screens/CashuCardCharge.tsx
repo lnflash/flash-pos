@@ -23,7 +23,7 @@ import {
 } from '../services/cashuCard';
 import {refreshTipHeader} from '../services/blockHeader';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
-import {isPaidFailure} from '../services/phaseError';
+import {isPaidFailure, isRefusedAfterBurn} from '../services/phaseError';
 
 // components
 // Leaf imports, not the barrel — this screen ships in release builds and must
@@ -69,6 +69,8 @@ type Props = StackScreenProps<RootStackType, 'CashuCardCharge'>;
 type Planned = {
   plan: PurchasePlan;
   unspent: unknown[];
+  /** The planned pieces whole, as the read took them (`readAndPlan`). */
+  pieces?: unknown[];
   cardPubkey: string;
   pinRequired: boolean;
   /** Change from an earlier charge, written onto the card before the burn. */
@@ -85,6 +87,7 @@ function planFromPreRead(preRead: PreRead | undefined): Planned | null {
     ? {
         plan: preRead.plan as PurchasePlan,
         unspent: preRead.unspent,
+        pieces: preRead.pieces,
         cardPubkey: preRead.cardPubkey,
         pinRequired: preRead.pinRequired,
         owedChange: preRead.owedChange ?? [],
@@ -280,6 +283,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
               amountSat: satAmount,
               plan: planned.plan,
               unspent: planned.unspent as never,
+              pieces: planned.pieces as never,
               cardPubkey: planned.cardPubkey,
               pin: customerPin,
               pinRequired: planned.pinRequired,
@@ -297,10 +301,11 @@ const CashuCardCharge = ({navigation, route}: Props) => {
           },
         );
       } catch (err) {
-        // A paid failure stays held: `endPaid` takes over and every exit
-        // becomes Done. Any other failure is a charge that did not go
-        // through, and Back leaves as it did before the tap.
-        if (!isPaidFailure(err)) {
+        // A paid failure (or one the mint refused after the card burned)
+        // stays held: `endPaid` takes over and every exit becomes Done. Any
+        // other failure is a charge that did not go through, and Back
+        // leaves as it did before the tap.
+        if (!isPaidFailure(err) && !isRefusedAfterBurn(err)) {
           setHold(false);
         }
         throw err;
@@ -341,7 +346,12 @@ const CashuCardCharge = ({navigation, route}: Props) => {
    */
   const endPaid = useCallback(
     (err: unknown): boolean => {
-      if (!isPaidFailure(err)) {
+      // The card burned and the mint refused the swap (`PhaseError.refused`):
+      // the bill is NOT paid, so it is not recorded as a sale — but the card
+      // has spent, so it ends here like a paid failure, on the refusal with
+      // Done, never "Tap card again" (which would burn the card again).
+      const refused = isRefusedAfterBurn(err);
+      if (!isPaidFailure(err) && !refused) {
         return false;
       }
       const message = describeCardFailure(err);
@@ -355,7 +365,9 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       // A Cancel pressed during the change write does not hide this: the
       // money moved whoever closed the session.
       setError(message);
-      recordPaid();
+      if (!refused) {
+        recordPaid();
+      }
       startSettlement();
       return true;
     },

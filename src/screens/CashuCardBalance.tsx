@@ -35,7 +35,7 @@ const buttonStyle = {marginTop: 'auto' as const};
 const PIN_LABEL: Record<CardInfo['pinState'], string> = {
   unset: 'Not set',
   set: 'Set',
-  locked: 'Locked',
+  blocked: 'Blocked',
   unknown: 'Unknown',
 };
 

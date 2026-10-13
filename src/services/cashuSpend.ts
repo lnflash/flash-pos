@@ -20,7 +20,10 @@
  * places are spent: none → nothing burned, the error surfaces; spent → the
  * signature is fetched again (SPEND_ALL_AGAIN) and accepted only if it
  * verifies against this payment's message, else the payment is recorded
- * `needs-card` with everything it signed, for the next tap to recover.
+ * `needs-card` with everything it signed, for the next tap to recover. A
+ * card that ANSWERS its SIGN with a signature that does not verify (and
+ * gives none that does again) has nothing to recover: that payment is
+ * recorded `failed`, for a human.
  * Recording a `needs-card` entry for places that never burned would show the
  * merchant an exposure that does not exist.
  */
@@ -115,7 +118,11 @@ export interface SpendAllArgs {
 }
 
 export interface SpendAllResult {
-  /** The recorded payment: `pending` with its witness, or `needs-card`. */
+  /**
+   * The recorded payment: `pending` with its witness; `needs-card` when the
+   * card's answer was lost; `failed` when the card answered with a
+   * signature that does not verify (and SPEND_ALL_AGAIN gave none that does).
+   */
   entry: SettlementEntry;
   /** What the swap submits, exactly as the card signed it. */
   signed: SignedSwap | null;
@@ -160,8 +167,10 @@ function recordPayment(
  *
  * Throws, with nothing burned, for any refusal before or at SIGN (a CardError:
  * `6A94` the PIN is needed, `6A8F` over the daily limit, …). Resolves once the
- * payment is durably recorded — `pending` with the witness, or `needs-card`
- * when the card burned it and the signature could not be had.
+ * payment is durably recorded — `pending` with the witness; `needs-card`
+ * when the card burned it and its answer was lost; `failed` when the card
+ * answered with a signature that does not verify. Only `pending` comes with
+ * `signed`: the caller must never call a payment without it paid.
  */
 export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
   const {transceive, inputs, merchant, changeSat, cardPubkey} = args;
@@ -200,6 +209,16 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
 
   args.onSign?.();
   let signature: string | null = null;
+  /**
+   * SPEND_ALL_SIGN answered (9000, 64 bytes) with a signature that does not
+   * verify against this payment's message. Distinct from an answer that
+   * never came: a lost answer may still be recovered (SPEND_ALL_AGAIN at a
+   * later tap); a card that answers its own SIGN with a signature for
+   * something else is broken, or is not the card that holds the key (an
+   * emulator replaying pieces read off a real card through GET_PIECES and
+   * GET_DLEQ, which need no PIN), and has nothing to recover.
+   */
+  let refusedSignature = false;
   try {
     signature = toHex(await spendAllSign(transceive));
   } catch (error) {
@@ -217,6 +236,7 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
   if (signature && !verifyCardSignature(signature, message, cardPubkey)) {
     // A signature that does not sign this payment is no witness. The card
     // has burned (it signs only in the commit): ask for it again below.
+    refusedSignature = true;
     signature = null;
   }
   if (!signature) {
@@ -228,7 +248,7 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
       signature = null;
     }
   }
-  const entry = await recordPayment(
+  let entry = await recordPayment(
     args,
     outputs,
     cardChangeIndex,
@@ -236,6 +256,20 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
     signature ?? undefined,
     now,
   );
+  if (!signature && refusedSignature) {
+    // Not `needs-card`: there is no lost answer to recover, only a card that
+    // will not sign this payment. Kept for a human, never drained (it has no
+    // witness) and never offered to SPEND_ALL_AGAIN again.
+    const reason = "the card's signature does not verify against the payment";
+    try {
+      entry = (await markFailed(entry.id, reason, now)) ?? entry;
+    } catch (error) {
+      console.warn(
+        '[charge] a payment with a signature that does not verify could not be marked failed',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   return {entry, signed: signature ? signedSwap(signature) : null};
 }
 

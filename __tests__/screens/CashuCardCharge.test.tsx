@@ -13,7 +13,10 @@ import userSlice from '../../src/store/slices/userSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import {PhaseError} from '../../src/services/phaseError';
-import {UNCONFIRMED_BODY} from '../../src/components/cashu/charge/money';
+import {
+  REFUSED_BODY,
+  UNCONFIRMED_BODY,
+} from '../../src/components/cashu/charge/money';
 import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
 
 const mockWithCardSession = jest.fn();
@@ -980,6 +983,48 @@ describe('CashuCardCharge', () => {
       for (const paidTitle of ['Paid', 'Paid — change not on card']) {
         expect(utils.queryByText(paidTitle, all)).toBeNull();
       }
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('the mint refuses the swap after the card burned: "Not paid — the mint refused it", Done only, not recorded as a sale (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          onPhase('settling payment and minting change');
+          throw new PhaseError(
+            'settling payment — the mint refused it',
+            new Error('proofs could not be verified'),
+            {refused: true},
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: PLAN});
+      await act(async () => {});
+      const {getByTestId, getByText, queryByText} = utils;
+      expect(getByTestId('error-title').props.children).toBe(
+        'Not paid — the mint refused it',
+      );
+      expect(getByTestId('error-body').props.children).toBe(REFUSED_BODY);
+      // The card has burned: Done is the one way out, never a re-charge.
+      expect(queryByText('Tap card again', all)).toBeNull();
+      expect(queryByText('Cancel', visible)).toBeNull();
+      expect(getByText('Done', visible)).toBeTruthy();
+      // Not a sale: nothing goes into the history.
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
       await act(async () => {
         jest.advanceTimersByTime(5000);
       });

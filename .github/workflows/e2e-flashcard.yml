@@ -22,6 +22,11 @@ on:
       - 'src/services/cashu*'
       - 'src/services/cardBridge.ts'
       - 'src/services/blockHeader.ts'
+      - 'src/services/phaseError.ts'
+      - 'src/types/env.d.ts'
+      - 'babel.config.js'
+      - 'ios/flash_pos/Info.plist'
+      - '__tests__/integration/**'
       - 'src/hooks/use*Card*'
       - 'src/hooks/useFlashcard*'
       - 'src/screens/CashuCard*'
@@ -144,6 +149,10 @@ jobs:
           MINT_DATABASE=data/mint
           MINT_BACKEND_BOLT11_SAT=FakeWallet
           MINT_INPUT_FEE_PPK=0
+          # A throwaway local fixture: the integration suite and the flows
+          # make more requests a minute than the default per-IP limit (60)
+          # allows, and every one of them comes from 127.0.0.1.
+          MINT_RATE_LIMIT=FALSE
           FAKEWALLET_BRR=TRUE
           FAKEWALLET_DELAY_INCOMING_PAYMENT=0
           FAKEWALLET_DELAY_OUTGOING_PAYMENT=0
@@ -155,13 +164,11 @@ jobs:
           done
           curl -sf "$MINT_URL/v1/keysets"; echo
 
-      # ---- the app: a Debug build with its JS bundle embedded ----------------
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
-          bundler-cache: true
-
+      # ---- the card layer against the real applet and mint (jest) ----------
+      # The one test that proves a real SIG_ALL swap against the merged
+      # applet: the production readAndPlan → executeCharge path on cardsim,
+      # swapped at the Nutshell above. Before the iOS build, so a protocol
+      # break fails in minutes rather than after the build.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -178,6 +185,24 @@ jobs:
           # unroutable .invalid host), then fails if any flashapp.me host
           # but TEST is left on any key.
           scripts/e2e-flashcard/point-env-at-test.sh .env "$MINT_URL"
+
+      - name: Run the card layer against cardsim and the mint
+        run: |
+          # The path before --selectProjects: that flag takes every word
+          # after it as a project name.
+          CARD_E2E_CARDSIM="$CARDSIM_URL" CARD_E2E_MINT="$MINT_URL" \
+            yarn jest __tests__/integration/cardsimMint.test.ts \
+            --selectProjects ios --ci --runInBand
+          # The flows start from a clean card.
+          curl -sf -X POST -H 'content-type: application/json' -d '{}' \
+            "$CARDSIM_URL/reset" > /dev/null
+
+      # ---- the app: a Debug build with its JS bundle embedded ----------------
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
 
       - name: Install CocoaPods
         run: |
