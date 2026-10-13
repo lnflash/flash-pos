@@ -30,13 +30,19 @@ import {hexToBytes, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
 import {nowMs, recordApdu} from './apduTiming';
 
 /**
- * The 2.0 package AID: "CASHUCARD" after the proprietary RID byte F0. SELECT
- * does prefix matching, so this also finds the applet.
+ * The 2.0 package AID: "CASHUCARD" after the proprietary RID byte F0. Only a
+ * fallback for SELECT: on a card provisioned as documented (the opener
+ * `F0 CASHUCARD 4D` installed first, then the applet, then the tag) a SELECT
+ * by this prefix reaches the OPENER, which answers 9000 with no version body
+ * and 6D00 to anything after (ENG-681).
  */
 export const PACKAGE_AID = [
   0xf0, 0x43, 0x41, 0x53, 0x48, 0x55, 0x43, 0x41, 0x52, 0x44,
 ];
-/** The applet's instance AID, for a reader that declines a partial name. */
+/**
+ * The applet's instance AID, `F0 CASHUCARD 01`: what readers SELECT first.
+ * Foxy's wallet selects only this one.
+ */
 export const APPLET_AID = [...PACKAGE_AID, 0x01];
 
 /**
@@ -487,27 +493,34 @@ const isNotFound = (error: unknown): boolean =>
   error instanceof CardError && error.sw === SW_APPLET_NOT_FOUND;
 
 /**
- * SELECT the 2.0 applet. Tries the package AID first (prefix match, what the
- * reference driver does) and falls back to the full applet AID for cards that
- * do not support partial selection.
+ * SELECT the 2.0 applet. Tries the full applet AID first (exact match, what
+ * Foxy's wallet sends) and the package AID only as a fallback for a card that
+ * answers the full AID `6A82`.
  *
  * Resolves to the 2-byte applet version, `02 xx`.
  *
  * The contract is cashu-javacard's (`tools/cardsim/README.md`, "Old cards"):
  * any SELECT answer that is not `02xx 9000` is "This card needs an update".
- * So, on a 2.0 AID:
+ * So, on the full applet AID:
  *
  *   - `9000` with a body that is not exactly `02 xx` (empty, one byte, a
  *     major of 1 or 3) throws `CardNeedsUpdateError`;
  *   - any status word but `9000` or `6A82` (jCardSim answers an old card
  *     `6E00` or `6999`) throws `CardNeedsUpdateError`;
- *   - `6A82` tries the next AID.
+ *   - `6A82` tries the package AID.
  *
- * Only `6A82` on both 2.0 AIDs goes on to the old AIDs (0.x and Foxy 1.x,
- * spec/APDU.md "SELECT APPLICATION"): if one answers, the card needs an
- * update and nothing more is sent. If none does, the original `6A82` stands
- * — not an eCash card (a BoltCard, a bank card), which `isAppletNotFound`
- * recognises and the LNURLw fallback reads.
+ * The package AID is a prefix, and a prefix SELECT finds whichever instance
+ * the card lists first. On a real J3R180 provisioned as documented that is
+ * the opener (`F0 CASHUCARD 4D`), which answers `9000` with no body (ENG-681).
+ * So a `9000` from the package AID counts only when its body is exactly
+ * `02 xx`; any other body is not the applet and falls through, like `6A82`.
+ * Any other status word from it still throws `CardNeedsUpdateError`.
+ *
+ * Only when neither 2.0 AID reached the applet does this go on to the old
+ * AIDs (0.x and Foxy 1.x, spec/APDU.md "SELECT APPLICATION"): if one
+ * answers, the card needs an update and nothing more is sent. If none does,
+ * the original `6A82` stands — not an eCash card (a BoltCard, a bank card),
+ * which `isAppletNotFound` recognises and the LNURLw fallback reads.
  *
  * A transport failure (the card left the field mid-SELECT) surfaces as
  * itself: a card that moved is not a card running the wrong software.
@@ -519,7 +532,7 @@ const isNotFound = (error: unknown): boolean =>
  */
 export async function selectApplet(transceive: Transceiver): Promise<number[]> {
   let notFound: unknown;
-  for (const aid of [PACKAGE_AID, APPLET_AID]) {
+  for (const aid of [APPLET_AID, PACKAGE_AID]) {
     let version: number[];
     try {
       version = await selectAid(transceive, aid);
@@ -533,12 +546,16 @@ export async function selectApplet(transceive: Transceiver): Promise<number[]> {
       }
       throw error;
     }
-    if (version.length !== 2 || version[0] !== PROTOCOL_MAJOR) {
-      throw new CardNeedsUpdateError(
-        `SELECT answered version ${toHex(version) || '(none)'}`,
-      );
+    if (version.length === 2 && version[0] === PROTOCOL_MAJOR) {
+      return version;
     }
-    return version;
+    if (aid === PACKAGE_AID) {
+      // The prefix reached another instance (the opener), not the applet.
+      continue;
+    }
+    throw new CardNeedsUpdateError(
+      `SELECT answered version ${toHex(version) || '(none)'}`,
+    );
   }
   for (const aid of LEGACY_AIDS) {
     let answered = false;
