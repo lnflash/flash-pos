@@ -26,6 +26,7 @@ import {
 import {bytesToHex, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
 
 import {
+  APPLET_AID,
   getBalance,
   getCard,
   isPinNeededForPayment,
@@ -532,10 +533,8 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
     expect(String(failure.message)).toMatch(/card is full/);
 
     // The same card: SELECT (the tap after a payment), CLEAR_SPENT, then a 4.
-    await transceive([
-      0x00, 0xa4, 0x04, 0x00, 0x0a, 0xf0, 0x43, 0x41, 0x53, 0x48, 0x55, 0x43,
-      0x41, 0x52, 0x44, 0x00,
-    ]);
+    // By the applet's whole AID: the package AID reaches the opener (ENG-681).
+    await transceive([0x00, 0xa4, 0x04, 0x00, 0x0b, ...APPLET_AID, 0x00]);
     const cleared = await transceive([0xb0, 0x31, 0x00, 0x00, 0x01]);
     expect(cleared.slice(-2)).toEqual([0x90, 0x00]);
     const four = await mintToCard(cardKey, [4]);
