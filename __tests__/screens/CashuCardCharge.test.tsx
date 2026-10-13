@@ -911,6 +911,49 @@ describe('CashuCardCharge', () => {
       expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
     });
 
+    it('a signed payment whose swap fails ambiguously with change due: paid, change owed at the next tap, no "Tap card again" (ENG-674 blocking 2b)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onPhase('verifying PIN');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/2)');
+          onPhase('burning 8 sat (proof 2/2)');
+          onPhase('settling payment and minting change');
+          // The card already signed and burned the bill AND its own
+          // change; the swap itself never confirmed (a network failure,
+          // not a change write — nothing ever reached LOAD_PROOF).
+          throw paidFailure(
+            '[settling payment and minting change (change owed, next tap)] the request never reached the network (TypeError: Network request failed)',
+          );
+        },
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+      // No "Tap card again" was ever rendered, and nothing re-charges the
+      // card on its own (this is the exact bug ENG-674 blocking 2 fixes:
+      // before it, this failure was thrown unpaid and the screen offered a
+      // retry here).
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
     describe('once paid, every exit is Done (ENG-642)', () => {
       /** Router path: Keypad → Invoice → "Pay by Flashcard" → here, pre-read. */
       const settleViaRouter = async () => {

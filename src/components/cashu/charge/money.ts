@@ -135,16 +135,28 @@ export function parseFailure(message: string | null | undefined): Failure {
 const CHANGE_WRITE = /^writing change to card/i;
 
 /**
- * The charge died writing the change onto the card, after the mint swap
- * settled the bill: the change is recorded owed on the terminal, unless the
- * phase says otherwise. BODY COPY ONLY — whether the bill is paid is
+ * ENG-674: `executeCharge`'s swap failed ambiguously (a transport failure,
+ * a 5xx, a timeout) for a payment whose change was due and whose pieces all
+ * verified offline — `PHASE_SETTLING_CHANGE_OWED` in `cashuCharge.ts`. The
+ * card burned for the bill and its own change together; the change was
+ * never loaded (the swap itself is what failed), so it is owed exactly as
+ * an unwritten change piece is, and gets the same "next tap" promise.
+ */
+const SETTLING_CHANGE_OWED = /\(change owed, next tap\)$/i;
+
+/**
+ * The charge died writing the change onto the card, or settling a payment
+ * whose change never got that far (ENG-674), after the mint swap settled
+ * the bill: the change is recorded owed on the terminal, unless the phase
+ * says otherwise. BODY COPY ONLY — whether the bill is paid is
  * `executeCharge`'s word (`PhaseError.paid`, `isPaidFailure`), never this
  * wording match: a paid charge can fail on a phase that is not a change
  * write (the payment bookkeeping, say), and the screen must end it as paid
  * all the same (ENG-642).
  */
 export function failedAfterSwap(failure: Failure): boolean {
-  return CHANGE_WRITE.test(failure.phase ?? '');
+  const phase = failure.phase ?? '';
+  return CHANGE_WRITE.test(phase) || SETTLING_CHANGE_OWED.test(phase);
 }
 
 export interface FailureContext {

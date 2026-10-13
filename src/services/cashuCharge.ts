@@ -54,8 +54,10 @@ import {
   expandKeysetId,
   finishCardChange,
   keysetFor,
+  mapSwapError,
   mintReachable,
   prepareChargeOutputs,
+  refreshKeysets,
   swapSigned,
   verifyPieceDleq,
   type CachedKeyset,
@@ -67,12 +69,14 @@ import {
   allAttempted,
   isCardChange,
   markEntriesSettled,
+  markFailed,
   markOwedChangeAttemptFailed,
   markOwedChangeOpened,
   markOwedChangeSending,
   markOwedChangeWritten,
   outstandingChangeForCard,
   owedCardChangeId,
+  PermanentSettlementError,
   recordOwedCardChange,
   type OwedChangeEntry,
   type SettlementEntry,
@@ -99,6 +103,15 @@ export const DAILY_LIMIT_REACHED =
 /** The copy for a card whose pieces cannot be checked offline, with the mint out of reach. */
 export const ONLINE_ONLY =
   'This card can only be charged while this terminal is online.';
+
+/**
+ * The copy for a bill whose change is due, with the mint out of reach
+ * (ENG-674 blocking 2a): SIG_ALL binds the change keyset and fee into the
+ * outputs for good, so the mint must confirm them before the card signs —
+ * never after. Refused before anything burns.
+ */
+export const CHANGE_NEEDS_MINT =
+  "This bill needs change, and this terminal needs to reach the mint first. Try again once it's back online.";
 
 /**
  * Rank the ways to cover `amountSat` from the card's unspent slots, cheapest
@@ -385,6 +398,29 @@ export const PHASE_WRITING_CHANGE = 'writing change to card';
 
 /** The swap's phase as `executeCharge` emits it; `phaseToStation` keys on it. */
 export const PHASE_SETTLING = 'settling payment and minting change';
+
+/**
+ * ENG-674 (blocking 1): the swap failed in a way that may or may not have
+ * reached the mint, for a payment whose pieces could not all be checked
+ * offline (no DLEQ kept, or one that did not verify) — `requiresOnline`.
+ * The card has already signed and burned: a retry would burn it again for
+ * the same bill, so `PhaseError.paid` is still set (ENG-642's rule — once
+ * burned, never recharge). The phase is kept distinct from `PHASE_SETTLING`
+ * so nothing claims the swap confirmed when the mint never answered it.
+ */
+export const PHASE_SETTLING_UNCONFIRMED =
+  'settling payment — the mint has not confirmed it';
+
+/**
+ * ENG-674 (blocking 2b): the swap failed in a way that may or may not have
+ * reached the mint (a transport failure, a 5xx, a timeout), for a payment
+ * whose pieces all verified offline and whose change is due. The card has
+ * burned and signed for the bill and its own change together: the payment
+ * is paid and stays queued for the drain, same as an exact bill's deferred
+ * swap, and the change — still owed, never loaded — goes onto the card at
+ * its next tap.
+ */
+export const PHASE_SETTLING_CHANGE_OWED = `${PHASE_SETTLING} (change owed, next tap)`;
 
 /**
  * The phase a change-write failure is reported under when the owed-change
@@ -1036,8 +1072,26 @@ export async function executeCharge({
   const pieces = plan.slots.map(slot => unspent.find(p => p.slot === slot)!);
   const changeSat = plan.changeSat;
   const prepared = await step(PHASE_PREPARING, async () => {
-    if (requiresOnline && !(await mintReachable(mintUrl))) {
+    // Whenever this charge needs the mint at all — its pieces could not all
+    // be checked offline, or it is about to make the card's own change —
+    // ask once, up front, and refresh what is cached from the answer
+    // (ENG-674 should-fix: SIG_ALL binds the change keyset's `active` flag
+    // and fee into the outputs for good, so a stale cache must never decide
+    // them). A charge that needs neither never touches the network, exactly
+    // as before.
+    const needsMint = requiresOnline || changeSat > 0;
+    const online = needsMint && (await mintReachable(mintUrl));
+    if (requiresOnline && !online) {
       throw new Error(ONLINE_ONLY);
+    }
+    if (changeSat > 0 && !online) {
+      // The card is about to sign for change the mint has not been asked
+      // about since whatever this terminal last cached — never (ENG-674
+      // blocking 2a). Refused here, before SPEND_ALL_BEGIN: nothing burns.
+      throw new Error(CHANGE_NEEDS_MINT);
+    }
+    if (online) {
+      await refreshKeysets(mintUrl);
     }
     const keysets = await plannedKeysets(mintUrl, pieces);
     const changeKeyset = keysets[0];
@@ -1128,23 +1182,73 @@ export async function executeCharge({
   // when nothing must be written back onto the card this session, the
   // payment holds in the queue for the next online auto-run.
   let swapped: SwapSignedResult | null = null;
-  try {
-    if (!signed) {
-      throw new Error(
-        "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
+  if (!signed) {
+    // The card burned the payment but its signature was lost: recorded
+    // `needs-card`, recovered by SPEND_ALL_AGAIN at this card's next tap
+    // (before a new payment begins). No swap was attempted, so there is
+    // nothing to classify — the card has already burned, so change due
+    // from THIS payment stays owed until the signature is recovered and the
+    // drain can swap it in; a retry would burn the card again for the same
+    // bill.
+    if (changeSat > 0) {
+      throw new PhaseError(
+        PHASE_SETTLING_CHANGE_OWED,
+        new Error(
+          "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
+        ),
+        {paid: true},
       );
     }
-    swapped = await step(PHASE_SETTLING, () => swapSigned(mintUrl, signed));
-  } catch (error) {
-    if (changeSat > 0) {
-      throw error instanceof PhaseError
-        ? error
-        : new PhaseError(PHASE_SETTLING, error);
+    // Exact bill: nothing owed back onto the card either way — the
+    // needs-card entry recovers on its own at a later tap.
+  } else {
+    let settleFailure: PhaseError | null = null;
+    try {
+      swapped = await step(PHASE_SETTLING, () => swapSigned(mintUrl, signed));
+    } catch (error) {
+      // `step` always wraps a swap failure as a `PhaseError(PHASE_SETTLING,
+      // rawError)` (see `makeStep`); unwrap it so the raw cashu-ts/network
+      // error reaches the classifier.
+      settleFailure = error as PhaseError;
     }
-    // Exact bill: no card write is pending, so a failed swap costs the
-    // customer nothing — the payment stays 'pending' in the queue and the
-    // drain settles (and pays out) on its next run.
-    swapped = null;
+    if (settleFailure) {
+      // Classify the swap error (ENG-674 blocking 1 & 2): a definitive mint
+      // rejection or any HTTP 4xx is never deferred, however this bill's
+      // pieces were planned — the card burned for a payment the mint has
+      // now refused, and only a human can reconcile that.
+      const mapped = mapSwapError(settleFailure.cause, entry);
+      if (mapped instanceof PermanentSettlementError) {
+        await markFailed(entry.id, mapped.message, now).catch(() => {});
+        throw new PhaseError(PHASE_SETTLING, mapped);
+      }
+      // Ambiguous: a transport failure (provably unsent), a 5xx, a timeout
+      // — the mint may or may not hold the swap. The card has already
+      // signed and burned either way, so a retry is never safe from here
+      // on (ENG-642); `paid` stays true through every branch below.
+      if (requiresOnline) {
+        // This bill's pieces could not all be checked offline: the swap
+        // was the only online confirmation it was ever going to get, and
+        // it did not land. Neither "Paid" nor "try again" is honest —
+        // settling, and non-retryable.
+        throw new PhaseError(PHASE_SETTLING_UNCONFIRMED, mapped, {
+          paid: true,
+        });
+      }
+      if (changeSat > 0) {
+        // Every planned piece verified offline: the proofs are good, the
+        // card has burned and signed for the bill and its own change
+        // together. The payment is paid and stays queued for the drain;
+        // the change is still owed and goes on the card at its next tap.
+        throw new PhaseError(PHASE_SETTLING_CHANGE_OWED, mapped, {
+          paid: true,
+        });
+      }
+      // Exact bill, offline-verified: no card write is pending, so the
+      // failed swap costs the customer nothing — the payment stays
+      // 'pending' in the queue and the drain settles (and pays out) on its
+      // next run.
+      swapped = null;
+    }
   }
 
   // THE POINT OF NO RETURN. The card has signed and burned and the swap has

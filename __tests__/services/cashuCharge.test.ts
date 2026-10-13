@@ -23,12 +23,15 @@ import {
 import {
   __resetWalletCache,
   buildCardSigAllSecret,
+  cachedKeysets,
   listSettledProofs,
   saveKeysets,
 } from '../../src/services/cashuMint';
 import {
+  CHANGE_NEEDS_MINT,
   DAILY_LIMIT_REACHED,
   ONLINE_ONLY,
+  PHASE_SETTLING_UNCONFIRMED,
   allowanceCovers,
   chargeCard,
   executeCharge,
@@ -184,6 +187,12 @@ beforeEach(async () => {
   __resetWalletCache();
   await saveKeysets(MINT_URL, [testMint().cachedKeyset()]);
   await clearQueue();
+  // ENG-674: a charge whose change is due now asks `mintReachable` before
+  // the card signs, whatever `requiresOnline` says — default it to a real
+  // mint being there, same as a merchant's terminal normally is, so no test
+  // makes an unmocked call to the real MINT_URL. A test that wants the mint
+  // unreachable overrides this spy itself.
+  jest.spyOn(globalThis, 'fetch').mockResolvedValue({ok: true} as Response);
 });
 
 describe('planPurchase', () => {
@@ -689,7 +698,7 @@ describe('chargeCard', () => {
     expect(card.openings).toEqual([]);
   });
 
-  it('a failed swap with change records the payment and reports the change honestly, unpaid', async () => {
+  it('a failed swap with change records the payment PAID (ENG-674 blocking 2) and reports the change honestly, queued', async () => {
     const card = pinCard([16]);
     testMint().failAll = OFFLINE();
 
@@ -702,7 +711,14 @@ describe('chargeCard', () => {
     }).catch(e => e);
 
     expect(failure).toBeInstanceOf(PhaseError);
-    expect(failure.message).toMatch(/^\[settling payment/);
+    expect(failure.message).toMatch(
+      /^\[settling payment and minting change \(change owed, next tap\)/,
+    );
+    // The card already signed and burned, so this must never be reported
+    // unpaid: the screen's retry would burn it again for the same bill
+    // (ENG-674 blocking 2 — before the fix, this threw unpaid and the entry
+    // sat pending with nothing stopping a re-charge).
+    expect(isPaidFailure(failure)).toBe(true);
     // The swap never landed: the payment stays PENDING with its witness and
     // its exact outputs — the next online auto-run settles it, and the
     // card's change comes back from it. Nothing is lost, and the UI did not
@@ -859,6 +875,127 @@ describe('chargeCard', () => {
     expect(entries.find(e => e.id === first.burned[0].id)?.status).toBe(
       'pending',
     );
+  });
+});
+
+describe('classifying a swap failure (ENG-674)', () => {
+  it('an exact bill on pieces with forged C and no DLEQ is unpaid when the mint rejects it, and nothing is recorded as settled (blocking 1)', async () => {
+    // A home-made card: C is just another key's pubkey, not this mint's
+    // signature on the secret, and no DLEQ comes with it — the attack
+    // readAndPlan cannot catch offline (no DLEQ ⇒ requiresOnline), that a
+    // reachable mint must refuse outright rather than silently defer.
+    const forgedC = new FakeCard2().pubkey;
+    const card = new FakeCard2({
+      pin: '1234',
+      pieces: [
+        {
+          amount: 16,
+          nonce: pieceNonce(900),
+          C: forgedC,
+          keysetId: KEYSET_ID.slice(0, 16),
+        },
+      ],
+    });
+
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+      mintUrl: MINT_URL,
+    });
+    expect(preRead.requiresOnline).toBe(true);
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[settling payment and minting change\]/);
+    expect(isPaidFailure(failure)).toBe(false);
+    expect(tillProofs()).toEqual([]);
+    const entries = await listSettlements();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].status).toBe('failed');
+  });
+
+  it('an exact bill with requiresOnline and a network failure on the swap is paid but not confirmed settled, and has no retry (blocking 1)', async () => {
+    const card = pinCard([16], {withDleq: false});
+    testMint().failAll = OFFLINE();
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message.startsWith(`[${PHASE_SETTLING_UNCONFIRMED}]`)).toBe(
+      true,
+    );
+    // The card already signed and burned: a retry would burn it again for
+    // the same bill, so this reuses the existing paid/no-retry machinery
+    // (ENG-642) rather than a parallel one — but it must not read as a
+    // confirmed "Paid" success either, since the mint never answered.
+    expect(isPaidFailure(failure)).toBe(true);
+    expect(tillProofs()).toEqual([]);
+    const entries = await listSettlements();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].status).toBe('pending');
+  });
+
+  it('offline with change due: the card is never asked to sign, the charge is refused before anything burns (blocking 2a)', async () => {
+    const card = pinCard([16]);
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(OFFLINE());
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(failure.message).toBe(
+        `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+      );
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      await expect(listSettlements()).resolves.toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("a rotated keyset is refreshed before signing: a stale 'inactive' cache does not wrongly refuse the card's change (should-fix)", async () => {
+    const card = pinCard([16]);
+    // The cache says this keyset is inactive — stale. The mint (live, via
+    // the test's keyChain double) still has it active; unrefreshed, the
+    // charge would wrongly refuse to make change in a keyset the mint is
+    // still issuing.
+    await saveKeysets(MINT_URL, [
+      {...testMint().cachedKeyset(), active: false},
+    ]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.changeSat).toBe(6);
+    expect(result.changeLoaded).toBe(2);
+    const kept = await cachedKeysets(MINT_URL);
+    expect(kept.find(k => k.id === KEYSET_ID)?.active).toBe(true);
   });
 });
 
@@ -2319,7 +2456,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     expect(testMint().swaps).toHaveLength(0);
   });
 
-  it('a swap that fails with change owed is not paid: nothing reached the till', async () => {
+  it('a signed swap that fails ambiguously with change owed is PAID (ENG-674 blocking 2): nothing reached the till, the change is queued', async () => {
     const card = pinCard([16]);
     testMint().failAll = OFFLINE();
 
@@ -2331,10 +2468,20 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       now: 1000,
     }).catch(e => e);
 
+    // The card already signed and burned for this bill and its own change:
+    // a transport failure on the swap must never be reported unpaid, or the
+    // screen offers "Tap card again" and burns the card a second time for
+    // the same bill (the exact bug ENG-674 blocking 2 fixes).
     expect(failure).toBeInstanceOf(PhaseError);
-    expect(failure.message).toMatch(/^\[settling payment/);
-    expect(isPaidFailure(failure)).toBe(false);
+    expect(failure.message).toMatch(
+      /^\[settling payment and minting change \(change owed, next tap\)/,
+    );
+    expect(isPaidFailure(failure)).toBe(true);
     expect(tillProofs()).toEqual([]);
+    // Nothing settled or failed: the entry stays queued, witness and exact
+    // outputs intact, for the drain's next online run.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
   });
 });
 

@@ -816,8 +816,12 @@ export function createSettlementAdapter(): SettlementAdapter {
  * Map a cashu-ts failure onto the queue's error classes. Anything not mapped
  * is rethrown unchanged: the queue reads a plain throw as "outcome unknown",
  * which is the conservative default for everything ambiguous.
+ *
+ * Shared with `executeCharge`'s inline swap (ENG-674): a mint rejection or
+ * HTTP 4xx must never be deferred as paid there either, so both callers
+ * classify a swap failure the same way.
  */
-function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
+export function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
   if (isMintOperationError(error)) {
     if (error.code === TOKEN_ALREADY_SPENT) {
       return new ProofAlreadySpentError(
