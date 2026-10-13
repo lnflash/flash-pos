@@ -29,16 +29,28 @@ appId: com.flash.pos
     file: dismiss-open-prompt.yaml
     env:
       ANSWER: Open
-# Once more, now iOS remembers the choice and opens it with no prompt. On
-# the hosted runner the first link, through the prompt, did not set the
-# bridge: LogBox stayed on, and its toast over Start took the tap. Setting
-# the bridge twice is harmless (same config, LOAD count from zero, nothing
-# sent yet).
-- openLink: ${BRIDGE_LINK}
-- waitForAnimationToEnd:
-    timeout: 3000
-# A prompt that came late for the first link is answered here; the field
-# is tapped only once nothing covers it.
+# On a cold hosted simulator a link that went through the prompt can fail
+# to set the bridge, even twice (run 38470275973): LogBox stayed on, and its
+# toast over Start took the tap. Setting the bridge calls
+# LogBox.ignoreAllLogs(true) (cardBridge.ts), so a toast still up means the
+# bridge is not set yet: open the link again until it is gone. Setting the
+# bridge more than once is harmless (same config, LOAD count from zero,
+# nothing sent yet).
+- retry:
+    maxRetries: 3
+    commands:
+      - openLink: ${BRIDGE_LINK}
+      - waitForAnimationToEnd:
+          timeout: 3000
+      - runFlow:
+          file: dismiss-open-prompt.yaml
+          env:
+            ANSWER: Open
+      - extendedWaitUntil:
+          notVisible: 'Open debugger to view warnings'
+          timeout: 10000
+# A prompt that came late for a link is answered here; the field is tapped
+# only once nothing covers it.
 - retry:
     maxRetries: 3
     commands:
