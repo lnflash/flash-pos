@@ -9,7 +9,12 @@ import {useAppSelector} from '../store/hooks';
 import {useFlashcard} from './useFlashcard';
 
 // services
-import {isAppletNotFound} from '../services/cashuCard';
+import {refreshTipHeader} from '../services/blockHeader';
+import {
+  CARD_NEEDS_UPDATE,
+  isAppletNotFound,
+  isCardNeedsUpdate,
+} from '../services/cashuCard';
 import {readAndPlan} from '../services/cashuCharge';
 import {
   cancelCardSession,
@@ -108,6 +113,10 @@ export function useCardPaymentRouter() {
     if (!bridged) {
       NfcManager.start();
     }
+    // The card's clock: fetch the tip header now, while the customer reaches
+    // for the card, so the charge can show it without a network call in the
+    // NFC session. Never awaited, never fails the tap.
+    refreshTipHeader().catch(() => null);
     setNfcBusy(true);
     setIsScanning(true);
 
@@ -147,6 +156,12 @@ export function useCardPaymentRouter() {
           navigation.navigate('CashuCardCharge', {preRead});
           return true;
         } catch (readError) {
+          // A 0.x card: nothing is written to it and nothing spent from it,
+          // and no PIN or charge screen opens for it (decision 8).
+          if (isCardNeedsUpdate(readError)) {
+            Alert.alert(CARD_NEEDS_UPDATE);
+            return false;
+          }
           if (isAppletNotFound(readError)) {
             const lnurlwTag = await readLnurlwTagInSession(tag);
             if (lnurlwTag) {

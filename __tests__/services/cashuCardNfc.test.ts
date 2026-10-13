@@ -15,6 +15,7 @@ import {
   usingCardBridge,
   withCardSession,
 } from '../../src/services/cashuCardNfc';
+import {FakeCard2} from '../support/cardProtocol2';
 import {BRIDGE_TAG, setCardBridge} from '../../src/services/cardBridge';
 import {CardError, CardProtocolError} from '../../src/services/cashuCard';
 import {recordApdu} from '../../src/services/apduTiming';
@@ -270,23 +271,23 @@ describe('cancelCardSession', () => {
 
 describe('readCardOverNfc', () => {
   it('drives a full read over the mocked card', async () => {
-    mockNfc.isoDepHandler.transceive
-      .mockResolvedValueOnce([1, 0, 0x90, 0x00]) // SELECT
-      .mockResolvedValueOnce([1, 0, 32, 3, 1, 28, 0x03, 0x01, 0x90, 0x00]) // GET_INFO
-      .mockResolvedValueOnce([
-        0x02,
-        ...Array.from({length: 32}, () => 0xab),
-        0x90,
-        0x00,
-      ]) // GET_PUBKEY
-      .mockResolvedValueOnce([0, 0, 0x01, 0xf4, 0x90, 0x00]); // GET_BALANCE
+    // The 2.0 card model answers every APDU, AUTH included (a real
+    // signature by its key).
+    const card = new FakeCard2({
+      pieces: [
+        {amount: 256, nonce: '11'.repeat(32), C: `02${'ab'.repeat(32)}`},
+        {amount: 244, nonce: '22'.repeat(32), C: `02${'ab'.repeat(32)}`},
+      ],
+    });
+    mockNfc.isoDepHandler.transceive.mockImplementation(card.transceive);
 
     const summary = await readCardOverNfc();
 
-    expect(summary.appletVersion).toBe('1.0');
-    expect(summary.info.unspent).toBe(3);
+    expect(summary.appletVersion).toBe('2.0');
+    expect(summary.info.unspent).toBe(2);
     expect(summary.balance).toBe(500);
-    expect(summary.pubkey.startsWith('02')).toBe(true);
+    expect(summary.pubkey).toBe(card.pubkey);
+    expect(card.insSent).toEqual([0xa4, 0x01, 0x10, 0x15, 0x11]);
     expect(mockNfc.cancelTechnologyRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -648,33 +649,32 @@ describe('openCardSession (ENG-634)', () => {
     });
 
     it('runs withCardSession over the bridge: a full read with no NFC call at all', async () => {
-      fetchMock
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({hex: '01009000'}),
-        }) // SELECT
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({hex: '01002003011C03019000'}),
-        }) // GET_INFO
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({hex: `02${'AB'.repeat(32)}9000`}),
-        }) // GET_PUBKEY
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({hex: '000001F49000'}),
-        }); // GET_BALANCE
+      // The bridge forwards each APDU to the 2.0 card model, as cardsim does.
+      const card = new FakeCard2({
+        pieces: [
+          {amount: 500, nonce: '11'.repeat(32), C: `02${'ab'.repeat(32)}`},
+        ],
+      });
+      fetchMock.mockImplementation(
+        async (_url: string, init: {body: string}) => {
+          const {hex} = JSON.parse(init.body) as {hex: string};
+          const apdu = (hex.match(/../g) ?? []).map(h => parseInt(h, 16));
+          const answer = await card.transceive(apdu);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              hex: answer.map(b => b.toString(16).padStart(2, '0')).join(''),
+            }),
+          };
+        },
+      );
 
       const summary = await readCardOverNfc();
 
       expect(summary.balance).toBe(500);
-      expect(summary.pubkey).toBe(`02${'ab'.repeat(32)}`);
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(summary.pubkey).toBe(card.pubkey);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
       expect(mockNfc.requestTechnology).not.toHaveBeenCalled();
       expect(mockNfc.cancelTechnologyRequest).not.toHaveBeenCalled();
     });

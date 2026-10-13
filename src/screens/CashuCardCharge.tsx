@@ -16,6 +16,12 @@ import {
   readAndPlan,
   type PurchasePlan,
 } from '../services/cashuCharge';
+import {
+  CARD_NEEDS_UPDATE,
+  isCardNeedsUpdate,
+  isPinNeededForPayment,
+} from '../services/cashuCard';
+import {refreshTipHeader} from '../services/blockHeader';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
 import {isPaidFailure} from '../services/phaseError';
 
@@ -67,6 +73,9 @@ type Planned = {
   pinRequired: boolean;
   /** Change from an earlier charge, written onto the card before the burn. */
   owedChange: unknown[];
+  pinSet?: boolean;
+  refundKey?: string | null;
+  requiresOnline?: boolean;
 };
 
 type PreRead = NonNullable<NonNullable<Props['route']['params']>['preRead']>;
@@ -79,6 +88,9 @@ function planFromPreRead(preRead: PreRead | undefined): Planned | null {
         cardPubkey: preRead.cardPubkey,
         pinRequired: preRead.pinRequired,
         owedChange: preRead.owedChange ?? [],
+        pinSet: preRead.pinSet,
+        refundKey: preRead.refundKey,
+        requiresOnline: preRead.requiresOnline,
       }
     : null;
 }
@@ -169,6 +181,10 @@ const CashuCardCharge = ({navigation, route}: Props) => {
 
   useEffect(() => {
     isCardReadingSupported().then(setSupported);
+    // The card's clock: the tip header is fetched while the merchant and the
+    // customer get ready, so the charge shows it without a network call in
+    // the NFC session. Never awaited; a till offline sends no header.
+    refreshTipHeader().catch(() => null);
   }, []);
 
   // A pending IsoDep request swallows every BoltCard tap app-wide (see
@@ -267,6 +283,9 @@ const CashuCardCharge = ({navigation, route}: Props) => {
               cardPubkey: planned.cardPubkey,
               pin: customerPin,
               pinRequired: planned.pinRequired,
+              pinSet: planned.pinSet,
+              refundKey: planned.refundKey,
+              requiresOnline: planned.requiresOnline,
               owedChange: planned.owedChange as never,
               mintUrl: FLASH_CASHU_MINT_URL,
               onPhase,
@@ -343,6 +362,23 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     [recordPaid, startSettlement, setHold],
   );
 
+  /**
+   * The card would not sign without its PIN (`6A94` at SPEND_ALL_SIGN: the
+   * no-PIN allowance did not cover the bill after all). Nothing was burned:
+   * the charge moves to the PIN pad, with the reason on it, and the PIN
+   * re-taps as for any PIN card. Returns false for any other failure.
+   */
+  const askForPin = useCallback((err: unknown): boolean => {
+    if (!isPinNeededForPayment(err)) {
+      return false;
+    }
+    setPlan(p => (p ? {...p, pinRequired: true} : p));
+    setFlow('pin');
+    setPin('');
+    setError(describeCardFailure(err));
+    return true;
+  }, []);
+
   // Session 1: the silent read + plan. A PIN-less card completes in this one
   // tap; a PIN card hands off to the pad and re-taps (session 2).
   const onCharge = useCallback(async () => {
@@ -377,7 +413,12 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       // again for session 2.
       setFlow('pin');
     } catch (err) {
-      if (endPaid(err)) {
+      if (endPaid(err) || askForPin(err)) {
+        return;
+      }
+      // A 0.x card: no PIN pad, no charge — it needs an update (decision 8).
+      if (isCardNeedsUpdate(err)) {
+        setError(CARD_NEEDS_UPDATE);
         return;
       }
       if (!cancelledRef.current && !isUserCancel(err)) {
@@ -387,7 +428,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
       chargingRef.current = false;
       setCharging(false);
     }
-  }, [satAmount, finish, onPhase, armStage, endPaid]);
+  }, [satAmount, finish, onPhase, armStage, endPaid, askForPin]);
 
   // The payment router read and planned the card in its own NFC session and
   // handed the result over: skip session 1 entirely. A PIN card lands straight
@@ -412,7 +453,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     armStage();
     finish(planned)
       .catch((err: unknown) => {
-        if (endPaid(err)) {
+        if (endPaid(err) || askForPin(err)) {
           return;
         }
         setFlow('tap');
@@ -424,7 +465,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         chargingRef.current = false;
         setCharging(false);
       });
-  }, [preRead, finish, navigation, armStage, endPaid]);
+  }, [preRead, finish, navigation, armStage, endPaid, askForPin]);
 
   const onPinConfirm = useCallback(async () => {
     console.log(

@@ -1,61 +1,103 @@
 /**
- * Model B charging: the merchant enters an amount, the customer taps, the
- * terminal spends exactly enough of the card and makes change from the till.
+ * Model B charging on a 2.0 card: the merchant enters an amount, the customer
+ * taps, the card pays with ONE signature and makes its own change.
  *
- * Why the till and not the mint: a Cashu proof is atomic — a 16-sat proof
- * cannot pay 10 sat. Change is new mint-signed proofs, and the mint only
- * signs over the network. So change comes from the terminal's own float
- * (small-denomination proofs already held in the settled store), which the
- * auto-pipeline keeps stocked while ONLINE. That makes the entire purchase
- * work OFFLINE: PIN verify, burn, change — all on-card plus local state.
+ * Protocol 2.0 (NUT-11 SIG_ALL) signs the swap's OUTPUTS with its inputs, so
+ * everything the swap will produce exists before the card signs: the
+ * merchant's outputs are blinded here (`prepareChargeOutputs`) and the
+ * customer's change is made by the card itself (SPEND_ALL_CHANGE — locked to
+ * its own key, its opening kept on the card). The swap then settles the
+ * payment and the mint's signatures on the change are finished from the
+ * card's openings (GET_CHANGE) and loaded back (LOAD_PROOF with the mint's
+ * DLEQ).
  *
- * Ordering guarantees (same family as cashuSpend):
+ * Ordering guarantees:
  *   - the PIN gate runs before anything: verify in-session first, so a wrong
- *     PIN never burns a slot;
- *   - the burn plan is computed BEFORE any burn — a plan whose change the
- *     till cannot cover is refused up front rather than stranding the
- *     customer mid-transaction;
- *   - change is staged from the till (pending record) before the LOADs, and
-     committed only after every LOAD succeeds — a failed load leaves the
- *     till intact and the error surfaces.
+ *     PIN never burns a piece. A card whose no-PIN allowance covers the bill
+ *     is not asked for its PIN (decision 11); if the card disagrees at SIGN
+ *     (`6A94`) nothing is burned and the PIN is asked for;
+ *   - the plan is computed BEFORE anything burns — a plan whose change the
+ *     card has no room for, or that is over the card's daily limit, is
+ *     refused up front rather than stranding the customer mid-transaction;
+ *   - the change the mint signed is recorded owed before the first LOAD, and
+ *     a failure after the swap is PAID (ENG-642): the screen never runs the
+ *     charge again for the same bill.
  */
+import {blindMessage} from '@cashu/cashu-ts';
+import {utf8ToBytes} from '@noble/hashes/utils';
+
+import {cachedTipHeader} from './blockHeader';
 import {
+  CardNeedsUpdateError,
   getBalance,
+  getCard,
+  getChange,
+  getDleqs,
   getInfo,
-  getProof,
-  getSlotStatuses,
+  getPieces,
   getPubkey,
+  isAlreadyOnCard,
   loadProof,
-  resignWitness,
   selectApplet,
   verifyCardPin,
   toHex,
+  type CardInfo,
   type CardProofSlot,
-  type SlotStatus,
+  type CardRecord,
+  type ChangeOpening,
   type Transceiver,
 } from './cashuCard';
-import {appendSettledProofsTill, mintChargeChange} from './cashuMint';
-import {burnPlannedSlot} from './cashuSpend';
+import {
+  appendSettledProofsTill,
+  buildCardSigAllSecret,
+  cachedKeysets,
+  expandKeysetId,
+  finishCardChange,
+  keysetFor,
+  mintReachable,
+  prepareChargeOutputs,
+  swapSigned,
+  verifyPieceDleq,
+  type CachedKeyset,
+  type SwapSignedResult,
+} from './cashuMint';
+import {recoverNeedsCard, spendAll} from './cashuSpend';
 import {PhaseError} from './phaseError';
 import {
-  attachRecoveredWitness,
-  listSettlements,
+  isCardChange,
   markEntriesSettled,
   markOwedChangeAttemptFailed,
+  markOwedChangeOpened,
   markOwedChangeSending,
   markOwedChangeWritten,
-  nonceFromSecret,
   outstandingChangeForCard,
-  owedChangeId,
-  recordOwedChange,
+  owedCardChangeId,
+  recordOwedCardChange,
   type OwedChangeEntry,
   type SettlementEntry,
+  type SettlementInput,
 } from './cashuSettlement';
 import {pow2PieceCount} from '../utils/denominations';
+
+import {FLASH_CASHU_MINT_URL} from '@env';
 
 export {PhaseError, isPaidFailure} from './phaseError';
 
 export const DEFAULT_UNIT = 'sat';
+
+/** Change openings a 2.0 card keeps: a payment's change is at most this many pieces. */
+export const MAX_CHANGE_OPENINGS = 8;
+
+/** One day of the card's clock, seconds. */
+const DAY_SECONDS = 86400;
+
+/** The copy for a bill over the card's daily limit (decision 10: final wording reviewed in the PR). */
+export const DAILY_LIMIT_REACHED =
+  "This card has reached today's spending limit.";
+
+/** The copy for a card whose pieces cannot be checked offline, with the mint out of reach. */
+export const ONLINE_ONLY =
+  'This card can only be charged while this terminal is online.';
 
 /**
  * Rank the ways to cover `amountSat` from the card's unspent slots, cheapest
@@ -66,7 +108,7 @@ export const DEFAULT_UNIT = 'sat';
  * that may hold pocket change (found in the field).
  *
  * Candidates are deduplicated by slot-set and sorted by change; the caller
- * walks them until the till can back one.
+ * walks them until one fits the card (`selectFittingPlan`).
  */
 export interface PurchasePlan {
   slots: number[];
@@ -75,12 +117,43 @@ export interface PurchasePlan {
 }
 
 export function planPurchase(
-  unspent: CardProofSlot[],
+  unspent: (Pick<CardProofSlot, 'slot' | 'amount'> & {date?: number})[],
   amountSat: number,
 ): PurchasePlan[] {
   if (amountSat <= 0) {
     return [];
   }
+  // One payment's pieces share one date (SPEND_ALL_BEGIN refuses a mix with
+  // 6A80: pieces of different dates have different lock conditions, and a
+  // mint takes no one signature for those). Plan each date apart.
+  const dates = new Set(unspent.map(p => p.date ?? 0));
+  if (dates.size > 1) {
+    return mergePlans(
+      [...dates].map(date =>
+        planOneDate(
+          unspent.filter(p => (p.date ?? 0) === date),
+          amountSat,
+        ),
+      ),
+    );
+  }
+  return planOneDate(unspent, amountSat);
+}
+
+/** Every date's candidates in one ranking, as `planOneDate` ranks one. */
+function mergePlans(groups: PurchasePlan[][]): PurchasePlan[] {
+  return groups
+    .flat()
+    .sort(
+      (a, b) => a.changeSat - b.changeSat || a.slots.length - b.slots.length,
+    )
+    .slice(0, 8);
+}
+
+function planOneDate(
+  unspent: Pick<CardProofSlot, 'slot' | 'amount'>[],
+  amountSat: number,
+): PurchasePlan[] {
   const total = unspent.reduce((t, p) => t + p.amount, 0);
   if (total < amountSat) {
     return [];
@@ -153,10 +226,10 @@ export function planPurchase(
 
 /**
  * The first plan (in `planPurchase`'s order, cheapest change first) whose
- * change fits the card's free slots: the mint mints change in power-of-two
- * pieces and the card takes one slot per piece, so a plan whose change needs
- * more slots than the card has free would burn and then strand the change.
- * An exact plan (`changeSat` 0) always fits. `null` when none does.
+ * change fits the card's free slots: the card makes its change in
+ * power-of-two pieces and takes one slot per piece, so a plan whose change
+ * needs more slots than the card has free would burn and then strand the
+ * change. An exact plan (`changeSat` 0) always fits. `null` when none does.
  */
 export function selectFittingPlan(
   plans: PurchasePlan[],
@@ -165,89 +238,139 @@ export function selectFittingPlan(
   return plans.find(p => pow2PieceCount(p.changeSat) <= freeSlots) ?? null;
 }
 
+/** The blinded message a change opening makes, rebuilt as the card made it. */
+function openingB_(
+  opening: ChangeOpening,
+  cardPubkey: string,
+  refundKey: string | null,
+): {B_: string; secret: string} | null {
+  if (opening.date && !refundKey) {
+    return null;
+  }
+  const secret = buildCardSigAllSecret(
+    opening.nonce,
+    cardPubkey,
+    opening.date,
+    refundKey,
+  );
+  const {B_} = blindMessage(utf8ToBytes(secret), BigInt(`0x${opening.r}`));
+  return {B_: B_.toHex(true), secret};
+}
+
+/** An owed 2.0 entry the card's opening has been matched to: a whole piece. */
+const isOpened = (e: OwedChangeEntry): boolean =>
+  isCardChange(e) && !!e.nonce && !!e.C && !!e.r;
+
 /**
- * Settle the owed-change record against what the card actually holds.
- * Read-only on the card. Nothing owed → `[]` without an APDU. Otherwise
- * every non-empty slot (spent too — a lost LOAD answer leaves a piece on the
- * card that the record still calls owed, and a spent slot is still
- * readable) is read and any owed piece whose nonce is already on the card is
- * marked written; the rest come back and are what the next write sends.
- * The card does not dedup a LOAD, so this must run before any re-send.
+ * Settle the owed-change record against what the card holds. Read-only on
+ * the card. Nothing owed → `[]` without an APDU.
  *
- * `known` is what the caller has already pulled off the card this session
- * (`readAndPlan` reads every unspent slot before it gets here): those slots
- * are seeded from memory and not read again — up to 32 GET_PROOFs of ~80
- * bytes each, hundreds of ms of extra hold on CoreNFC for data already in
- * hand. Only the spent slots and any non-empty slot not in `known` cost an
- * APDU.
+ * Owed change on a 2.0 card is the card's own change (`SPEND_ALL_CHANGE`):
+ * the store holds the mint's half (B_, C_), the card holds the opening
+ * (nonce, r, date) until the piece is back on it — and lets the opening go
+ * only then. So, against the card's openings (`GET_CHANGE`, read here unless
+ * the caller already has them):
+ *
+ *   - an owed piece whose B_ an opening rebuilds is still owed: the opening
+ *     is copied into the record (`markOwedChangeOpened`, with the piece's C
+ *     finished from the mint's keys kept on this terminal) and it comes back;
+ *   - an owed piece no opening rebuilds is on the card: it is marked written.
+ *
+ * The card refuses a LOAD of a piece it holds (`6A94`), so a re-send can no
+ * longer put a duplicate on it; the reconcile is still what keeps a stale
+ * record from being sent at all. 0.x change (terminal-made SIG_INPUTS
+ * pieces) is never written to a 2.0 card (decision 8) and is not returned.
  */
 export async function reconcileOwedChange({
   transceive,
   cardPubkey,
-  statuses,
-  known = [],
+  refundKey = null,
+  openings,
+  mintUrl = FLASH_CASHU_MINT_URL,
   now,
   onPhase = () => {},
 }: {
   transceive: Transceiver;
   cardPubkey: string;
-  statuses: SlotStatus[];
-  known?: CardProofSlot[];
+  /** The card's refund key (GET_CARD): a dated opening's secret names it. */
+  refundKey?: string | null;
+  /** The card's openings, when the caller has just read them. */
+  openings?: ChangeOpening[];
+  mintUrl?: string;
   now: number;
   onPhase?: (phase: string) => void;
 }): Promise<OwedChangeEntry[]> {
-  const owed = await outstandingChangeForCard(cardPubkey);
+  const owed = (await outstandingChangeForCard(cardPubkey)).filter(
+    isCardChange,
+  );
   if (owed.length === 0) {
     return [];
   }
   const step = makeStep(onPhase);
-  const onCard = new Map<string, number>();
-  const seeded = new Set<number>();
-  for (const proof of known) {
-    if (statuses[proof.slot] !== 'empty') {
-      onCard.set(proof.nonce, proof.slot);
-      seeded.add(proof.slot);
-    }
-  }
-  for (let slot = 0; slot < statuses.length; slot++) {
-    if (statuses[slot] !== 'empty' && !seeded.has(slot)) {
-      const proof = await step('reading card', () =>
-        getProof(transceive, slot),
-      );
-      onCard.set(proof.nonce, slot);
+  const held =
+    openings ?? (await step('reading card', () => getChange(transceive)));
+  const byB_ = new Map<string, {opening: ChangeOpening; secret: string}>();
+  for (const opening of held) {
+    const rebuilt = openingB_(opening, cardPubkey, refundKey);
+    if (rebuilt) {
+      byB_.set(rebuilt.B_, {opening, secret: rebuilt.secret});
     }
   }
   const remaining: OwedChangeEntry[] = [];
   let markRefused = false;
+  const warnOnce = (what: string, error: unknown) => {
+    if (!markRefused) {
+      markRefused = true;
+      console.warn(
+        `[charge] ${what}; leaving the stale record for the next reconcile`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
   for (const entry of owed) {
-    const slot = onCard.get(entry.nonce);
-    if (slot === undefined) {
+    const match = byB_.get(entry.B_!.toLowerCase());
+    if (!match) {
+      // The card let the opening go: the piece is on it. Not owed, whatever
+      // the store will take right now; a stale 'owed' record is harmless,
+      // because every path that writes owed change reconciles first.
+      try {
+        await markOwedChangeWritten(entry.id, entry.slot, now);
+      } catch (error) {
+        warnOnce(
+          'owed change found on the card but its written mark was refused',
+          error,
+        );
+      }
+      continue;
+    }
+    if (isOpened(entry)) {
       remaining.push(entry);
       continue;
     }
+    const {opening, secret} = match;
+    let C: string;
     try {
-      await markOwedChangeWritten(entry.id, slot, now);
-    } catch (error) {
-      // The piece is on the card: it is NOT owed, whatever the store will
-      // take right now, so it stays out of `remaining`. A stale 'owed'
-      // record is harmless because every path that writes owed change
-      // (`readAndPlan`, `executeCharge`'s retry gate, the keypad reader)
-      // reconciles against the card first, so a stale record is never sent
-      // without a read. That invariant — not the attempt count — is what
-      // keeps a duplicate off the card: the bill's own change in
-      // `executeCharge` is LOADed with `attempts` still 0, so an unconditional
-      // reconcile is load-bearing. `writeOwedChange` and `executeCharge`
-      // tolerate the same refusal the same way. From `readAndPlan` this runs
-      // outside `step`: a throw here would refuse a charge the card can
-      // physically take, with a raw store error for a title.
-      if (!markRefused) {
-        markRefused = true;
-        console.warn(
-          '[charge] owed change found on the card but its written mark was refused; leaving the stale record for the next reconcile',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
+      const keyset = await keysetFor(mintUrl, entry.keysetId, {online: false});
+      C = finishCardChange(entry.C_!, opening.r, entry.amount, keyset.keys);
+    } catch {
+      // No keys kept for the change's keyset: still owed, not loadable from
+      // here until the terminal has seen the mint.
+      remaining.push(entry);
+      continue;
     }
+    const opened = {
+      nonce: opening.nonce,
+      secret,
+      C,
+      date: opening.date,
+      r: opening.r,
+    };
+    try {
+      await markOwedChangeOpened(entry.id, opened, now);
+    } catch (error) {
+      warnOnce('an owed piece was opened but the record was refused', error);
+    }
+    remaining.push({...entry, ...opened});
   }
   return remaining;
 }
@@ -258,6 +381,9 @@ export const owedChangePhase = (amount: number): string =>
 
 /** The change-write phase as `executeCharge` emits it; `phaseToStation` keys on it. */
 export const PHASE_WRITING_CHANGE = 'writing change to card';
+
+/** The swap's phase as `executeCharge` emits it; `phaseToStation` keys on it. */
+export const PHASE_SETTLING = 'settling payment and minting change';
 
 /**
  * The phase a change-write failure is reported under when the owed-change
@@ -320,8 +446,13 @@ export const PHASE_AFTER_SWAP = 'finishing the charge';
  * marking each written as the card answers. A piece the card refuses (a
  * `6A84` — no free slot — or a lost tag) stays owed with the attempt
  * recorded, and the error surfaces as a `PhaseError` so the caller can
- * class it. Run after the PIN verify (LOAD_PROOF is PIN-gated) and before
- * any burn, so a failure here is a clean refusal with nothing taken.
+ * class it. A `6A94` is the card saying it already holds the piece: written,
+ * never a failure. Run after the PIN verify (LOAD_PROOF needs the PIN, a
+ * card with none, or the change grant) and before any burn, so a failure
+ * here is a clean refusal with nothing taken.
+ *
+ * Only whole pieces go out: an entry the card's opening has not been matched
+ * to (`reconcileOwedChange`), and 0.x change, are left owed.
  *
  * Resolves with the pieces this call put on the card — and ONLY those. It
  * resolves short, without throwing, when the store refuses the write-ahead
@@ -340,16 +471,15 @@ export async function writeOwedChange({
   onPhase?: (phase: string) => void;
 }): Promise<OwedChangeEntry[]> {
   const written: OwedChangeEntry[] = [];
-  for (const entry of owed) {
+  for (const entry of owed.filter(isOpened)) {
     const phase = owedChangePhase(entry.amount);
     onPhase(phase);
-    // Write-ahead: the attempt is counted BEFORE the LOAD goes out. The card
-    // does not dedup a LOAD, so whatever fails after this point — the
-    // answer lost, the `written` mark refused by the keychain, the process
-    // killed — the next try sees `attempts > 0` and reads the card before
-    // sending this piece again. If the store will not take the mark,
-    // nothing is sent: this piece and the rest stay `owed` for a later tap
-    // (writing nothing is the safe side; writing a duplicate is not).
+    // Write-ahead: the attempt is counted BEFORE the LOAD goes out, so
+    // whatever fails after this point — the answer lost, the `written` mark
+    // refused by the keychain, the process killed — the next try sees
+    // `attempts > 0` and reconciles against the card before sending this
+    // piece again. If the store will not take the mark, nothing is sent:
+    // this piece and the rest stay `owed` for a later tap.
     try {
       await markOwedChangeSending(entry.id, now);
     } catch (error) {
@@ -359,30 +489,39 @@ export async function writeOwedChange({
       );
       return written;
     }
-    let slot: number;
+    let slot: number | undefined;
     try {
-      slot = await loadProof(transceive, {
-        keysetId: entry.keysetId,
-        amount: entry.amount,
-        nonce: entry.nonce,
-        C: entry.C,
-      });
+      slot = await loadProof(
+        transceive,
+        {
+          keysetId: entry.keysetId,
+          amount: entry.amount,
+          nonce: entry.nonce!,
+          C: entry.C!,
+          date: entry.date ?? 0,
+        },
+        entry.dleqE && entry.dleqS
+          ? {e: entry.dleqE, s: entry.dleqS, r: entry.r!}
+          : undefined,
+      );
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      try {
-        await markOwedChangeAttemptFailed(entry.id, reason, now);
-      } catch {
-        // The entry stays 'owed' on disk either way; the reason is
-        // bookkeeping and must not mask the card's answer.
+      if (!isAlreadyOnCard(error)) {
+        const reason = error instanceof Error ? error.message : String(error);
+        try {
+          await markOwedChangeAttemptFailed(entry.id, reason, now);
+        } catch {
+          // The entry stays 'owed' on disk either way; the reason is
+          // bookkeeping and must not mask the card's answer.
+        }
+        throw new PhaseError(phase, error);
       }
-      throw new PhaseError(phase, error);
+      slot = undefined;
     }
     try {
       await markOwedChangeWritten(entry.id, slot, now);
     } catch {
       // The piece is on the card. A stale 'owed' record is harmless: the
-      // attempt was counted ahead, so the next try reconciles and finds the
-      // nonce in its slot before it could send a duplicate.
+      // card lets the opening go, so the next reconcile marks it.
     }
     written.push(entry);
   }
@@ -392,8 +531,9 @@ export async function writeOwedChange({
 export interface ChargeArgs {
   transceive: Transceiver;
   amountSat: number;
-  /** The CUSTOMER's card PIN — required only when their card has one. The
-   *  terminal learns that from GET_INFO.pinState and prompts accordingly. */
+  /** The CUSTOMER's card PIN — required only when their card asks for it. The
+   *  terminal learns that from GET_INFO (the PIN state and the no-PIN
+   *  allowance) and prompts accordingly. */
   pin?: string;
   mintUrl: string;
   unit?: string;
@@ -405,6 +545,7 @@ export interface ChargeArgs {
 
 export interface ChargeResult {
   amountSat: number;
+  /** The payment as recorded: one entry holding every piece it burned. */
   burned: SettlementEntry[];
   changeSat: number;
   changeLoaded: number;
@@ -422,21 +563,102 @@ const makeStep =
     try {
       return await fn();
     } catch (error) {
+      // A card that needs an update is refused as itself, whatever the step:
+      // every screen short-circuits on it before any PIN or charge UI.
+      if (error instanceof CardNeedsUpdateError) {
+        throw error;
+      }
       throw new PhaseError(phase, error);
     }
   };
 
+/** The phase the payment's pre-signature commands run under (TELL_TIME … CHANGE). */
+export const PHASE_PREPARING = 'preparing the payment';
+
+/** The burn phase `phaseToStation` animates, one per piece. */
+export const burnPhase = (amount: number, index: number, total: number) =>
+  `burning ${amount} sat (proof ${index}/${total})`;
+
+/** The time in a block header (bytes 68–71, little-endian), seconds. */
+export function headerTime(header: number[] | null | undefined): number {
+  if (!header || header.length !== 80) {
+    return 0;
+  }
+  return (
+    header[68] +
+    header[69] * 0x100 +
+    header[70] * 0x10000 +
+    header[71] * 0x1000000
+  );
+}
+
+/**
+ * Whether `amountSat` leaving the card would take its day past the owner's
+ * daily limit, by what GET_INFO and GET_CARD say — refused before anything
+ * burns. The card's own word (`6A8F` at SIGN) is final; this only spares a
+ * payment the card would certainly refuse. The day begins again (and what
+ * it counted goes) when the card's clock — or the header about to be shown
+ * to it — is a day past the window's start, while the rollover budget lasts.
+ */
+export function overDailyLimit(
+  info: Pick<CardInfo, 'dailyLimit' | 'now' | 'windowStart' | 'spentToday'>,
+  record: Pick<CardRecord, 'rolls' | 'rollBudget'>,
+  amountSat: number,
+  tipTime = 0,
+): boolean {
+  if (!info.dailyLimit) {
+    return false;
+  }
+  const now = Math.max(info.now, tipTime);
+  const dayOver = now >= info.windowStart + DAY_SECONDS;
+  const rolls =
+    dayOver && (info.windowStart === 0 || record.rolls < record.rollBudget);
+  const counted = rolls ? 0 : info.spentToday;
+  return counted + amountSat > info.dailyLimit;
+}
+
+/**
+ * Whether the card's no-PIN allowance covers `amountSat` today (decision 11):
+ * then the till does not ask for the PIN. Conservative: what the allowance
+ * has already counted is taken as standing, even where the day would begin
+ * again — the card's own word at SIGN (`6A94`) asks for the PIN otherwise.
+ */
+export function allowanceCovers(
+  info: Pick<CardInfo, 'allowance' | 'noPinSpent'>,
+  amountSat: number,
+): boolean {
+  const allowance = info.allowance ?? 0;
+  if (allowance <= 0) {
+    return false;
+  }
+  return allowance - (info.noPinSpent ?? 0) >= amountSat;
+}
+
 /**
  * Session 1: read the card and rank the covers — NO PIN yet. The customer's
  * card is only on the antenna for the silent read; a PIN-required card gets
- * the pad afterwards (tap → PIN → tap, D13's session flag is satisfied by the
- * fresh verify inside session 2).
+ * the pad afterwards (tap → PIN → tap; the fresh verify inside session 2).
  */
 export interface PreReadCharge {
   plan: PurchasePlan;
   unspent: CardProofSlot[];
   cardPubkey: string;
+  /**
+   * Ask for the PIN before session 2: the card has one and its no-PIN
+   * allowance does not cover the bill.
+   */
   pinRequired: boolean;
+  /** The card has a PIN (whether or not this bill needs it). */
+  pinSet?: boolean;
+  /** The card's refund key, which a dated piece's secret names. */
+  refundKey?: string | null;
+  /**
+   * A planned piece could not be checked offline (no DLEQ kept with it, one
+   * that does not verify, or no mint keys kept on this terminal): the charge
+   * pays only once the mint has answered (`mintReachable`), so the swap
+   * checks it in the same tap.
+   */
+  requiresOnline?: boolean;
   /**
    * Change from an earlier charge this card is still owed, does not yet
    * hold, and has a free slot for AFTER the bill's own change is placed.
@@ -452,12 +674,17 @@ export interface PreReadCharge {
 export async function readAndPlan({
   transceive,
   amountSat,
+  mintUrl = FLASH_CASHU_MINT_URL,
   now = Date.now(),
+  header,
   onPhase = () => {},
 }: {
   transceive: Transceiver;
   amountSat: number;
+  mintUrl?: string;
   now?: number;
+  /** The tip header the charge will show the card; defaults to the cached tip. */
+  header?: number[] | null;
   onPhase?: (phase: string) => void;
 }): Promise<PreReadCharge> {
   const step = makeStep(onPhase);
@@ -467,21 +694,14 @@ export async function readAndPlan({
   if (info.pinState === 'locked') {
     throw new Error('card PIN is blocked — the card must be re-provisioned');
   }
-
-  const statuses = await step('reading card', () =>
-    getSlotStatuses(transceive, info.maxSlots),
-  );
-  const unspent: CardProofSlot[] = [];
-  for (let slot = 0; slot < statuses.length; slot++) {
-    if (statuses[slot] === 'unspent') {
-      unspent.push(
-        await step('reading card', () => getProof(transceive, slot)),
-      );
-    }
-  }
+  const record = await step('reading card', () => getCard(transceive));
   const cardPubkey = await step('reading card', () =>
     getPubkey(transceive).then(toHex),
   );
+  const {unspent, spent} = await step('reading card', () =>
+    getPieces(transceive),
+  );
+  const openings = await step('reading card', () => getChange(transceive));
 
   const plans = planPurchase(unspent, amountSat);
   if (plans.length === 0) {
@@ -493,20 +713,40 @@ export async function readAndPlan({
     );
   }
 
-  // Slot pre-flight, BEFORE anything burns: the change is written one slot
+  // The card's daily limit, BEFORE anything burns: a payment over it is
+  // refused by the card at SIGN with nothing burned (6A8F), but the till can
+  // see most of them coming and spare the customer the tap.
+  const tip = header === undefined ? cachedTipHeader(now) : header;
+  if (overDailyLimit(info, record, amountSat, headerTime(tip))) {
+    throw new Error(DAILY_LIMIT_REACHED);
+  }
+
+  const pinSet = info.pinState === 'set';
+  const pinRequired = pinSet && !allowanceCovers(info, amountSat);
+  // Owed change goes on only in a tap that may load: a card with no PIN, or
+  // one whose PIN is verified before the burn. A bill the allowance pays
+  // sends no PIN, so it writes nothing owed.
+  const mayLoad = !pinSet || pinRequired;
+
+  // Slot pre-flight, BEFORE anything burns: the change goes back one slot
   // per power-of-two piece, and a LOAD the card answers 6A84 (no free slot)
-  // after the swap strands mint-signed change (field-found: ENG-630). Change
-  // still owed from an earlier charge is written first, as much of it as the
-  // card has room for, and takes those slots off the top.
-  const emptySlots = statuses.filter(s => s === 'empty').length;
+  // after the swap strands mint-signed change (field-found: ENG-630). The
+  // card also keeps at most eight change openings: a payment whose change
+  // needs more than are free is refused by the card at SPEND_ALL_CHANGE.
+  // Change still owed from an earlier charge is written first, as much of it
+  // as the card has room for, and takes those slots off the top.
+  const emptySlots = info.maxSlots - unspent.length - spent.length;
+  const freeOpenings = MAX_CHANGE_OPENINGS - openings.length;
   const stillOwed = await reconcileOwedChange({
     transceive,
     cardPubkey,
-    statuses,
-    known: unspent,
+    refundKey: record.refundKey,
+    openings,
+    mintUrl,
     now,
     onPhase,
   });
+  const loadable = mayLoad ? stillOwed.filter(isOpened) : [];
   // The bill comes first. Owed change is written this tap only out of the
   // slots the bill's own change does not need; the rest stays 'owed' on
   // disk for a later tap. Owed change must never refuse a charge on its
@@ -515,29 +755,71 @@ export async function readAndPlan({
   // (an exact bill needs no slot, and the card ENG-630 came from — full,
   // with change owed — has to be able to pay again). So: try the plan with
   // the owed pieces counted first; when nothing fits, give the bill every
-  // empty slot and write only the owed pieces that still have room.
-  let owedChange = stillOwed.slice(0, emptySlots);
-  let plan = selectFittingPlan(plans, emptySlots - owedChange.length);
+  // empty slot and write only the owed pieces that still have room. An owed
+  // piece that lands lets its opening go, which the bill's change can use.
+  const room = (owedWritten: number) =>
+    Math.min(emptySlots - owedWritten, freeOpenings + owedWritten);
+  let owedChange = loadable.slice(0, emptySlots);
+  let plan = selectFittingPlan(plans, room(owedChange.length));
   if (!plan) {
-    plan = selectFittingPlan(plans, emptySlots);
+    plan = selectFittingPlan(plans, Math.min(emptySlots, freeOpenings));
     if (!plan) {
+      const first = plans[0].changeSat;
+      const pieces = pow2PieceCount(first);
       throw new Error(
-        `this card is full: ${
-          plans[0].changeSat
-        } sat of change needs ${pow2PieceCount(
-          plans[0].changeSat,
-        )} free slots and the card has ${emptySlots}`,
+        pieces > emptySlots
+          ? `this card is full: ${first} sat of change needs ${pieces} free slots and the card has ${emptySlots}`
+          : `this card is full: ${first} sat of change needs ${pieces} change openings and the card has ${freeOpenings} free`,
       );
     }
-    owedChange = stillOwed.slice(
+    owedChange = loadable.slice(
       0,
-      emptySlots - pow2PieceCount(plan.changeSat),
+      Math.max(0, emptySlots - pow2PieceCount(plan.changeSat)),
     );
   }
+
+  // NUT-12, offline: each planned piece's DLEQ, checked with the mint keys
+  // kept on this terminal. A piece that cannot be checked here (no proof
+  // kept with it, one that does not verify, no keys) is accepted only when
+  // the mint is there to swap it in the same tap.
+  const chosen = plan.slots.map(slot => unspent.find(p => p.slot === slot)!);
+  const dleqs = await step('reading card', () =>
+    getDleqs(transceive, plan!.slots),
+  );
+  const keysets = await cachedKeysets(mintUrl);
+  const requiresOnline = !chosen.every(piece => {
+    let keyset: CachedKeyset;
+    try {
+      keyset = expandKeysetId(piece.keysetId, keysets);
+    } catch {
+      return false;
+    }
+    if (piece.date && !record.refundKey) {
+      return false;
+    }
+    return verifyPieceDleq(
+      {
+        secret: buildCardSigAllSecret(
+          piece.nonce,
+          cardPubkey,
+          piece.date,
+          record.refundKey,
+        ),
+        C: piece.C,
+        amount: piece.amount,
+      },
+      dleqs.get(piece.slot),
+      keyset.keys,
+    );
+  });
+
   return {
     plan,
     cardPubkey,
-    pinRequired: info.pinState === 'set',
+    pinRequired,
+    pinSet,
+    refundKey: record.refundKey,
+    requiresOnline,
     unspent,
     owedChange,
   };
@@ -557,27 +839,23 @@ export async function chargeCard({
   now = Date.now(),
   onPhase = () => {},
 }: ChargeArgs): Promise<ChargeResult> {
-  const {plan, unspent, cardPubkey, pinRequired, owedChange} =
-    await readAndPlan({
-      transceive,
-      amountSat,
-      now,
-      onPhase,
-    });
-  if (pinRequired && !pin) {
+  const preRead = await readAndPlan({
+    transceive,
+    amountSat,
+    mintUrl,
+    now,
+    onPhase,
+  });
+  if (preRead.pinRequired && !pin) {
     throw new Error(
       'this card has a PIN — ask the customer for it before tapping',
     );
   }
   return executeCharge({
+    ...preRead,
     transceive,
     amountSat,
-    plan,
-    unspent,
-    cardPubkey,
     pin,
-    pinRequired,
-    owedChange,
     mintUrl,
     unit,
     now,
@@ -622,27 +900,55 @@ export interface ExecuteChargeArgs {
   cardPubkey: string;
   pin?: string;
   pinRequired: boolean;
+  /** The card has a PIN; defaults to `pinRequired`. */
+  pinSet?: boolean;
+  /** The card's refund key (GET_CARD), for a dated piece's secret. */
+  refundKey?: string | null;
+  /** From `readAndPlan`: pay only once the mint has answered. */
+  requiresOnline?: boolean;
   /** From `readAndPlan`: change still owed to this card, written before the burn. */
   owedChange?: OwedChangeEntry[];
   mintUrl: string;
   unit?: string;
   now?: number;
+  /** The tip header to show the card; defaults to the cached tip. */
+  header?: number[] | null;
   onPhase?: (phase: string) => void;
   /**
-   * Called once, synchronously, just before the first burn APDU goes out:
-   * from here on the card may be spent, so the charge must run to its end
-   * where the merchant can see it. The screen holds every exit (header
-   * Back, hardware Back, the stack's swipe) from this call until
+   * Called once, synchronously, just before the card is asked to sign (and
+   * so to burn): from here on the card may be spent, so the charge must run
+   * to its end where the merchant can see it. The screen holds every exit
+   * (header Back, hardware Back, the stack's swipe) from this call until
    * `executeCharge` settles (ENG-645). Not called when the charge fails
    * earlier: a failed PIN verify or owed-change write burns nothing.
    */
   onBurnStart?: () => void;
 }
 
+/** The keysets of the planned pieces, from what is kept or, failing that, the mint. */
+async function plannedKeysets(
+  mintUrl: string,
+  pieces: CardProofSlot[],
+): Promise<CachedKeyset[]> {
+  const out: CachedKeyset[] = [];
+  for (const piece of pieces) {
+    let keyset: CachedKeyset;
+    try {
+      keyset = await keysetFor(mintUrl, piece.keysetId, {online: false});
+    } catch {
+      keyset = await keysetFor(mintUrl, piece.keysetId, {online: true});
+    }
+    out.push(keyset);
+  }
+  return out;
+}
+
 /**
- * The money leg: verify the PIN if the card has one, write any change the
- * card is still owed, burn the planned slots, settle + mint change in the
- * atomic swap, record the change, write it onto the card.
+ * The money leg: verify the PIN if the card asks for one, write any change
+ * the card is still owed, recover a payment whose signature was lost, then
+ * pay — one SIG_ALL signature over the planned pieces, the merchant's
+ * outputs and the card's own change — swap at the mint, record the change,
+ * finish it from the card's openings and load it back.
  */
 export async function executeCharge({
   transceive,
@@ -652,10 +958,14 @@ export async function executeCharge({
   cardPubkey,
   pin,
   pinRequired,
+  pinSet = pinRequired,
+  refundKey = null,
+  requiresOnline = false,
   owedChange = [],
   mintUrl,
   unit = DEFAULT_UNIT,
   now = Date.now(),
+  header,
   onPhase = () => {},
   onBurnStart = () => {},
 }: ExecuteChargeArgs): Promise<ChargeResult> {
@@ -673,141 +983,193 @@ export async function executeCharge({
     }
     await step('verifying PIN', () => verifyCardPin(transceive, pin));
   }
+  const pinVerified = pinRequired;
+  // LOAD_PROOF needs the PIN verified in this tap, a card with no PIN, or
+  // the change grant of the tap after a payment.
+  const mayLoad = !pinSet || pinVerified;
 
   // Change owed from an earlier charge goes on first: the PIN is verified,
   // nothing has burned, so a slot the card refuses here is a clean refusal.
   // Gated on the STORE, not on the caller's snapshot: the PIN flow keeps
   // `owedChange` across a failed attempt and calls back in with the same
-  // args, and the card does not dedup a LOAD — a piece the first attempt
-  // already landed (marked written as the card answered) must not go on
-  // again as a duplicate proof. If the store will not read, nothing owed is
-  // written this tap and a later one reconciles.
+  // args — a piece the first attempt already landed (marked written as the
+  // card answered) is not sent again. If the store will not read, nothing
+  // owed is written this tap and a later one reconciles.
   //
   // The store alone is not enough on a retry: a LOAD whose answer was lost
-  // (the tag dropped as the card wrote the slot) leaves the piece ON the
-  // card and still `owed` on disk, with the attempt counted (it is counted
-  // BEFORE the LOAD goes out — `writeOwedChange` — so a `written` mark the
-  // keychain refused after the card answered looks the same). Re-sending
-  // it from the store's word would put a second copy of the proof on the
-  // card — a phantom balance and a mint rejection when the copy is spent.
-  // So any piece that has already been attempted is settled against the
-  // card first (`reconcileOwedChange`, the rule at its doc comment) and
+  // leaves the piece ON the card and still `owed` on disk, with the attempt
+  // counted (it is counted BEFORE the LOAD goes out). So any piece that has
+  // already been attempted, or whose opening the read did not reach, is
+  // settled against the card's openings first (`reconcileOwedChange`) and
   // only what the card does not hold goes on. A first attempt (`attempts`
-  // 0) was never sent, so it skips the read and the common path costs no
-  // APDU.
-  if (owedChange.length > 0) {
+  // 0) of a piece the read opened was never sent: it skips the read.
+  if (owedChange.length > 0 && mayLoad) {
     let toWrite = await stillOwedOf(cardPubkey, owedChange);
-    if (toWrite.some(e => e.attempts > 0)) {
-      const info = await step('reading card', () => getInfo(transceive));
-      const statuses = await step('reading card', () =>
-        getSlotStatuses(transceive, info.maxSlots),
-      );
-      const remaining = new Set(
-        (
-          await reconcileOwedChange({
-            transceive,
-            cardPubkey,
-            statuses,
-            known: unspent,
-            now,
-            onPhase,
-          })
-        ).map(e => e.id),
-      );
-      toWrite = toWrite.filter(e => remaining.has(e.id));
+    if (toWrite.some(e => e.attempts > 0 || !isOpened(e))) {
+      const remaining = await reconcileOwedChange({
+        transceive,
+        cardPubkey,
+        refundKey,
+        mintUrl,
+        now,
+        onPhase,
+      });
+      const byId = new Map(remaining.map(e => [e.id, e]));
+      toWrite = toWrite.flatMap(e => {
+        const live = byId.get(e.id);
+        return live ? [live] : [];
+      });
     }
     if (toWrite.length > 0) {
       await writeOwedChange({transceive, owed: toWrite, now, onPhase});
     }
   }
 
-  // The card is about to be mutated for this bill: the screen must hold
-  // every exit from here until this function settles (ENG-645).
-  onBurnStart();
-  const burned: SettlementEntry[] = [];
-  for (const [index, slot] of plan.slots.entries()) {
-    const proof = unspent.find(p => p.slot === slot)!;
-    // The shared burn-with-recovery: an APDU glitch mid-burn records the slot
-    // as needs-card instead of losing it (found in the field: a CoreNFC
-    // framing error burned a 16-sat slot and the value went unrecorded).
-    burned.push(
-      await step(
-        `burning ${proof.amount} sat (proof ${index + 1}/${plan.slots.length})`,
-        () =>
-          burnPlannedSlot({
-            transceive,
-            proof,
-            cardPubkey,
-            mintUrl,
-            unit,
-            now,
-          }),
-      ),
+  // A payment this card burned in an earlier tap whose signature was lost:
+  // the card's LAST signature is the only way back, and this payment is
+  // about to replace it. Best effort — never fails the charge.
+  await recoverNeedsCard({transceive, cardPubkey, now}).catch(() => []);
+
+  // Everything the swap will produce, made BEFORE the card signs (SIG_ALL
+  // binds the outputs): the inputs' secrets, the merchant's outputs. No APDU.
+  const pieces = plan.slots.map(slot => unspent.find(p => p.slot === slot)!);
+  const changeSat = plan.changeSat;
+  const prepared = await step(PHASE_PREPARING, async () => {
+    if (requiresOnline && !(await mintReachable(mintUrl))) {
+      throw new Error(ONLINE_ONLY);
+    }
+    const keysets = await plannedKeysets(mintUrl, pieces);
+    const changeKeyset = keysets[0];
+    if (changeSat > 0 && !changeKeyset.active) {
+      throw new Error(
+        `this card's eCash is from keyset ${changeKeyset.id}, which the mint no longer issues change in`,
+      );
+    }
+    const outKeyset = changeKeyset.active
+      ? changeKeyset
+      : (await cachedKeysets(mintUrl)).find(
+          k => k.active && k.unit === unit && Object.keys(k.keys).length > 0,
+        );
+    if (!outKeyset) {
+      throw new Error(
+        `the mint has no active ${unit} keyset this terminal knows`,
+      );
+    }
+    const fee = Math.ceil(
+      keysets.reduce((t, k) => t + (k.inputFeePpk ?? 0), 0) / 1000,
     );
+    const merchantSat = amountSat - fee;
+    if (merchantSat <= 0) {
+      throw new Error(
+        `the mint's fee (${fee} sat) is more than the bill (${amountSat} sat)`,
+      );
+    }
+    const inputs: SettlementInput[] = pieces.map((piece, i) => ({
+      slot: piece.slot,
+      nonce: piece.nonce,
+      secret: buildCardSigAllSecret(
+        piece.nonce,
+        cardPubkey,
+        piece.date,
+        refundKey,
+      ),
+      C: piece.C,
+      amount: piece.amount,
+      keysetId: keysets[i].id,
+    }));
+    return {
+      inputs,
+      changeKeyset,
+      merchant: prepareChargeOutputs({keysetId: outKeyset.id, merchantSat}),
+    };
+  });
+
+  // The card is about to be asked to sign — and so to burn — for this bill:
+  // the screen must hold every exit from here until this function settles
+  // (ENG-645). The burn phases are the stage's: one per piece, all burned
+  // in the one commit that releases the signature.
+  let phase = PHASE_PREPARING;
+  let spent: Awaited<ReturnType<typeof spendAll>>;
+  try {
+    spent = await spendAll({
+      transceive,
+      inputs: prepared.inputs,
+      merchant: prepared.merchant,
+      changeSat,
+      changeKeysetId: prepared.changeKeyset.id,
+      cardPubkey,
+      mintUrl,
+      unit,
+      now,
+      header: header === undefined ? cachedTipHeader(now) : header,
+      onSign: () => {
+        onBurnStart();
+        pieces.forEach((piece, i) => {
+          phase = burnPhase(piece.amount, i + 1, pieces.length);
+          onPhase(phase);
+        });
+      },
+    });
+  } catch (error) {
+    throw new PhaseError(phase, error);
   }
+  const {entry, signed} = spent;
 
   let changeLoaded = 0;
   /** Sats of change the card has answered for this session. */
   let changeLoadedSat = 0;
-  const changeSat = plan.changeSat;
-  // ONE ATOMIC SWAP is the whole online settlement: the burned proofs
-  // (witnessed) go in; the outputs come out as P2PK change for THIS card
-  // plus the merchant's take. The till never gates anything — change of
-  // any size is possible by construction while online. Exact bills
+  // ONE ATOMIC SWAP is the whole online settlement: the burned pieces go in
+  // under the card's one witness; out come the merchant's take and the
+  // card's own change, exactly as the card signed them. Exact bills
   // (changeSat = 0) settle here too — deferring them to the drain left the
-  // merchant's money queued on a silent drain failure. OFFLINE: the swap
-  // throws and, when nothing must be written back onto the card this
-  // session, the entries hold in the queue for the next online auto-run
-  // (the change write follows on the card's next tap).
-  const witnessed = burned.map(e => ({
-    id: e.keysetId,
-    keysetId: e.keysetId,
-    amount: e.amount,
-    secret: e.secret,
-    C: e.C,
-    // NUT-11 witness envelope — the raw SPEND_PROOF signature wrapped the
-    // way the mint's verification expects.
-    witness: JSON.stringify({signatures: [e.witness]}),
-  }));
-  let minted: Awaited<ReturnType<typeof mintChargeChange>> | null = null;
+  // merchant's money queued on a silent drain failure. OFFLINE (or a
+  // signature the card could not give again): the swap does not happen and,
+  // when nothing must be written back onto the card this session, the
+  // payment holds in the queue for the next online auto-run.
+  let swapped: SwapSignedResult | null = null;
   try {
-    minted = await step('settling payment and minting change', () =>
-      mintChargeChange({
-        mintUrl,
-        entries: witnessed,
-        changeSat,
-        p2pkPubkey: cardPubkey,
-      }),
-    );
+    if (!signed) {
+      throw new Error(
+        "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
+      );
+    }
+    swapped = await step(PHASE_SETTLING, () => swapSigned(mintUrl, signed));
   } catch (error) {
     if (changeSat > 0) {
-      throw error;
+      throw error instanceof PhaseError
+        ? error
+        : new PhaseError(PHASE_SETTLING, error);
     }
     // Exact bill: no card write is pending, so a failed swap costs the
-    // customer nothing — the entries stay 'pending' in the queue and the
+    // customer nothing — the payment stays 'pending' in the queue and the
     // drain settles (and pays out) on its next run.
-    minted = null;
+    swapped = null;
   }
 
-  // THE POINT OF NO RETURN. The burns are done and the swap has settled
-  // them (or, for an exact bill, deferred them to the drain): the bill is
-  // PAID. Whatever the rest throws — a change LOAD the card refuses, a tag
-  // lost mid-write, the settlement store refusing a write — carries
-  // `paid`, so the screen ends the charge as paid instead of offering a
-  // retry that would burn the card a second time for the same bill
-  // (ENG-642). Only this function knows where the swap stands; the UI must
-  // not infer it from the wording of a phase.
+  // THE POINT OF NO RETURN. The card has signed and burned and the swap has
+  // settled the payment (or, for an exact bill, deferred it to the drain):
+  // the bill is PAID. Whatever the rest throws — a change LOAD the card
+  // refuses, a tag lost mid-write, the settlement store refusing a write —
+  // carries `paid`, so the screen ends the charge as paid instead of
+  // offering a retry that would charge the card a second time for the same
+  // bill (ENG-642). Only this function knows where the swap stands; the UI
+  // must not infer it from the wording of a phase.
   try {
-    if (minted) {
+    if (swapped) {
       // The change exists only in this process until the card takes it:
-      // record it durably FIRST — before the settlement bookkeeping and
-      // before any LOAD — so a 6A84 on the second piece, a lost tag or a
-      // killed app leaves a record the card's next tap writes from. A
-      // record that will not land is logged and the loads still run: the
-      // card is the only home left.
+      // record the mint's half durably FIRST — before the settlement
+      // bookkeeping and before any LOAD — so a 6A84 on the second piece, a
+      // lost tag or a killed app leaves a record the card's next tap
+      // finishes from its own openings. A record that will not land is
+      // logged and the loads still run: the card is the only home left.
       let changeRecorded = true;
       try {
-        await recordOwedChange(cardPubkey, minted.change, {mintUrl, unit}, now);
+        await recordOwedCardChange(
+          cardPubkey,
+          swapped.cardChange,
+          {mintUrl, unit},
+          now,
+        );
       } catch (error) {
         changeRecorded = false;
         console.warn(
@@ -821,29 +1183,25 @@ export async function executeCharge({
       //    above the float reserve to the account address). Like the change,
       //    it exists only in this process until it is written: a settlement
       //    queue that refuses the write below must not drop it.
-      //  - The swap consumed the burned proofs: mark the entries settled.
+      //  - The swap consumed the burned pieces: mark the payment settled.
       //  - The change goes onto the card EVEN IF the bookkeeping failed.
       //    The owed-change record, the till and the queue all write through
       //    the same Keychain, so their failures are correlated: a Keychain
       //    that refuses the till has most likely refused the owed-change
       //    record too, and then the card still in the field is the only
-      //    home the change has left (`recordOwedChange`'s contract).
+      //    home the change has left.
       // The bookkeeping failure is held, not thrown, until the loads are
       // done. A load that fails throws its own error instead (it says
       // where the change is, which the body copy needs more). If every
       // load landed, the held failure is thrown under a phase that says the
       // change is on the card, so the screen never reports it missing.
-      const till = minted.till;
+      const till = swapped.till;
       let bookkeepingError: PhaseError | null = null;
       try {
         await recordingPayment(() =>
           allAttempted([
             () => appendSettledProofsTill(till),
-            () =>
-              markEntriesSettled(
-                burned.map(e => e.id),
-                now,
-              ),
+            () => markEntriesSettled([entry.id], now),
           ]),
         );
       } catch (error) {
@@ -853,50 +1211,115 @@ export async function executeCharge({
             : new PhaseError(PHASE_RECORDING_PAYMENT, error);
       }
 
-      for (const proof of minted.change) {
-        const nonce = nonceFromSecret(proof.secret);
-        onPhase(PHASE_WRITING_CHANGE);
-        let slot: number;
-        try {
-          slot = await loadProof(transceive, {
-            keysetId: proof.id,
-            amount: proof.amount,
-            nonce,
-            C: proof.C,
-          });
-        } catch (error) {
-          // Recorded: the piece is owed on disk and the next tap writes it.
-          // Unrecorded: it is nowhere but this process, and the error must
-          // say so — the UI's "your change is saved" keys on the phase.
-          // A held bookkeeping failure is superseded by this one; log it so
-          // a refused till write (the merchant's take, held only in memory)
-          // is not lost without a trace.
-          if (bookkeepingError) {
-            console.warn(
-              '[charge] post-swap bookkeeping failed; superseded by the change write failure',
-              bookkeepingError.message,
-            );
-          }
-          throw new PhaseError(
-            changeWriteFailurePhase({
-              recorded: changeRecorded,
-              landedSat: changeLoadedSat,
-            }),
-            error,
+      const failChangeWrite = (error: unknown): PhaseError => {
+        // Recorded: the piece is owed on disk and the next tap writes it.
+        // Unrecorded: it is nowhere but this process, and the error must
+        // say so — the UI's "your change is saved" keys on the phase. A
+        // held bookkeeping failure is superseded by this one; log it so a
+        // refused till write (the merchant's take, held only in memory) is
+        // not lost without a trace.
+        if (bookkeepingError) {
+          console.warn(
+            '[charge] post-swap bookkeeping failed; superseded by the change write failure',
+            bookkeepingError.message,
           );
         }
-        changeLoaded += 1;
-        changeLoadedSat += proof.amount;
-        if (changeRecorded) {
+        return new PhaseError(
+          changeWriteFailurePhase({
+            recorded: changeRecorded,
+            landedSat: changeLoadedSat,
+          }),
+          error,
+        );
+      };
+
+      if (swapped.cardChange.length > 0) {
+        let openings: ChangeOpening[];
+        try {
+          // A bill the no-PIN allowance paid has no verified PIN to load
+          // with: a fresh SELECT takes the change grant the payment just
+          // armed (the tap after a payment may put its change on).
+          if (!mayLoad) {
+            await selectApplet(transceive);
+          }
+          openings = await getChange(transceive);
+        } catch (error) {
+          throw failChangeWrite(error);
+        }
+        const byB_ = new Map<
+          string,
+          {opening: ChangeOpening; secret: string}
+        >();
+        for (const opening of openings) {
+          const rebuilt = openingB_(opening, cardPubkey, refundKey);
+          if (rebuilt) {
+            byB_.set(rebuilt.B_, {opening, secret: rebuilt.secret});
+          }
+        }
+        for (const change of swapped.cardChange) {
+          const id = owedCardChangeId(cardPubkey, change.B_);
+          onPhase(PHASE_WRITING_CHANGE);
+          let slot: number | undefined;
           try {
-            await markOwedChangeWritten(
-              owedChangeId(cardPubkey, nonce),
-              slot,
-              now,
+            const match = byB_.get(change.B_.toLowerCase());
+            if (!match) {
+              throw new Error(
+                'the card holds no opening for this change; its next tap finishes it',
+              );
+            }
+            const {opening, secret} = match;
+            const C = finishCardChange(
+              change.C_,
+              opening.r,
+              change.amount,
+              prepared.changeKeyset.keys,
             );
-          } catch {
-            // The piece is on the card. A stale 'owed' record is harmless:
-            // the next tap's reconcile finds the nonce in a slot and marks it.
+            if (changeRecorded) {
+              await markOwedChangeOpened(
+                id,
+                {
+                  nonce: opening.nonce,
+                  secret,
+                  C,
+                  date: opening.date,
+                  r: opening.r,
+                },
+                now,
+              ).catch(() => {});
+            }
+            try {
+              slot = await loadProof(
+                transceive,
+                {
+                  keysetId: change.keysetId,
+                  amount: change.amount,
+                  nonce: opening.nonce,
+                  C,
+                  date: opening.date,
+                },
+                change.dleq
+                  ? {e: change.dleq.e, s: change.dleq.s, r: opening.r}
+                  : undefined,
+              );
+            } catch (error) {
+              // 6A94: the card already holds the piece — it landed.
+              if (!isAlreadyOnCard(error)) {
+                throw error;
+              }
+              slot = undefined;
+            }
+          } catch (error) {
+            throw failChangeWrite(error);
+          }
+          changeLoaded += 1;
+          changeLoadedSat += change.amount;
+          if (changeRecorded) {
+            try {
+              await markOwedChangeWritten(id, slot, now);
+            } catch {
+              // The piece is on the card. A stale 'owed' record is harmless:
+              // the card lets its opening go, and the next reconcile marks it.
+            }
           }
         }
       }
@@ -913,44 +1336,14 @@ export async function executeCharge({
       }
     }
 
-    // Witness recovery — AFTER the customer's critical path: entries parked
-    // as needs-card by earlier sessions (a burn whose SPEND_PROOF response
-    // was lost mid-NFC) are re-signed while the card is still in the field
-    // and PIN-verified; SIGN_ARBITRARY consumes nothing. Best-effort by
-    // design, the queue read included: a tag lost mid-sign or a store that
-    // will not read leaves the entry needs-card for the next session, and
-    // must never fail the charge that is already complete.
-    let queue: SettlementEntry[] = [];
-    try {
-      queue = await listSettlements();
-    } catch (error) {
-      console.warn(
-        '[charge] settlement queue unreadable; witness recovery skipped',
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    const orphaned = queue.filter(
-      e => e.status === 'needs-card' && e.cardPubkey === cardPubkey,
-    );
-    for (const entry of orphaned) {
-      onPhase(`re-signing recovered ${entry.amount} sat`);
-      try {
-        const signature = await resignWitness(transceive, entry);
-        await attachRecoveredWitness(entry.id, toHex(signature), now);
-      } catch {
-        // The card left the field mid-sign: the entry stays needs-card and
-        // the next session retries it. Never fail a completed charge for this.
-      }
-    }
-
     // Display only: the charge is complete, so a customer who lifts the
     // card before this read must not turn a paid charge into a failure.
     onPhase('reading card');
     const balanceAfter = await getBalance(transceive).catch(() => null);
     return {
       amountSat,
-      burned,
-      changeSat: plan.changeSat,
+      burned: [entry],
+      changeSat,
       changeLoaded,
       balanceAfter,
     };

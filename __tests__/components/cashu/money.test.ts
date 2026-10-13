@@ -8,6 +8,8 @@ import {
   parseFailure,
   pinFailureText,
   runningTotals,
+  DAILY_LIMIT_BODY,
+  PIN_NEEDED_TEXT,
 } from '../../../src/components/cashu/charge/money';
 import {splitPow2} from '../../../src/utils/denominations';
 
@@ -514,5 +516,58 @@ describe('pinFailureText', () => {
       'wrong length',
     );
     expect(pinFailureText('Tag was lost.')).toBe('Tag was lost.');
+  });
+});
+
+describe('protocol 2.0 copy (decision 2, Flash voice)', () => {
+  const ctx = {
+    burnsDone: 0,
+    paidSat: 16,
+    changeSat: 0,
+    fmt: (sat: number) => `${sat} sats`,
+  };
+
+  it("a bill over the daily limit, from the pre-flight or the card's 6A8F, reads as the limit", () => {
+    expect(DAILY_LIMIT_BODY).toBe(
+      "This card has reached today's spending limit.",
+    );
+    expect(
+      failureBody(
+        parseFailure("This card has reached today's spending limit."),
+        ctx,
+      ),
+    ).toBe(DAILY_LIMIT_BODY);
+    expect(
+      failureBody(
+        parseFailure(
+          "[burning 16 sat (proof 1/1)] SPEND_ALL_SIGN failed: over the card's daily limit (0x6A8F)",
+        ),
+        {...ctx, burnsDone: 1},
+      ),
+    ).toBe(DAILY_LIMIT_BODY);
+  });
+
+  it('a paid failure is never re-worded as the limit', () => {
+    expect(
+      failureBody(
+        parseFailure("[recording the payment] over the card's daily limit"),
+        {...ctx, paid: true},
+      ),
+    ).toBe('16 sats are paid. There is nothing more to do.');
+  });
+
+  it("the PIN pad's line for a bill over the no-PIN allowance (6A94 at SIGN)", () => {
+    expect(PIN_NEEDED_TEXT).toBe("This payment needs the card's PIN.");
+    expect(
+      pinFailureText(
+        'SPEND_ALL_SIGN failed: PIN needed for this payment (0x6A94)',
+      ),
+    ).toBe(PIN_NEEDED_TEXT);
+  });
+
+  it('an old card is told it needs an update, verbatim (decision 8)', () => {
+    expect(failureBody(parseFailure('This card needs an update'), ctx)).toBe(
+      'This card needs an update',
+    );
   });
 });

@@ -3,7 +3,7 @@ import {act, renderHook} from '@testing-library/react-native';
 import NfcManager, {NfcError, TagEvent} from 'react-native-nfc-manager';
 
 import {useCardPaymentRouter} from '../../src/hooks/useCardPaymentRouter';
-import {CardError} from '../../src/services/cashuCard';
+import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
 import {setCardBridge} from '../../src/services/cardBridge';
 
 const mockHandleTag = jest.fn();
@@ -56,6 +56,11 @@ jest.mock('../../src/store/hooks', () => ({
 
 jest.mock('../../src/services/cashuCharge', () => ({
   readAndPlan: (...args: unknown[]) => mockReadAndPlan(...args),
+}));
+
+const mockRefreshTipHeader = jest.fn(async () => null);
+jest.mock('../../src/services/blockHeader', () => ({
+  refreshTipHeader: () => mockRefreshTipHeader(),
 }));
 
 jest.mock('../../src/services/cashuCardNfc', () => {
@@ -354,6 +359,26 @@ describe('useCardPaymentRouter — routing by evidence (ENG-614)', () => {
     expect(alertSpy).toHaveBeenCalledWith(
       'VERIFY failed: PIN blocked (0x6983)',
     );
+  });
+
+  it('a 0.x card is told it needs an update: no charge screen, no NDEF retry (decision 8)', async () => {
+    mockNfc.getTag.mockResolvedValue(iosIsoDepTag());
+    mockReadAndPlan.mockRejectedValue(new CardNeedsUpdateError('0.x applet'));
+
+    const routed = await route();
+
+    expect(routed).toBe(false);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockHandleTag).not.toHaveBeenCalled();
+    // Not "applet not found": the NDEF surface is not read again.
+    expect(mockNfc.ndefHandler.getNdefMessage).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith('This card needs an update');
+  });
+
+  it("fetches the tip header for the card's clock while the customer reaches for the card", async () => {
+    mockNfc.getTag.mockResolvedValue(iosIsoDepTag());
+    await route();
+    expect(mockRefreshTipHeader).toHaveBeenCalledTimes(1);
   });
 
   it('a plain NDEF tag (no IsoDep) goes to the BoltCard flow as before', async () => {

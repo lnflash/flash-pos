@@ -13,6 +13,7 @@ import userSlice from '../../src/store/slices/userSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import {PhaseError} from '../../src/services/phaseError';
+import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
 
 const mockWithCardSession = jest.fn();
 const mockCancelCardSession = jest.fn();
@@ -42,6 +43,13 @@ jest.mock('../../src/services/cashuCharge', () => ({
 
 jest.mock('../../src/services/cashuAutoSettle', () => ({
   runAutoSettlement: (...args: unknown[]) => mockRunAutoSettlement(...args),
+}));
+
+// The card's clock: the screen fetches the tip header on mount. No network
+// in a unit test.
+const mockRefreshTipHeader = jest.fn(async () => null);
+jest.mock('../../src/services/blockHeader', () => ({
+  refreshTipHeader: () => mockRefreshTipHeader(),
 }));
 
 // This screen ships in release builds and imports leaves only: the barrels
@@ -412,6 +420,70 @@ describe('CashuCardCharge', () => {
       jest.advanceTimersByTime(LIFT_HOLD_MS + 20);
     });
     expect(navigation.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches the tip header for the card's clock on mount", async () => {
+    await renderScreen();
+    expect(mockRefreshTipHeader).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 0.x card says it needs an update: no PIN pad, no charge (decision 8)', async () => {
+    mockReadAndPlan.mockRejectedValue(new CardNeedsUpdateError('0.x applet'));
+    const {getByText, getAllByText, queryByText} = await renderScreen();
+    await act(async () => {
+      fireEvent.press(getByText('Tap card to charge'));
+    });
+    // The body, and the pill that carries the failure verbatim.
+    expect(
+      getAllByText('This card needs an update', visible).length,
+    ).toBeGreaterThan(0);
+    expect(queryByText('Enter the card PIN', visible)).toBeNull();
+    expect(mockExecuteCharge).not.toHaveBeenCalled();
+  });
+
+  it('a card whose no-PIN allowance did not cover the bill after all (6A94 at SIGN): the PIN pad opens with the reason, and the PIN re-runs the charge', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    mockExecuteCharge
+      .mockImplementationOnce(
+        async ({onPhase}: {onPhase: (p: string) => void}) => {
+          onPhase('reading card');
+          onPhase('burning 16 sat (proof 1/1)');
+          throw new PhaseError(
+            'burning 16 sat (proof 1/1)',
+            new CardError(0x6a94, 'SPEND_ALL_SIGN'),
+          );
+        },
+      )
+      .mockImplementation(async () => ({
+        amountSat: 16,
+        burned: [],
+        changeSat: 0,
+        changeLoaded: 0,
+        balanceAfter: 0,
+      }));
+    const {getByText, getByLabelText, getByTestId} = await renderScreen({
+      preRead: {...EXACT, pinRequired: false, pinSet: true},
+    });
+
+    expect(getByText('Enter the card PIN', visible)).toBeTruthy();
+    expect(getByTestId('pin-error-text').props.children).toBe(
+      "This payment needs the card's PIN.",
+    );
+    expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+
+    for (const digit of ['1', '9', '8', '4']) {
+      fireEvent.press(getByLabelText(digit));
+    }
+    await act(async () => {
+      jest.advanceTimersByTime(700);
+    });
+    expect(mockExecuteCharge).toHaveBeenCalledTimes(2);
+    expect(mockExecuteCharge.mock.calls[1][0]).toMatchObject({
+      pin: '1984',
+      pinRequired: true,
+      pinSet: true,
+    });
+    expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
   });
 
   it('Cancel in the error state clears the error back to idle', async () => {

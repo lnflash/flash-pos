@@ -9,8 +9,10 @@ import {useFlashcard} from './useFlashcard';
 
 // services
 import {
+  CARD_NEEDS_UPDATE,
   CardError,
-  getSlotStatuses,
+  getCard,
+  isCardNeedsUpdate,
   readCard,
   type CardSummary,
   type Transceiver,
@@ -72,13 +74,15 @@ type BalanceParams = RootStackType['CashuCardBalance'];
 
 /**
  * Change from an earlier charge that this card is still owed (ENG-630: a
- * LOAD refused mid-write, a tag lost, a killed app). A card with no PIN
- * takes it in this very session — LOAD_PROOF is only PIN-gated when a PIN
- * is set, and the keypad has no pad — and the balance is re-read so the
- * screen shows the card as it now is. A PIN card is told what is waiting —
- * after the same read-only reconcile, so a piece already on the card is
- * not counted — and the next charge writes it (`executeCharge`, after the
- * PIN verify).
+ * LOAD refused mid-write, a tag lost, a killed app). A card that may take it
+ * in this very session does — a card with no PIN, or one whose GET_INFO
+ * says the change may go on with no PIN (the change grant: the tap after a
+ * payment), since the keypad has no pad — and the balance is re-read so the
+ * screen shows the card as it now is. Any other PIN card is told what is
+ * waiting — after the same read-only reconcile against the card's change
+ * openings, so a piece already on the card is not counted — and the next
+ * charge writes it (`executeCharge`, after the PIN verify). A LOAD the card
+ * would refuse for want of the PIN (6982) is never sent.
  *
  * A balance tap is a READ. The write is opportunistic, and nothing it does
  * may veto the read: the owed-change store failing, a slot read failing, or
@@ -103,23 +107,24 @@ async function settleOwedChange(
     return {summary};
   }
   const now = Date.now();
-  if (summary.info.pinState !== 'unset') {
+  const mayLoad = summary.info.pinState === 'unset' || summary.info.changeGrant;
+  if (!mayLoad) {
     // The write waits for the next charge (after the PIN verify), but the
-    // read-only reconcile does not: GET_PROOF is never PIN-gated (the applet
-    // guards writes only), and a piece whose LOAD landed with its answer
-    // lost is on the card AND 'owed' on disk at once. Told `sumSat(owed)`
-    // straight from the store, the screen would show a balance that already
-    // holds that piece plus "Change waiting — added on the next charge",
-    // and the next charge would reconcile it away and add nothing. So count
-    // only what the card does not hold. A failed reconcile still may not
-    // veto the read: it falls back to what the store says.
+    // read-only reconcile does not: GET_CHANGE is never PIN-gated, and a
+    // piece whose LOAD landed with its answer lost is on the card AND
+    // 'owed' on disk at once. Told `sumSat(owed)` straight from the store,
+    // the screen would show a balance that already holds that piece plus
+    // "Change waiting — added on the next charge", and the next charge
+    // would reconcile it away and add nothing. So count only what the card
+    // does not hold. A failed reconcile still may not veto the read: it
+    // falls back to what the store says.
     let remaining = owed;
     try {
-      const statuses = await getSlotStatuses(transceive, summary.info.maxSlots);
+      const record = await getCard(transceive);
       remaining = await reconcileOwedChange({
         transceive,
         cardPubkey: summary.pubkey,
-        statuses,
+        refundKey: record.refundKey,
         now,
       });
     } catch {
@@ -132,11 +137,11 @@ async function settleOwedChange(
   let remaining = owed;
   let written: OwedChangeEntry[] = [];
   try {
-    const statuses = await getSlotStatuses(transceive, summary.info.maxSlots);
+    const record = await getCard(transceive);
     remaining = await reconcileOwedChange({
       transceive,
       cardPubkey: summary.pubkey,
-      statuses,
+      refundKey: record.refundKey,
       now,
     });
     if (remaining.length === 0) {
@@ -207,8 +212,10 @@ async function stillOwedSat(
  *     the Flashcard context's `handleTag`, the existing path — it fetches the
  *     BTCPay balance page and opens FlashcardBalance;
  *   - an IsoDep card with no such record (Flashcard v2 / Cashu javacard) is
- *     read IN THIS SESSION (SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE,
- *     nothing written) and CashuCardBalance opens with the summary;
+ *     read IN THIS SESSION (SELECT → GET_INFO → GET_PUBKEY → AUTH →
+ *     GET_BALANCE, nothing written; a card that cannot prove its key fails
+ *     the read) and CashuCardBalance opens with the summary; a 0.x card is
+ *     told it needs an update;
  *   - anything else goes to `handleTag` too, which already owns the UX for
  *     odd tags ("NDEF message not found.").
  *
@@ -289,6 +296,12 @@ export function useKeypadCardReader() {
         // generation says which it was.
         if (isUserCancel(error) || gen !== focusGenRef.current) {
           return 'cancelled';
+        }
+        // A 0.x card: refused before anything is written or spent, and said
+        // so plainly (decision 8) — never as "Not a Flash card".
+        if (isCardNeedsUpdate(error)) {
+          toastShow({message: CARD_NEEDS_UPDATE, type: 'info'});
+          return 'failed';
         }
         if (isNotAFlashCard(error)) {
           toastShow({message: 'Not a Flash card', type: 'info'});

@@ -1,31 +1,43 @@
-/* eslint-disable no-bitwise -- byte-level protocol assertions. */
 /**
- * cashuSpend — the tap-to-settle orchestrator.
+ * cashuSpend — tap-to-pay on a 2.0 card: one SIG_ALL signature per payment.
  *
- * Runs against a fake card (mirroring cashuCard.test.ts's harness) and the
- * REAL settlement queue over a mocked keychain, so the ordering guarantees the
- * design rests on are exercised end to end: the burn lands on the card, the
- * entry lands in the queue, and only then does anything say "paid". The mint
- * adapter is the unit seam — its wire behaviour is cashuMint.test.ts's job.
+ * Runs against the 2.0 card model (`__tests__/support/cardProtocol2.ts`: the
+ * applet's payment commands with a real BIP-340 signature over a SIG_ALL
+ * message it builds itself) and the REAL settlement queue over a mocked
+ * keychain, so the ordering guarantees the design rests on are exercised end
+ * to end: the payment burns on the card, ONE entry lands in the queue holding
+ * everything the card signed, and only then does anything say "paid". The
+ * mint adapter is the unit seam — its wire behaviour is cashuMint.test.ts's.
  */
-import {utf8ToBytes} from '@noble/hashes/utils';
-import {sha256} from '@noble/hashes/sha256';
+import {bytesToHex} from '@noble/hashes/utils';
 
+import {CardError, type Transceiver} from '../../src/services/cashuCard';
 import {
-  buildApdu,
-  toHex,
-  type Transceiver,
-} from '../../src/services/cashuCard';
+  prepareChargeOutputs,
+  sigAllMessage,
+  verifyCardSignature,
+} from '../../src/services/cashuMint';
 import {
-  burnAndRecord,
-  firstUnspentSlot,
+  recoverNeedsCard,
   settlePending,
+  spendAll,
+  tellTheClock,
 } from '../../src/services/cashuSpend';
 import {
   clearQueue,
   hasUnsettledForCard,
   listSettlements,
+  type SettlementInput,
 } from '../../src/services/cashuSettlement';
+import {
+  FakeCard2,
+  KEYSET_ID,
+  MINT_URL,
+  TestMint,
+  cardWithPieces,
+  headerVectors,
+  resetTestMint,
+} from '../support/cardProtocol2';
 
 const mockStore: Record<string, string> = {};
 
@@ -47,92 +59,7 @@ jest.mock('../../src/services/cashuMint', () => ({
   createSettlementAdapter: jest.fn(() => mockAdapter),
 }));
 
-const MINT_URL = 'https://forge.flashapp.me';
-
-// ── fake card ──────────────────────────────────────────────────────────────
-
-const OK = [0x90, 0x00];
-const ok = (data: number[] = []) => [...data, ...OK];
-const sw = (code: number) => [(code >> 8) & 0xff, code & 0xff];
-
-const PUBKEY = [0x03, ...Array.from({length: 32}, (_, i) => 0xa0 + i)];
-const CARD_PUBKEY_HEX = toHex(PUBKEY);
-const KEYSET_BYTES = [0x00, 0x59, 0x53, 0x4c, 0xe0, 0xbf, 0xa1, 0x9a];
-const KEYSET_ID = toHex(KEYSET_BYTES);
-const NONCE = Array.from({length: 32}, (_, i) => 0x40 + i);
-const AMOUNT = 500;
-const AMOUNT_BYTES = [
-  (AMOUNT >>> 24) & 0xff,
-  (AMOUNT >>> 16) & 0xff,
-  (AMOUNT >>> 8) & 0xff,
-  AMOUNT & 0xff,
-];
-const C_BODY = [0x02, ...Array.from({length: 32}, (_, i) => 0x80 + i)];
-const SIGNATURE = Array.from({length: 64}, (_, i) => (i * 3 + 1) & 0xff);
-
-
-
-interface FakeCardOptions {
-  statuses?: number[];
-  spendThrows?: unknown;
-  /** Follow-up GET_PROOFs report the slot as spent (burn landed, sig lost). */
-  spentAfterSpend?: boolean;
-  /** Distinct card identity: pubkey/nonce/C shift by this. Two cards sharing
-   *  an id would dedupe in the queue — real cards never share one. */
-  seed?: number;
-}
-
-function fakeCard(options: FakeCardOptions = {}) {
-  const seed = options.seed ?? 0;
-  const shift = (b: number, i: number) => (b + seed + i) & 0xff;
-  const pubkey = [0x03, ...Array.from({length: 32}, (_, i) => shift(0xa0, i))];
-  const nonce = Array.from({length: 32}, (_, i) => shift(0x40, i));
-  const c = [0x02, ...Array.from({length: 32}, (_, i) => shift(0x80, i))];
-  const sent: number[][] = [];
-  // Stateful, like the card: once a burn happens, the slot reads back spent.
-  let burned = false;
-  const transceive: Transceiver = async apdu => {
-    sent.push(apdu);
-    const [, ins] = apdu;
-    switch (ins) {
-      case 0x01:
-        // v0.1, 4 slots, 1 unspent / 0 spent / 3 empty, native+schnorr, no PIN.
-        return ok([0, 1, 4, 1, 0, 3, 0x03, 0x00]);
-      case 0x10:
-        return ok(pubkey);
-      case 0x11:
-        return ok([0, 0, 0x01, 0xf4]);
-      case 0x14:
-        return ok(options.statuses ?? [0x00, 0x01, 0x00, 0x00]);
-      case 0x13: {
-        const status = options.spentAfterSpend && burned ? 0x02 : 0x01;
-        return ok([status, ...KEYSET_BYTES, ...AMOUNT_BYTES, ...nonce, ...c]);
-      }
-      case 0x20:
-        if (options.spendThrows !== undefined) {
-          burned = true;
-          throw options.spendThrows;
-        }
-        burned = true;
-        return ok(SIGNATURE);
-      default:
-        return sw(0x6d00);
-    }
-  };
-  return {transceive, sent, cardPubkeyHex: toHex(pubkey)};
-}
-
-// The secret the orchestrator must rebuild from the slot read alone: pinned
-// here so the fixture proves nonce + pubkey flow into the exact serialization
-// the mint hashed at mint time.
-const EXPECTED_SECRET = JSON.stringify([
-  'P2PK',
-  {
-    nonce: toHex(NONCE),
-    data: CARD_PUBKEY_HEX,
-    tags: [['sigflag', 'SIG_INPUTS']],
-  },
-]);
+let mint: TestMint;
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -140,129 +67,374 @@ beforeEach(async () => {
   for (const k of Object.keys(mockStore)) {
     delete mockStore[k];
   }
+  mint = resetTestMint();
   await clearQueue();
 });
 
-describe('firstUnspentSlot', () => {
-  it('skips empty slots and reads the first unspent one in full', async () => {
-    const card = fakeCard();
-    const proof = await firstUnspentSlot(card.transceive, 4);
-    expect(proof).toMatchObject({slot: 1, amount: AMOUNT, keysetId: KEYSET_ID});
-    const getProofApdu = card.sent.find(([, ins]) => ins === 0x13);
-    expect(getProofApdu?.[2]).toBe(1);
+/** The inputs a charge builds for `slots` of `card` (as executeCharge does). */
+function inputsOf(card: FakeCard2, slots: number[]): SettlementInput[] {
+  return slots.map(slot => {
+    const s = card.slots[slot]!;
+    return {
+      slot,
+      nonce: s.nonce,
+      secret: mint.mintPiece(card.pubkey, s.amount, {nonce: s.nonce}).secret,
+      C: s.C,
+      amount: s.amount,
+      keysetId: KEYSET_ID,
+    };
+  });
+}
+
+/** A payment of `amountSat` from the slots, with the rest as the card's change. */
+function paymentArgs(
+  card: FakeCard2,
+  slots: number[],
+  amountSat: number,
+  extra: Partial<Parameters<typeof spendAll>[0]> = {},
+) {
+  const inputs = inputsOf(card, slots);
+  const total = inputs.reduce((t, i) => t + i.amount, 0);
+  return {
+    transceive: card.transceive,
+    inputs,
+    merchant: prepareChargeOutputs({
+      keysetId: KEYSET_ID,
+      merchantSat: amountSat,
+    }),
+    changeSat: total - amountSat,
+    changeKeysetId: KEYSET_ID,
+    cardPubkey: card.pubkey,
+    mintUrl: MINT_URL,
+    now: 1_790_000_000_000,
+    ...extra,
+  };
+}
+
+describe('spendAll', () => {
+  it("pays with one signature over every piece, the merchant's outputs and the card's change, and records ONE pending entry", async () => {
+    const card = cardWithPieces([8, 16, 4]);
+    const args = paymentArgs(card, [0, 1], 19);
+
+    const {entry, signed} = await spendAll(args);
+
+    // Both places burned in the one commit; the third untouched.
+    expect(card.slots.map(s => s?.status)).toEqual(
+      expect.arrayContaining([2, 2, 1]),
+    );
+    expect(card.slots[2]?.status).toBe(1);
+    expect(entry.status).toBe('pending');
+    expect(entry.sigflag).toBe('SIG_ALL');
+    expect(entry.inputs.map(i => i.slot)).toEqual([0, 1]);
+    expect(entry.amount).toBe(24);
+    // The merchant's 19 (16 + 2 + 1), then the card's own 5 (4 + 1).
+    expect(entry.outputs.map(o => o.amount)).toEqual([16, 2, 1, 4, 1]);
+    expect(entry.cardChangeIndex).toBe(3);
+    expect(entry.merchantBlinding).toEqual(args.merchant.blinding);
+    // The witness signs exactly the stored payment, under the card's key.
+    expect(entry.message).toBe(
+      bytesToHex(sigAllMessage(entry.inputs, entry.outputs)),
+    );
+    expect(
+      verifyCardSignature(entry.witness!, entry.message!, card.pubkey),
+    ).toBe(true);
+    expect(signed).toEqual({
+      inputs: entry.inputs,
+      witness: entry.witness,
+      outputs: entry.outputs,
+      merchantBlinding: entry.merchantBlinding,
+      cardChangeIndex: 3,
+    });
+    // And a mint accepts that exact swap.
+    expect(() =>
+      mint.swap({
+        inputs: entry.inputs.map((i, k) => ({
+          id: i.keysetId,
+          amount: i.amount,
+          secret: i.secret,
+          C: i.C,
+          ...(k === 0
+            ? {witness: JSON.stringify({signatures: [entry.witness]})}
+            : {}),
+        })),
+        outputs: entry.outputs.map(o => ({
+          amount: o.amount,
+          id: o.keysetId,
+          B_: o.B_,
+        })),
+      }),
+    ).not.toThrow();
+    await expect(hasUnsettledForCard(card.pubkey)).resolves.toBe(true);
+    await expect(listSettlements()).resolves.toHaveLength(1);
   });
 
-  it('returns null when every slot is spent or empty', async () => {
-    const card = fakeCard({statuses: [0x02, 0x00, 0x00, 0x02]});
-    await expect(firstUnspentSlot(card.transceive, 4)).resolves.toBeNull();
+  it('shows the card the clock BEFORE the payment begins: TELL_TIME, SET_HEADER, then BEGIN', async () => {
+    const card = cardWithPieces([8]);
+    const header = Array.from(Buffer.from(headerVectors()[11].header, 'hex'));
+    await spendAll({...paymentArgs(card, [0], 8), header});
+
+    const order = card.insSent;
+    expect(order.slice(0, 3)).toEqual([0x37, 0x36, 0x22]);
+    expect(order).toEqual([0x37, 0x36, 0x22, 0x23, 0x24]);
+    expect(card.headers).toEqual([header]);
+    expect(card.tapTime).toBe(1_790_000_000);
+  });
+
+  it('a header the card refuses (6A93) never stops a payment', async () => {
+    const card = cardWithPieces([8]);
+    const refusing: Transceiver = async apdu =>
+      apdu[1] === 0x36 ? [0x6a, 0x93] : card.transceive(apdu);
+    const {entry} = await spendAll({
+      ...paymentArgs(card, [0], 8),
+      transceive: refusing,
+      header: new Array(80).fill(1),
+    });
+    expect(entry.status).toBe('pending');
+  });
+
+  it('an exact bill has no change output', async () => {
+    const card = cardWithPieces([8]);
+    const {entry} = await spendAll(paymentArgs(card, [0], 8));
+    expect(entry.outputs.map(o => o.amount)).toEqual([8]);
+    expect(entry.cardChangeIndex).toBeUndefined();
+    expect(card.insSent).not.toContain(0x26);
+  });
+
+  it('calls onSign once, just before SPEND_ALL_SIGN', async () => {
+    const card = cardWithPieces([8]);
+    let sentAtSign: number[] = [];
+    await spendAll({
+      ...paymentArgs(card, [0], 8),
+      onSign: () => {
+        sentAtSign = [...card.insSent];
+      },
+    });
+    expect(sentAtSign).not.toContain(0x24);
+    expect(sentAtSign[sentAtSign.length - 1]).toBe(0x23);
+  });
+
+  it('a card that asks for its PIN at SIGN (6A94) has burned nothing, and nothing is recorded', async () => {
+    const card = cardWithPieces([8], {pin: '1234'});
+    const failure = await spendAll(paymentArgs(card, [0], 8)).catch(e => e);
+    expect(failure).toBeInstanceOf(CardError);
+    expect(failure.sw).toBe(0x6a94);
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
+  });
+
+  it('over the daily limit at SIGN (6A8F): nothing burned, nothing recorded', async () => {
+    const card = cardWithPieces([8], {dailyLimit: 5});
+    await expect(spendAll(paymentArgs(card, [0], 8))).rejects.toMatchObject({
+      sw: 0x6a8f,
+    });
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
+  });
+
+  it('waits out the card\'s "not yet" answers', async () => {
+    const card = cardWithPieces([8], {signWaits: 3});
+    const {entry} = await spendAll(paymentArgs(card, [0], 8));
+    expect(entry.status).toBe('pending');
+    expect(card.insSent.filter(i => i === 0x24)).toHaveLength(4);
+  });
+
+  it("stops before any output when the card's places are not the plan's", async () => {
+    const card = cardWithPieces([8, 16]);
+    const args = paymentArgs(card, [0], 8);
+    args.inputs[0] = {...args.inputs[0], amount: 4};
+    await expect(spendAll(args)).rejects.toThrow(/worth 8 sat, the plan 4/);
+    expect(card.insSent).not.toContain(0x23);
+    expect(card.burnCount).toBe(0);
+  });
+
+  describe('a lost SIGN answer', () => {
+    it('with the places unspent: the error surfaces, nothing is recorded', async () => {
+      const card = cardWithPieces([8], {dropBeforeSign: () => true});
+      await expect(spendAll(paymentArgs(card, [0], 8))).rejects.toThrow(
+        'Tag was lost.',
+      );
+      expect(card.burnCount).toBe(0);
+      await expect(listSettlements()).resolves.toEqual([]);
+    });
+
+    it('with the places spent and SPEND_ALL_AGAIN verifying: the payment is pending', async () => {
+      const card = cardWithPieces([8, 4], {loseSignAnswer: () => true});
+      const {entry, signed} = await spendAll(paymentArgs(card, [0, 1], 10));
+      expect(card.insSent).toContain(0x14);
+      expect(card.insSent[card.insSent.length - 1]).toBe(0x25);
+      expect(entry.status).toBe('pending');
+      expect(
+        verifyCardSignature(entry.witness!, entry.message!, card.pubkey),
+      ).toBe(true);
+      expect(signed).not.toBeNull();
+    });
+
+    it('with SPEND_ALL_AGAIN failing too: needs-card, with everything it signed kept', async () => {
+      const card = cardWithPieces([8, 4], {
+        loseSignAnswer: () => true,
+        loseAgain: () => true,
+      });
+      const args = paymentArgs(card, [0, 1], 10);
+      const {entry, signed} = await spendAll(args);
+
+      expect(signed).toBeNull();
+      expect(entry.status).toBe('needs-card');
+      expect(entry.witness).toBeUndefined();
+      expect(entry.inputs.map(i => i.slot)).toEqual([0, 1]);
+      expect(entry.outputs.map(o => o.amount)).toEqual([8, 2, 2]);
+      expect(entry.merchantBlinding).toEqual(args.merchant.blinding);
+      expect(entry.message).toBe(
+        bytesToHex(sigAllMessage(entry.inputs, entry.outputs)),
+      );
+      await expect(hasUnsettledForCard(card.pubkey)).resolves.toBe(true);
+    });
+
+    it('a signature SPEND_ALL_AGAIN gives for another payment is rejected: needs-card', async () => {
+      const holder: {card?: FakeCard2} = {};
+      const card = cardWithPieces([8], {
+        loseSignAnswer: () => true,
+        failBefore: ins => {
+          if (ins === 0x25 && holder.card) {
+            // The card's last signature is some other payment's.
+            holder.card.lastSig = {sig: '11'.repeat(64), noPin: false};
+          }
+          return false;
+        },
+      });
+      holder.card = card;
+      const {entry} = await spendAll(paymentArgs(card, [0], 8));
+      expect(entry.status).toBe('needs-card');
+      expect(entry.witness).toBeUndefined();
+    });
+
+    it('a card whose signature does not verify is asked again, and recorded needs-card when that fails too', async () => {
+      const card = cardWithPieces([8], {badSignature: true});
+      const {entry} = await spendAll(paymentArgs(card, [0], 8));
+      expect(card.insSent).toContain(0x25);
+      expect(entry.status).toBe('needs-card');
+    });
   });
 });
 
-describe('burnAndRecord', () => {
-  it('spends the slot and records a pending settlement with the reconstructed secret', async () => {
-    const card = fakeCard();
-    const entry = await burnAndRecord({
-      transceive: card.transceive,
-      slot: 1,
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-
-    expect(entry.status).toBe('pending');
-    expect(entry.witness).toBe(toHex(SIGNATURE));
-    expect(entry.secret).toBe(EXPECTED_SECRET);
-    expect(entry.mintUrl).toBe(MINT_URL);
-    expect(entry.unit).toBe('sat');
-    expect(entry.amount).toBe(AMOUNT);
-    expect(entry.cardPubkey).toBe(CARD_PUBKEY_HEX);
-
-    // The card signs sha256(utf8(secret)) — the NUT-11 message.
-    const message = Array.from(sha256(utf8ToBytes(EXPECTED_SECRET)));
-    const spendApdu = card.sent.find(([, ins]) => ins === 0x20);
-    expect(spendApdu).toEqual(
-      buildApdu(0x20, {p1: 1, data: message, le: 0x40}),
-    );
-
-    await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(true);
-  });
-
-  it('refuses to spend a slot the card reports spent, recording nothing', async () => {
-    const card = fakeCard();
-    const spentOnly: Transceiver = async apdu => {
-      if (apdu[1] === 0x13) {
-        return ok([0x02, ...KEYSET_BYTES, ...AMOUNT_BYTES, ...NONCE, ...C_BODY]);
-      }
-      return card.transceive(apdu);
+describe('tellTheClock', () => {
+  it('a refusal of either note is ignored; a transport failure is not', async () => {
+    const refusing: Transceiver = async () => [0x6d, 0x00];
+    await expect(
+      tellTheClock(refusing, 0, new Array(80).fill(0)),
+    ).resolves.toBeUndefined();
+    const gone: Transceiver = async () => {
+      throw new Error('Tag was lost.');
     };
-    await expect(
-      burnAndRecord({transceive: spentOnly, slot: 0, mintUrl: MINT_URL}),
-    ).rejects.toThrow(/spent/i);
-    await expect(listSettlements()).resolves.toEqual([]);
+    await expect(tellTheClock(gone, 0)).rejects.toThrow('Tag was lost.');
   });
+});
 
-  it('records needs-card when the burn lands but the signature is lost', async () => {
-    const card = fakeCard({
-      spendThrows: new Error('card left the field'),
-      spentAfterSpend: true,
-    });
-    const entry = await burnAndRecord({
-      transceive: card.transceive,
-      slot: 1,
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
+describe('recoverNeedsCard', () => {
+  /** A payment burned with its signature lost, the card still holding it. */
+  async function needsCardPayment(card: FakeCard2) {
+    const {entry} = await spendAll(paymentArgs(card, [0], 8));
     expect(entry.status).toBe('needs-card');
-    expect(entry.witness).toBeUndefined();
-    await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(true);
+    return entry;
+  }
+
+  it("attaches the card's last signature when it verifies: the entry is pending", async () => {
+    let lose = true;
+    const card = cardWithPieces([8], {
+      loseSignAnswer: () => true,
+      loseAgain: () => lose,
+    });
+    const entry = await needsCardPayment(card);
+    lose = false;
+
+    const recovered = await recoverNeedsCard({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 5000,
+    });
+
+    expect(recovered.map(e => e.id)).toEqual([entry.id]);
+    const [stored] = await listSettlements();
+    expect(stored.status).toBe('pending');
+    expect(
+      verifyCardSignature(stored.witness!, stored.message!, card.pubkey),
+    ).toBe(true);
   });
 
-  it('surfaces the error when the burn never happened', async () => {
-    const card = fakeCard({spendThrows: new Error('SW 6a86')});
+  it('a payment the card has signed past is marked failed, never dropped', async () => {
+    let lose = true;
+    const card = cardWithPieces([8, 4], {
+      loseSignAnswer: n => n === 0,
+      loseAgain: () => lose,
+    });
+    const entry = await needsCardPayment(card);
+    lose = false;
+    // Another payment since: the card's last signature is that one's.
+    await spendAll(paymentArgs(card, [1], 4));
+
+    const recovered = await recoverNeedsCard({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 5000,
+    });
+
+    expect(recovered).toEqual([]);
+    const stored = (await listSettlements()).find(e => e.id === entry.id)!;
+    expect(stored.status).toBe('failed');
+    expect(stored.lastError).toMatch(/signed another payment/);
+  });
+
+  it('a card that will not give its signature again leaves the entry as it was', async () => {
+    const card = cardWithPieces([8], {
+      loseSignAnswer: () => true,
+      loseAgain: () => true,
+    });
+    const entry = await needsCardPayment(card);
     await expect(
-      burnAndRecord({transceive: card.transceive, slot: 1, mintUrl: MINT_URL}),
-    ).rejects.toThrow('SW 6a86');
-    await expect(listSettlements()).resolves.toEqual([]);
+      recoverNeedsCard({transceive: card.transceive, cardPubkey: card.pubkey}),
+    ).resolves.toEqual([]);
+    expect((await listSettlements())[0]).toMatchObject({
+      id: entry.id,
+      status: 'needs-card',
+    });
+  });
+
+  it('asks the card nothing when this card owes nothing', async () => {
+    const card = cardWithPieces([8]);
+    await recoverNeedsCard({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+    });
+    expect(card.sent).toEqual([]);
   });
 });
 
 describe('settlePending', () => {
-  it('drains through the mint adapter and settles the recorded entry', async () => {
-    const card = fakeCard();
-    await burnAndRecord({
-      transceive: card.transceive,
-      slot: 1,
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
+  it('drains through the mint adapter and settles the recorded payment', async () => {
+    const card = cardWithPieces([8]);
+    const {entry} = await spendAll(paymentArgs(card, [0], 8));
 
     const result = await settlePending(2000);
     expect(result.settled).toBe(1);
     const entries = await listSettlements();
     expect(entries.find(e => e.status === 'settled')).toMatchObject({
-      secret: EXPECTED_SECRET,
+      id: entry.id,
       mintUrl: MINT_URL,
+      sigflag: 'SIG_ALL',
     });
     expect(mockAdapter.swap).toHaveBeenCalledWith(
-      expect.objectContaining({mintUrl: MINT_URL}),
+      expect.objectContaining({mintUrl: MINT_URL, outputs: entry.outputs}),
     );
   });
 
-  it('settles each entry against the mint that issued it', async () => {
-    // Two burns from two mints share one queue; a single drain must route
+  it('settles each payment against the mint that issued it', async () => {
+    // Two payments from two mints share one queue; a single drain must route
     // each to its own mint — that is why mintUrl is persisted per entry.
-    const first = fakeCard();
-    await burnAndRecord({
-      transceive: first.transceive,
-      slot: 1,
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-    const second = fakeCard({seed: 1});
-    await burnAndRecord({
-      transceive: second.transceive,
-      slot: 1,
+    const first = cardWithPieces([8]);
+    await spendAll(paymentArgs(first, [0], 8));
+    const second = cardWithPieces([8], {privateKey: '33'.repeat(32)});
+    await spendAll({
+      ...paymentArgs(second, [0], 8),
       mintUrl: 'https://other-mint.example',
-      now: 1001,
     });
 
     const result = await settlePending(2000);
@@ -278,22 +450,28 @@ describe('settlePending', () => {
   });
 
   it('keeps an ambiguous failure in submitting rather than failing it', async () => {
-    const card = fakeCard();
-    await burnAndRecord({
-      transceive: card.transceive,
-      slot: 1,
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-    // A 5xx-style rejection: the mint may already hold the proof.
+    const card = cardWithPieces([8]);
+    await spendAll(paymentArgs(card, [0], 8));
+    // A 5xx-style rejection: the mint may already hold the payment.
     const ambiguous = Object.assign(new Error('bad gateway'), {status: 502});
     mockAdapter.swap.mockRejectedValueOnce(ambiguous);
 
     const result = await settlePending(2000);
     expect(result.stillPending).toBe(1);
     const entries = await listSettlements();
-    expect(entries.find(e => e.id.startsWith(CARD_PUBKEY_HEX))?.status).toBe(
+    expect(entries.find(e => e.id.startsWith(card.pubkey))?.status).toBe(
       'submitting',
     );
+  });
+
+  it('a needs-card payment is not submitted: it has no witness yet', async () => {
+    const card = cardWithPieces([8], {
+      loseSignAnswer: () => true,
+      loseAgain: () => true,
+    });
+    await spendAll(paymentArgs(card, [0], 8));
+    const result = await settlePending(2000);
+    expect(result.settled).toBe(0);
+    expect(mockAdapter.swap).not.toHaveBeenCalled();
   });
 });

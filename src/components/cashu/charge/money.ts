@@ -29,6 +29,27 @@ const TAG_LOST =
   /tag (was )?lost|left the field|not connected|stopped responding/i;
 
 /**
+ * Over the card's daily limit: the pre-flight refusal in `readAndPlan`
+ * (`DAILY_LIMIT_REACHED`) and the card's own 6A8F at SIGN
+ * (`describeStatusWord`: "over the card's daily limit"). Nothing is burned
+ * either way.
+ */
+const DAILY_LIMIT =
+  /over the card's daily limit|reached today's spending limit/i;
+
+/** The copy for a bill over the card's daily limit (decision 2, Flash voice). */
+export const DAILY_LIMIT_BODY = "This card has reached today's spending limit.";
+
+/**
+ * The card would not sign without its PIN (6A94 at SPEND_ALL_SIGN): the bill
+ * is over its no-PIN allowance. The screen moves to the PIN pad.
+ */
+const PIN_NEEDED = /PIN needed for this payment/i;
+
+/** The PIN pad's line for a bill over the card's no-PIN allowance. */
+export const PIN_NEEDED_TEXT = "This payment needs the card's PIN.";
+
+/**
  * The card has no free slot for the change: the pre-flight refusal in
  * `readAndPlan` ("this card is full: …") and the card's own 6A84 on a LOAD
  * (`describeStatusWord`: "card is full — no free slot") both say so.
@@ -148,6 +169,11 @@ export interface FailureContext {
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
   const phase = failure.phase ?? '';
+  if (!ctx.paid && DAILY_LIMIT.test(failure.detail)) {
+    // The card refuses before it burns (6A8F, or the pre-flight): nothing
+    // was taken, and another tap today will be refused the same way.
+    return DAILY_LIMIT_BODY;
+  }
   if (failure.cardFull && ctx.burnsDone === 0 && !ctx.paid) {
     // The pre-flight (or a LOAD of earlier change) refused before any burn.
     // No instruction: a spend leaves its slot 'spent', not free, and nothing
@@ -245,6 +271,9 @@ export function pinFailureText(detail: string): string {
   }
   if (/no PIN set/i.test(detail)) {
     return 'This card has no PIN. Tap again without one.';
+  }
+  if (PIN_NEEDED.test(detail)) {
+    return PIN_NEEDED_TEXT;
   }
   return detail.replace(/^VERIFY_PIN failed: /, '');
 }

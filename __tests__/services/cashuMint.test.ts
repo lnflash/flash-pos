@@ -11,31 +11,53 @@
  * accepts, that preview's blinding data is the only way to unblind the
  * response.
  */
-import {
-  bytesToHex,
-  hexToBytes,
-} from '@noble/hashes/utils';
+import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
+
+import {sha256} from '@noble/hashes/sha256';
+import {utf8ToBytes} from '@noble/hashes/utils';
 
 import {
   __resetReconcileThrottle,
   __resetWalletCache,
   buildCardP2PKSecret,
-  makeCanonicalCardOutput,
+  buildCardSigAllSecret,
+  cachedKeysets,
   createSettlementAdapter,
+  expandKeysetId,
+  finishCardChange,
+  inputFee,
   isRateLimited,
+  keysetFor,
   listSettledProofs,
   meltSettledProofs,
+  mintReachable,
+  prepareChargeOutputs,
   rebalanceTill,
   RECONCILE_MIN_INTERVAL_MS,
   reconcileTill,
+  saveKeysets,
+  sigAllMessage,
+  swapSigned,
   sweepSettledProofs,
+  UnknownKeysetError,
+  verifyCardSignature,
+  verifyPieceDleq,
 } from '../../src/services/cashuMint';
+import * as mintModule from '../../src/services/cashuMint';
 import {
+  listOwedChange,
   PermanentSettlementError,
   ProofAlreadySpentError,
   TransportSettlementError,
   type SettlementEntry,
 } from '../../src/services/cashuSettlement';
+import {
+  FakeCard2,
+  REFUND_KEY,
+  TestMint,
+  cardSecretText,
+  pieceNonce,
+} from '../support/cardProtocol2';
 
 const mockStore: Record<string, string> = {};
 
@@ -51,19 +73,25 @@ jest.mock('../../src/services/secureStorage', () => ({
 }));
 
 type WalletMocks = {
-  loadMint: jest.Mock
-  prepareSwapToSend: jest.Mock
-  completeSwap: jest.Mock
-  checkProofsStates: jest.Mock
-  serializeSwapPreview: jest.Mock
-  createMeltQuoteBolt11: jest.Mock
-  meltProofsBolt11: jest.Mock
+  loadMint: jest.Mock;
+  mintSwap: jest.Mock;
+  getKeysets: jest.Mock;
+  ensureKeysetKeys: jest.Mock;
+  prepareSwapToSend: jest.Mock;
+  completeSwap: jest.Mock;
+  checkProofsStates: jest.Mock;
+  serializeSwapPreview: jest.Mock;
+  createMeltQuoteBolt11: jest.Mock;
+  meltProofsBolt11: jest.Mock;
 };
 
 jest.mock('@cashu/cashu-ts', () => {
   const actual = jest.requireActual('@cashu/cashu-ts');
   const mocks: WalletMocks = {
     loadMint: jest.fn(),
+    mintSwap: jest.fn(),
+    getKeysets: jest.fn(() => []),
+    ensureKeysetKeys: jest.fn(async () => undefined),
     prepareSwapToSend: jest.fn(),
     completeSwap: jest.fn(),
     checkProofsStates: jest.fn(),
@@ -73,6 +101,11 @@ jest.mock('@cashu/cashu-ts', () => {
   };
   class MockWallet {
     loadMint = mocks.loadMint;
+    mint = {swap: mocks.mintSwap};
+    keyChain = {
+      getKeysets: mocks.getKeysets,
+      ensureKeysetKeys: mocks.ensureKeysetKeys,
+    };
     prepareSwapToSend = mocks.prepareSwapToSend;
     completeSwap = mocks.completeSwap;
     checkProofsStates = mocks.checkProofsStates;
@@ -90,16 +123,19 @@ jest.mock('@cashu/cashu-ts', () => {
 });
 
 const cashu = jest.requireActual('@cashu/cashu-ts');
-const walletMocks = (jest.requireMock('@cashu/cashu-ts') as {
-  __walletMocks: WalletMocks;
-}).__walletMocks;
+const walletMocks = (
+  jest.requireMock('@cashu/cashu-ts') as {
+    __walletMocks: WalletMocks;
+  }
+).__walletMocks;
 
 // Real values from the silicon run (see HARDWARE_TEST_REPORT_2026-09-22): the
 // fixture pins the secret serialization against a proof the actual toolchain
 // minted, so a formatting drift here fails loudly instead of at the mint.
 const CARD_PUBKEY =
   '03858498d50d2545aec9233357a69ef6d03c25b885921f47d7504c18161025574d';
-const NONCE = '12a121736d3975fd4aefa5fda969e84b2023235d78962c17db23d2ea87d375ef';
+const NONCE =
+  '12a121736d3975fd4aefa5fda969e84b2023235d78962c17db23d2ea87d375ef';
 const KEYSET_ID = '0059534ce0bfa19a';
 const MINT_URL = 'https://forge.flashapp.me';
 
@@ -142,6 +178,19 @@ function entryWith(overrides: Partial<SettlementEntry> = {}): SettlementEntry {
     createdAt: 0,
     updatedAt: 0,
     attempts: 0,
+    sigflag: 'SIG_INPUTS',
+    inputs: [
+      {
+        slot: 0,
+        nonce: NONCE,
+        secret: SECRET,
+        C: TEST_CARD_PUBKEY,
+        amount: 16,
+        keysetId: KEYSET_ID,
+      },
+    ],
+    outputs: [],
+    merchantBlinding: [],
     ...overrides,
   };
 }
@@ -182,24 +231,32 @@ describe('buildCardP2PKSecret', () => {
   it('reproduces the mint-time serialization byte for byte', () => {
     // NONCE + CARD_PUBKEY are the values the real toolchain minted on silicon.
     expect(buildCardP2PKSecret(NONCE, CARD_PUBKEY)).toBe(
-      '["P2PK",{"nonce":"' + NONCE + '","data":"' + CARD_PUBKEY + '","tags":[["sigflag","SIG_INPUTS"]]}]',
+      '["P2PK",{"nonce":"' +
+        NONCE +
+        '","data":"' +
+        CARD_PUBKEY +
+        '","tags":[["sigflag","SIG_INPUTS"]]}]',
     );
   });
 
   it('lower-cases whatever the card reports', () => {
-    const s = buildCardP2PKSecret(NONCE.toUpperCase(), CARD_PUBKEY.toUpperCase());
+    const s = buildCardP2PKSecret(
+      NONCE.toUpperCase(),
+      CARD_PUBKEY.toUpperCase(),
+    );
     expect(s).toBe(buildCardP2PKSecret(NONCE, CARD_PUBKEY));
   });
 });
 
-describe('makeCanonicalCardOutput', () => {
-  it('blinds a secret the card-side rebuild reproduces byte for byte', () => {
-    const output = makeCanonicalCardOutput(8, KEYSET_ID, CARD_PUBKEY);
-    const written = new TextDecoder().decode(
-      output.secret instanceof Uint8Array ? output.secret : output.secret,
-    );
-    const {nonce} = JSON.parse(written)[1];
-    expect(written).toBe(buildCardP2PKSecret(nonce, CARD_PUBKEY));
+// Decision 13: only the card's own change path remains for new charges. A
+// terminal-made change output (0.x's SIG_INPUTS piece) on a 2.0 card would be
+// a piece the card can never spend — it rebuilds every secret as format 4.
+describe('terminal-made card change is gone (decision 13)', () => {
+  it('exports no makeCanonicalCardOutput, makeChangeOnTill or mintChargeChange', () => {
+    const mod = mintModule as Record<string, unknown>;
+    expect(mod.makeCanonicalCardOutput).toBeUndefined();
+    expect(mod.makeChangeOnTill).toBeUndefined();
+    expect(mod.mintChargeChange).toBeUndefined();
   });
 });
 
@@ -212,7 +269,8 @@ describe('swap', () => {
     const adapter = createSettlementAdapter();
     let pendingDuringCall: string | null = null;
     walletMocks.completeSwap.mockImplementation(async () => {
-      pendingDuringCall = mockStore[`@cashu_settlement_swap:${entryWith().id}`] ?? null;
+      pendingDuringCall =
+        mockStore[`@cashu_settlement_swap:${entryWith().id}`] ?? null;
       // Exact-cover shape: send carries the full amount, keep is empty —
       // the shape a real mint returns for this swap (regression: the
       // adapter used to persist only `keep` and book the payment as nothing).
@@ -227,7 +285,9 @@ describe('swap', () => {
       {includeFees: true},
     );
     expect(pendingDuringCall).toBe(JSON.stringify('serialized-preview'));
-    expect(mockStore['@cashu_settlement_swap:' + entryWith().id]).toBeUndefined();
+    expect(
+      mockStore['@cashu_settlement_swap:' + entryWith().id],
+    ).toBeUndefined();
     await expect(listSettledProofs()).resolves.toEqual(SETTLED);
   });
 
@@ -328,7 +388,9 @@ describe('swap', () => {
     const adapter = createSettlementAdapter();
     walletMocks.loadMint.mockRejectedValueOnce(new Error('mint rate-limited'));
 
-    await expect(adapter.swap(entryWith())).rejects.toThrow('mint rate-limited');
+    await expect(adapter.swap(entryWith())).rejects.toThrow(
+      'mint rate-limited',
+    );
     await adapter.swap(entryWith());
 
     expect(walletMocks.loadMint).toHaveBeenCalledTimes(2);
@@ -355,7 +417,9 @@ describe('swap', () => {
       mockStore[k] = v;
     });
 
-    await expect(adapter.swap(entryWith())).rejects.toThrow('keychain write denied');
+    await expect(adapter.swap(entryWith())).rejects.toThrow(
+      'keychain write denied',
+    );
     expect(mockStore[`@cashu_settlement_swap:${entryWith().id}`]).toBeDefined();
     await expect(listSettledProofs()).resolves.toEqual([]);
   });
@@ -413,7 +477,12 @@ describe('meltSettledProofs', () => {
     walletMocks.meltProofsBolt11.mockImplementation(async () => ({
       quote: {...meltQuote, state: 'PAID', payment_preimage: 'preimage-1'},
       change: [
-        {id: KEYSET_ID, amount: 1, secret: 'change-secret', C: TEST_CARD_PUBKEY},
+        {
+          id: KEYSET_ID,
+          amount: 1,
+          secret: 'change-secret',
+          C: TEST_CARD_PUBKEY,
+        },
       ],
     }));
   });
@@ -465,7 +534,9 @@ describe('meltSettledProofs', () => {
     const store = JSON.parse(mockStore['@cashu_settled_proofs']);
     expect(store).toHaveLength(1);
     expect(store[0].secret).toBe('change-secret');
-    expect(mockStore['@cashu_settled_payout:@q1'.replace('@q1', 'payout-q1')]).toBeUndefined();
+    expect(
+      mockStore['@cashu_settled_payout:@q1'.replace('@q1', 'payout-q1')],
+    ).toBeUndefined();
   });
 
   it('rejects a pasted invoice whose reserve overruns the balance', async () => {
@@ -543,8 +614,12 @@ describe('meltSettledProofs', () => {
 // the scheduler never backed off.
 describe('isRateLimited', () => {
   it('recognises what cashu-ts throws for a 429', () => {
-    expect(isRateLimited(new cashu.RateLimitError('Too Many Requests', 2500))).toBe(true);
-    expect(isRateLimited(new cashu.HttpResponseError('throttled', 429))).toBe(true);
+    expect(
+      isRateLimited(new cashu.RateLimitError('Too Many Requests', 2500)),
+    ).toBe(true);
+    expect(isRateLimited(new cashu.HttpResponseError('throttled', 429))).toBe(
+      true,
+    );
   });
 
   it('recognises a bare status or a message naming the throttle', () => {
@@ -561,7 +636,9 @@ describe('isRateLimited', () => {
 
   it('is not every other failure', () => {
     expect(isRateLimited(new cashu.HttpResponseError('boom', 500))).toBe(false);
-    expect(isRateLimited(new cashu.MintOperationError(11001, 'Token already spent'))).toBe(false);
+    expect(
+      isRateLimited(new cashu.MintOperationError(11001, 'Token already spent')),
+    ).toBe(false);
     expect(isRateLimited(new TypeError('Network request failed'))).toBe(false);
     expect(isRateLimited(new Error('amount 14290 too large'))).toBe(false);
     expect(isRateLimited(null)).toBe(false);
@@ -612,7 +689,12 @@ describe('sweepSettledProofs', () => {
       keepReserveSat: 16,
     });
 
-    expect(result).toEqual({paidSat: 0, feeReserveSat: 0, preimage: null, change: []});
+    expect(result).toEqual({
+      paidSat: 0,
+      feeReserveSat: 0,
+      preimage: null,
+      change: [],
+    });
     expect(walletMocks.checkProofsStates).not.toHaveBeenCalled();
     expect(walletMocks.createMeltQuoteBolt11).not.toHaveBeenCalled();
     expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
@@ -826,7 +908,7 @@ describe('reconcileTill', () => {
     expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(2);
   });
 
-  it('a throttled attempt counts as the window\'s one ask, and rethrows', async () => {
+  it("a throttled attempt counts as the window's one ask, and rethrows", async () => {
     walletMocks.checkProofsStates.mockRejectedValue(
       new cashu.RateLimitError('Too Many Requests', 2500),
     );
@@ -872,7 +954,9 @@ describe('rebalanceTill — the rate-limit retry', () => {
   it('retries once after retryAfterMs when the mint answers a real 429', async () => {
     jest.useFakeTimers(FAKE_TIMERS);
     walletMocks.prepareSwapToSend
-      .mockRejectedValueOnce(new cashu.RateLimitError('429 Too Many Requests', 2500))
+      .mockRejectedValueOnce(
+        new cashu.RateLimitError('429 Too Many Requests', 2500),
+      )
       .mockResolvedValueOnce(PREVIEW);
 
     const pending = rebalanceTill(MINT_URL);
@@ -894,5 +978,462 @@ describe('rebalanceTill — the rate-limit retry', () => {
       cashu.MintOperationError,
     );
     expect(walletMocks.prepareSwapToSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── protocol 2.0: the card's secrets, the SIG_ALL message, DLEQ, the swap ──
+
+const vectors = require('../fixtures/card-protocol-2.0/secret.json') as {
+  cardKey: string;
+  refundKey: string;
+  pieces: {
+    amount: number;
+    nonce: string;
+    C: string;
+    date: number;
+    secret: string;
+    message: string;
+    signature: string;
+  }[];
+};
+
+describe('buildCardSigAllSecret (spec/vectors/secret.json)', () => {
+  it.each(vectors.pieces.map(p => [p.amount, p.date, p]))(
+    'rebuilds the %i-sat piece dated %i byte for byte',
+    (_amount, _date, piece) => {
+      const p = piece as (typeof vectors.pieces)[number];
+      expect(
+        buildCardSigAllSecret(
+          p.nonce,
+          vectors.cardKey,
+          p.date,
+          vectors.refundKey,
+        ),
+      ).toBe(p.secret);
+    },
+  );
+
+  it('lower-cases what the card reports', () => {
+    const p = vectors.pieces[2];
+    expect(
+      buildCardSigAllSecret(
+        p.nonce.toUpperCase(),
+        vectors.cardKey.toUpperCase(),
+        p.date,
+        vectors.refundKey.toUpperCase(),
+      ),
+    ).toBe(p.secret);
+  });
+
+  it('refuses a dated piece with no refund key rather than guess its secret', () => {
+    expect(() =>
+      buildCardSigAllSecret(vectors.pieces[1].nonce, vectors.cardKey, 1),
+    ).toThrow(/refund key/);
+  });
+
+  it('is the format-4 text, never the 0.x SIG_INPUTS one', () => {
+    const secret = buildCardSigAllSecret(NONCE, TEST_CARD_PUBKEY);
+    expect(secret).toContain('["sigflag","SIG_ALL"]');
+    expect(secret).not.toBe(buildCardP2PKSecret(NONCE, TEST_CARD_PUBKEY));
+  });
+});
+
+describe('sigAllMessage', () => {
+  it("is the applet's message for each vector piece, and its signature verifies", () => {
+    for (const p of vectors.pieces) {
+      const message = sigAllMessage([{secret: p.secret, C: p.C}], []);
+      expect(bytesToHex(message)).toBe(p.message);
+      expect(verifyCardSignature(p.signature, message, vectors.cardKey)).toBe(
+        true,
+      );
+    }
+  });
+
+  it('hashes inputs (secret ‖ C) then outputs (decimal amount ‖ B_), in order', () => {
+    const inputs = [
+      {secret: 'A', C: '02AB'},
+      {secret: 'B', C: '03cd'},
+    ];
+    const outputs = [
+      {amount: 16, B_: '02EF'},
+      {amount: 1, B_: '0301'},
+    ];
+    expect(bytesToHex(sigAllMessage(inputs, outputs))).toBe(
+      bytesToHex(sha256(utf8ToBytes('A02abB03cd1602ef10301'))),
+    );
+  });
+
+  it('a signature over another payment does not verify', () => {
+    const p = vectors.pieces[0];
+    const other = sigAllMessage(
+      [{secret: p.secret, C: p.C}],
+      [{amount: 1, B_: TEST_CARD_PUBKEY}],
+    );
+    expect(verifyCardSignature(p.signature, other, vectors.cardKey)).toBe(
+      false,
+    );
+    expect(verifyCardSignature('zz', other, vectors.cardKey)).toBe(false);
+  });
+});
+
+describe('verifyPieceDleq', () => {
+  const mint = new TestMint();
+  const card = new FakeCard2();
+  const piece = mint.mintPiece(card.pubkey, 8, {nonce: pieceNonce(1)});
+
+  it('a piece the mint signed, with its kept proof, verifies', () => {
+    expect(verifyPieceDleq(piece, piece.dleq, mint.keys)).toBe(true);
+  });
+
+  it('a dated piece verifies with its own secret', () => {
+    const dated = mint.mintPiece(card.pubkey, 4, {
+      nonce: pieceNonce(2),
+      date: 1700000000,
+      refundKey: REFUND_KEY,
+    });
+    expect(dated.secret).toBe(
+      buildCardSigAllSecret(dated.nonce, card.pubkey, 1700000000, REFUND_KEY),
+    );
+    expect(verifyPieceDleq(dated, dated.dleq, mint.keys)).toBe(true);
+  });
+
+  it('a made-up C does not', () => {
+    expect(
+      verifyPieceDleq({...piece, C: card.pubkey}, piece.dleq, mint.keys),
+    ).toBe(false);
+  });
+
+  it("another mint's keys do not", () => {
+    const other = new TestMint({label: 'another-mint'});
+    expect(verifyPieceDleq(piece, piece.dleq, other.keys)).toBe(false);
+  });
+
+  it('a missing proof, missing keys, or a tampered proof is not verified', () => {
+    expect(verifyPieceDleq(piece, null, mint.keys)).toBe(false);
+    expect(verifyPieceDleq(piece, piece.dleq, undefined)).toBe(false);
+    expect(
+      verifyPieceDleq(piece, {...piece.dleq!, e: '00'.repeat(32)}, mint.keys),
+    ).toBe(false);
+    expect(verifyPieceDleq({...piece, amount: 3}, piece.dleq, mint.keys)).toBe(
+      false,
+    );
+  });
+});
+
+describe('the kept keysets', () => {
+  const mint = new TestMint();
+
+  it("expandKeysetId finds the one keyset a card's 8 bytes name", () => {
+    const v2 = {...mint.cachedKeyset(), id: `01${'ab'.repeat(32)}`};
+    const keysets = [mint.cachedKeyset(), v2];
+    expect(expandKeysetId(KEYSET_ID, keysets).id).toBe(KEYSET_ID);
+    expect(expandKeysetId(`01${'ab'.repeat(7)}`, keysets).id).toBe(v2.id);
+  });
+
+  it('refuses an unknown or ambiguous prefix rather than guess', () => {
+    const twin = {...mint.cachedKeyset(), id: `${KEYSET_ID}ff`};
+    expect(() =>
+      expandKeysetId('00ffffffffffffff', [mint.cachedKeyset()]),
+    ).toThrow(UnknownKeysetError);
+    expect(() =>
+      expandKeysetId(KEYSET_ID, [mint.cachedKeyset(), twin]),
+    ).toThrow(/names 2 keysets/);
+  });
+
+  it('keysetFor answers from what is kept, with no network', async () => {
+    await saveKeysets(MINT_URL, [mint.cachedKeyset()]);
+    const keyset = await keysetFor(MINT_URL, KEYSET_ID, {online: false});
+    expect(keyset.keys['8']).toBe(mint.keys['8']);
+    expect(walletMocks.loadMint).not.toHaveBeenCalled();
+  });
+
+  it('keysetFor offline with nothing kept is UnknownKeysetError', async () => {
+    await expect(
+      keysetFor(MINT_URL, KEYSET_ID, {online: false}),
+    ).rejects.toBeInstanceOf(UnknownKeysetError);
+  });
+
+  it('keysetFor online asks the mint and keeps what it learns', async () => {
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const keyset = await keysetFor(MINT_URL, KEYSET_ID);
+    expect(keyset.id).toBe(KEYSET_ID);
+    await expect(cachedKeysets(MINT_URL)).resolves.toEqual([
+      mint.cachedKeyset(),
+    ]);
+  });
+
+  it('a mint that lists a keyset without keys keeps the ones learned earlier', async () => {
+    await saveKeysets(MINT_URL, [mint.cachedKeyset()]);
+    walletMocks.getKeysets.mockReturnValue([
+      {...mint.keyChainKeyset(), isActive: false, hasKeys: false, keys: {}},
+    ]);
+    await keysetFor(MINT_URL, '00ffffffffffffff').catch(() => null);
+    const kept = await cachedKeysets(MINT_URL);
+    expect(kept[0].active).toBe(false);
+    expect(kept[0].keys['8']).toBe(mint.keys['8']);
+  });
+
+  it('inputFee is NUT-02: per input, in parts per thousand, rounded up', () => {
+    expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 0}, 3)).toBe(0);
+    expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 100}, 2)).toBe(1);
+    expect(inputFee({...mint.cachedKeyset(), inputFeePpk: 100}, 11)).toBe(2);
+  });
+});
+
+describe('prepareChargeOutputs', () => {
+  it('one blinded output per power-of-two piece, each with its opening kept', () => {
+    const {outputs, blinding} = prepareChargeOutputs({
+      keysetId: KEYSET_ID,
+      merchantSat: 13,
+    });
+    expect(outputs.map(o => o.amount)).toEqual([8, 4, 1]);
+    expect(outputs.every(o => o.keysetId === KEYSET_ID)).toBe(true);
+    expect(blinding).toHaveLength(3);
+    // Each B_ is the blinding of its own secret with its own r.
+    outputs.forEach((o, i) => {
+      const {B_} = cashu.blindMessage(
+        utf8ToBytes(blinding[i].secret),
+        BigInt(`0x${blinding[i].r}`),
+      );
+      expect(B_.toHex(true)).toBe(o.B_);
+    });
+    // Fresh secrets every time.
+    expect(new Set(blinding.map(b => b.secret)).size).toBe(3);
+  });
+
+  it('refuses outputs worth nothing', () => {
+    expect(() =>
+      prepareChargeOutputs({keysetId: KEYSET_ID, merchantSat: 0}),
+    ).toThrow();
+  });
+});
+
+/** A 2.0 payment the fake card signs: two pieces, merchant outputs, its own change. */
+async function signedPayment(mint: TestMint, changeSat = 4) {
+  const probe = new FakeCard2();
+  const pieces = [8, 16].map((amount, i) =>
+    mint.mintPiece(probe.pubkey, amount, {nonce: pieceNonce(10 + i)}),
+  );
+  const card = new FakeCard2({pieces});
+  const inputs = pieces.map((p, i) => ({
+    slot: i,
+    nonce: p.nonce,
+    secret: p.secret,
+    C: p.C,
+    amount: p.amount,
+    keysetId: KEYSET_ID,
+  }));
+  const merchant = prepareChargeOutputs({
+    keysetId: KEYSET_ID,
+    merchantSat: 24 - changeSat,
+  });
+  // Drive the card by hand: BEGIN, OUTPUTS, CHANGE, SIGN.
+  const card_ = jest.requireActual('../../src/services/cashuCard');
+  await card_.selectApplet(card.transceive);
+  await card_.spendAllBegin(card.transceive, [0, 1]);
+  await card_.spendAllOutputs(card.transceive, merchant.outputs);
+  const outputs = [...merchant.outputs];
+  for (const amount of changeSat ? [changeSat] : []) {
+    outputs.push({
+      amount,
+      B_: await card_.spendAllChange(card.transceive, amount),
+      keysetId: KEYSET_ID,
+    });
+  }
+  const witness = card_.toHex(await card_.spendAllSign(card.transceive));
+  return {
+    card,
+    signed: {
+      inputs,
+      witness,
+      outputs,
+      merchantBlinding: merchant.blinding,
+      ...(changeSat ? {cardChangeIndex: merchant.outputs.length} : {}),
+    },
+  };
+}
+
+describe('swapSigned', () => {
+  it('submits the stored payment exactly, the witness on the first input only', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    walletMocks.mintSwap.mockImplementation(async req => mint.swap(req));
+    const {signed} = await signedPayment(mint);
+
+    const result = await swapSigned(MINT_URL, signed);
+
+    const [req] = walletMocks.mintSwap.mock.calls[0];
+    expect(req.inputs.map((i: {secret: string}) => i.secret)).toEqual(
+      signed.inputs.map(i => i.secret),
+    );
+    expect(req.inputs[0].witness).toBe(
+      JSON.stringify({signatures: [signed.witness]}),
+    );
+    expect(req.inputs[1].witness).toBeUndefined();
+    expect(req.outputs).toEqual(
+      signed.outputs.map(o => ({amount: o.amount, id: KEYSET_ID, B_: o.B_})),
+    );
+    // The merchant's outputs are unblinded into real proofs of the mint.
+    expect(result.till.map(p => p.amount)).toEqual([16, 4]);
+    for (const p of result.till) {
+      expect(mint.verifyProof(p.secret, p.C, p.amount)).toBe(true);
+    }
+    // The card's change comes back as the mint's half, with its DLEQ.
+    expect(result.cardChange).toEqual([
+      expect.objectContaining({
+        amount: 4,
+        B_: signed.outputs[2].B_,
+        keysetId: KEYSET_ID,
+        dleq: expect.objectContaining({e: expect.any(String)}),
+      }),
+    ]);
+  });
+
+  it('the mint refuses a witness that does not sign these outputs', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    walletMocks.mintSwap.mockImplementation(async req => mint.swap(req));
+    const {signed} = await signedPayment(mint);
+    const swapped = {
+      ...signed,
+      outputs: [...signed.outputs].reverse(),
+    };
+    await expect(swapSigned(MINT_URL, swapped)).rejects.toMatchObject({
+      code: 20008,
+    });
+  });
+
+  it("finishCardChange unblinds the change with the card's r", () => {
+    const mint = new TestMint();
+    const secret = cardSecretText(pieceNonce(5), new FakeCard2().pubkey);
+    const r = 12345n;
+    const {B_} = cashu.blindMessage(utf8ToBytes(secret), r);
+    const {C_} = mint.sign(B_.toHex(true), 4);
+    const C = finishCardChange(
+      C_,
+      r.toString(16).padStart(64, '0'),
+      4,
+      mint.keys,
+    );
+    expect(mint.verifyProof(secret, C, 4)).toBe(true);
+    expect(() =>
+      finishCardChange(C_, r.toString(16).padStart(64, '0'), 3, mint.keys),
+    ).toThrow(UnknownKeysetError);
+  });
+});
+
+describe('swap — a 2.0 payment (SIG_ALL)', () => {
+  async function sigAllEntry(mint: TestMint) {
+    const {signed, card} = await signedPayment(mint);
+    const message = bytesToHex(sigAllMessage(signed.inputs, signed.outputs));
+    const first = signed.inputs[0];
+    const entry: SettlementEntry = {
+      id: `${card.pubkey}:${first.slot}:${first.nonce}`,
+      cardPubkey: card.pubkey,
+      slot: first.slot,
+      keysetId: KEYSET_ID,
+      mintUrl: MINT_URL,
+      unit: 'sat',
+      amount: 24,
+      nonce: first.nonce,
+      secret: first.secret,
+      C: first.C,
+      witness: signed.witness,
+      status: 'pending',
+      createdAt: 0,
+      updatedAt: 0,
+      attempts: 0,
+      sigflag: 'SIG_ALL',
+      inputs: signed.inputs,
+      outputs: signed.outputs,
+      merchantBlinding: signed.merchantBlinding,
+      cardChangeIndex: signed.cardChangeIndex,
+      message,
+    };
+    return entry;
+  }
+
+  it("resubmits the stored outputs, keeps the till and records the card's change owed", async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    walletMocks.mintSwap.mockImplementation(async req => mint.swap(req));
+    const entry = await sigAllEntry(mint);
+
+    await createSettlementAdapter().swap(entry);
+
+    const [req] = walletMocks.mintSwap.mock.calls[0];
+    expect(req.outputs.map((o: {B_: string}) => o.B_)).toEqual(
+      entry.outputs.map(o => o.B_),
+    );
+    expect(walletMocks.prepareSwapToSend).not.toHaveBeenCalled();
+    expect((await listSettledProofs()).map(p => p.amount)).toEqual([16, 4]);
+    const owed = await listOwedChange();
+    expect(owed).toEqual([
+      expect.objectContaining({
+        cardPubkey: entry.cardPubkey,
+        amount: 4,
+        B_: entry.outputs[2].B_,
+        status: 'owed',
+      }),
+    ]);
+  });
+
+  it('refuses before any network call a witness that does not sign the stored payment', async () => {
+    const mint = new TestMint();
+    const entry = await sigAllEntry(mint);
+    const tampered = {
+      ...entry,
+      outputs: entry.outputs.map((o, i) =>
+        i === 0 ? {...o, amount: o.amount + 1} : o,
+      ),
+    };
+    await expect(
+      createSettlementAdapter().swap(tampered),
+    ).rejects.toBeInstanceOf(PermanentSettlementError);
+    await expect(
+      createSettlementAdapter().swap({...entry, message: '00'.repeat(32)}),
+    ).rejects.toBeInstanceOf(PermanentSettlementError);
+    expect(walletMocks.mintSwap).not.toHaveBeenCalled();
+  });
+
+  it("maps the mint's 11001 to ProofAlreadySpentError", async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    walletMocks.mintSwap.mockImplementation(async req => mint.swap(req));
+    const entry = await sigAllEntry(mint);
+    await createSettlementAdapter().swap(entry);
+    await expect(createSettlementAdapter().swap(entry)).rejects.toBeInstanceOf(
+      ProofAlreadySpentError,
+    );
+  });
+
+  it('a fetch-level failure is TransportSettlementError (provably unsent)', async () => {
+    const mint = new TestMint();
+    walletMocks.mintSwap.mockRejectedValue(
+      new TypeError('Network request failed'),
+    );
+    const entry = await sigAllEntry(mint);
+    await expect(createSettlementAdapter().swap(entry)).rejects.toBeInstanceOf(
+      TransportSettlementError,
+    );
+  });
+});
+
+describe('mintReachable', () => {
+  it('true when the mint answers its keysets, false on any failure', async () => {
+    const fetchOk = jest.fn(async () => ({ok: true} as Response));
+    const fetchDown = jest.fn(async () => {
+      throw new TypeError('Network request failed');
+    });
+    const fetch500 = jest.fn(async () => ({ok: false} as Response));
+    await expect(mintReachable(`${MINT_URL}/`, 100, fetchOk)).resolves.toBe(
+      true,
+    );
+    expect(fetchOk).toHaveBeenCalledWith(
+      `${MINT_URL}/v1/keysets`,
+      expect.anything(),
+    );
+    await expect(mintReachable(MINT_URL, 100, fetchDown)).resolves.toBe(false);
+    await expect(mintReachable(MINT_URL, 100, fetch500)).resolves.toBe(false);
   });
 });

@@ -17,14 +17,10 @@ import {
   withCardSession,
 } from '../services/cashuCardNfc';
 import {useAppSelector} from '../store/hooks';
-import {getPubkey, toHex} from '../services/cashuCard';
+import {getPubkey, selectApplet, toHex} from '../services/cashuCard';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
-import {settlePending} from '../services/cashuSpend';
-import {
-  attachRecoveredWitness,
-  recoverableForCard,
-} from '../services/cashuSettlement';
-import {resignWitness} from '../services/cashuCard';
+import {recoverNeedsCard, settlePending} from '../services/cashuSpend';
+import {recoverableForCard} from '../services/cashuSettlement';
 import {meltSettledProofs, type PayoutResult} from '../services/cashuMint';
 import {chargeCard, type ChargeResult} from '../services/cashuCharge';
 import {
@@ -55,7 +51,7 @@ const PayoutInput = styled(TextInput)`
  * Cashu card spend screen (dev builds only) — the terminal's first
  * tap-to-settle path, wired to the offline settlement queue.
  *
- * One tap burns the first unspent slot and records the settlement; the mint
+ * One tap pays from the card (one SIG_ALL signature) and records the settlement; the mint
  * round-trip happens *outside* the NFC session, on the Settle control. The
  * queue is the production one (`recordSpend` → `drainQueue` with the cashu-ts
  * adapter), so this screen is the silicon proof of the whole spend path.
@@ -198,27 +194,30 @@ const CashuCardSpend = () => {
     }
   }, [payoutInput, payingOut, refreshQueue]);
 
-  // Recovery: `needs-card` entries have a burned slot whose signature was
-  // lost to a mid-burn failure. The slot is still readable, so the card can
-  // re-sign the same message (PIN session) and the entry settles normally.
+  // Recovery: `needs-card` entries are payments the card burned whose
+  // signature was lost on the air. SPEND_ALL_AGAIN gives the card's LAST
+  // signature again; it is accepted only for the entry whose stored message
+  // it verifies against, and an entry the card has signed past is marked
+  // failed for a human.
   const onRecover = useCallback(async () => {
     setRecovering(true);
     setError(null);
     try {
       await withCardSession(async transceive => {
+        await selectApplet(transceive);
         const pubkey = toHex(await getPubkey(transceive));
         const recoverable = await recoverableForCard(pubkey);
         if (recoverable.length === 0) {
           toastShow({message: 'eCash: nothing to recover', type: 'success'});
           return;
         }
-        for (const entry of recoverable) {
-          const signature = await resignWitness(transceive, entry);
-          await attachRecoveredWitness(entry.id, toHex(signature), Date.now());
-        }
+        const recovered = await recoverNeedsCard({
+          transceive,
+          cardPubkey: pubkey,
+        });
         toastShow({
-          message: `eCash: recovered ${recoverable.length} settlement(s)`,
-          type: 'success',
+          message: `eCash: recovered ${recovered.length} of ${recoverable.length} settlement(s)`,
+          type: recovered.length > 0 ? 'success' : 'error',
         });
         await refreshQueue();
       });
@@ -240,7 +239,7 @@ const CashuCardSpend = () => {
     <Wrapper contentContainerStyle={contentStyle}>
       <Title>eCash card spend</Title>
       <Caption>
-        Burns the first unspent slot and queues the settlement. Mint:{' '}
+        Pays from the card and queues the settlement. Mint:{' '}
         {FLASH_CASHU_MINT_URL}
       </Caption>
 

@@ -34,6 +34,20 @@ const SUMMARY: CardSummary = {
     secp256k1Native: true,
     schnorr: true,
     pinState: 'set',
+    // Protocol 2.0's GET_INFO fields: what this screen does not show.
+    major: 1,
+    minor: 0,
+    capabilities: 0xff,
+    format: 4,
+    triesLeft: 3,
+    locked: false,
+    recordSet: true,
+    dailyLimit: 0,
+    hasOwner: true,
+    now: 0,
+    windowStart: 0,
+    spentToday: 0,
+    changeGrant: false,
   },
   pubkey: '02'.padEnd(66, 'ab'),
   balance: 500,
@@ -68,9 +82,7 @@ describe('CashuCardDebug session lifecycle', () => {
   // An IsoDep request never times out on Android — it stays pending until a
   // card arrives, and a pending request makes the native module swallow every
   // BoltCard tap app-wide. Walking away mid-read must not strand it.
-  it(
-    'cancels an in-flight read when the screen unmounts',
-    async () => {
+  it('cancels an in-flight read when the screen unmounts', async () => {
     const pending = deferred<CardSummary>();
     mockReadCardOverNfc.mockReturnValue(pending.promise);
 
@@ -88,9 +100,7 @@ describe('CashuCardDebug session lifecycle', () => {
     await act(async () => {
       pending.resolve(SUMMARY);
     });
-    },
-    15000,
-  );
+  }, 15000);
 
   it('cancels the session from the Cancel control without unmounting', async () => {
     const pending = deferred<CardSummary>();
