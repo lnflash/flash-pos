@@ -165,8 +165,12 @@ the exact platform where the operator has no other way to cancel.
 ```xml
 <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
 <array>
-    <string>D2760000850102</string>      <!-- package AID -->
-    <string>D276000085010201</string>    <!-- applet AID -->
+    <string>F0434153485543415244</string>    <!-- 2.0 package AID ("CASHUCARD") -->
+    <string>F043415348554341524401</string>  <!-- 2.0 applet AID -->
+    <!-- … the BoltCard NDEF AIDs … -->
+    <string>D2760000850102</string>          <!-- 0.x package AID: detection only -->
+    <string>D276000085010201</string>        <!-- 0.x applet AID: detection only -->
+    <string>F0464F585943415244</string>      <!-- Foxy 1.x AID: detection only -->
 </array>
 ```
 
@@ -174,9 +178,52 @@ Already added to `ios/flash_pos/Info.plist`. iOS will only `SELECT` identifiers
 on this list — an unlisted AID fails at `requestTechnology`, not at SELECT, so
 the error will not look like a card problem.
 
-Both forms are declared because `selectApplet()` tries the 7-byte package AID
-first (prefix match, matching `cardctl`) and falls back to the full 8-byte
-applet AID for cards that do not support partial selection.
+Both forms of each AID are declared because `selectApplet()` tries the package
+AID first (prefix match, matching `cardctl`) and falls back to the full applet
+AID for cards that do not support partial selection.
+
+**Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
+protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 AID is tried first.
+Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"), any
+answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
+`6E00` or `6999` — is **"This card needs an update"**. A card that refuses
+both 2.0 AIDs with `6A82` is asked for the old AIDs (0.x, and Foxy's 1.x
+`F0 46 4F 58 59 43 41 52 44`, which `spec/APDU.md` also names); one that
+answers is an old card, and the terminal says **"This card needs an update"**
+and sends nothing else — no PIN pad, no write, no spend
+(`CardNeedsUpdateError`). The old AIDs stay in the list for exactly that:
+dropping them would hide an old card from CoreNFC instead of telling its
+holder. A card that answers `6A82` to all of them is not an eCash card, and
+the BoltCard/LNURLw path reads it. A 0.x card's funds are swept by an
+operator (a release precondition), never by this app.
+
+Before anything is planned, `readAndPlan` refuses a card its owner has
+locked (`LOCK_CARD`, GET_INFO byte 10: "This card is locked and can't be used
+to pay." — it loads nothing more, so a payment's change could never go back
+on), a card whose pieces are not format 4 (GET_INFO byte 8, GET_CARD byte 0:
+needs an update) and a card whose unit is not sat (GET_CARD byte 2). It plans
+from the short listing (`GET_PIECES` P2 = 3, `spec/APDU.md` "Payment Flow")
+and reads only the chosen slots whole, by name (P2 = 2), each held to what
+the listing said.
+
+On a 2.0 card a payment is ONE NUT-11 SIG_ALL signature (`SPEND_ALL_*`) over
+the pieces, the merchant's outputs and the card's own change, which the card
+makes for itself (`SPEND_ALL_CHANGE`) and the terminal finishes from the
+card's openings (`GET_CHANGE`) after the swap. Before a payment the till
+shows the card the Bitcoin tip header (`SET_HEADER`; mempool.space, then
+blockstream.info, or the build's optional `FLASH_HEADER_APIS`, read through
+`@env-optional` so a build without it still builds), which is the clock the
+card's daily limit and no-PIN allowance run on. A balance read checks `AUTH`:
+a card that cannot prove its key fails the read.
+
+A charge is never a success without a signature that verifies against the
+payment: a SIGN answer that was lost (`needs-card`) or one that does not
+verify (`failed`) ends the charge as "Not confirmed yet", never "Paid", and
+never offers a re-charge. A swap the mint refuses outright after the card
+signed ends as "Not paid — the mint refused it" with Done only: the card has
+burned, so "Tap card again" would burn it a second time. Whenever the mint
+answers, the cached keysets and fees are refreshed before the card signs,
+exact bills included.
 
 > ✅ **Verified on iOS (2026-09-23).** The entitlement and AID list worked
 > against a real card on the first hardware session — both SELECT identifiers
@@ -203,32 +250,38 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
   take (an exact bill needs no slot, and the full-with-change-owed card
   ENG-630 came from must be able to pay again). `executeCharge` re-checks
   the store before writing owed change, and any piece the store says was
-  already attempted is reconciled against the card first (`GET_INFO`, slot
-  statuses, `reconcileOwedChange`) — a LOAD whose answer was lost leaves the
-  piece on the card and still `owed` on disk, and the card does not dedup —
-  so a PIN-flow retry never re-sends a piece the first attempt landed,
-  whether the store heard the answer or not. A first attempt skips the
-  re-read. A card with no room for the plan's change is refused
-  with "this card is full: …" before any `SPEND_PROOF`, and the screen says
+  already attempted is reconciled against the card first (`GET_CHANGE`,
+  `reconcileOwedChange`) — a LOAD whose answer was lost leaves the piece on
+  the card and still `owed` on disk — so a PIN-flow retry never re-sends a
+  piece the first attempt landed, whether the store heard the answer or not
+  (and a 2.0 card answers a LOAD of a piece it already holds with `6A94`,
+  which the terminal reads as landed). A first attempt skips the re-read. A
+  card with no room for the plan's change is refused with "this card is
+  full: …" before it is asked to sign, and the screen says
   nothing was taken — and nothing else: a spend leaves its slot `spent`, not
   free, and nothing in the app clears spent slots yet (ENG-631).
 - **The owed-change store** (`@cashu_owed_change`, a `{v, entries}` envelope
-  separate from the settlement queue). `executeCharge` records every minted
-  change piece as `owed` **before** the first `LOAD_PROOF`, and marks each
-  `written` (with its slot) as the card answers. Whatever is still `owed` is
-  written on the card's next tap: `reconcileOwedChange` first reads every
-  non-empty slot it was not handed already (`readAndPlan` passes the unspent
-  slots it just pulled, so only the spent ones cost an APDU — a lost LOAD
-  answer leaves the piece on the card, and the card does not dedup) and marks
-  any piece already there, then `writeOwedChange` loads the rest — counting
-  each attempt (`markOwedChangeSending`) BEFORE its `LOAD_PROOF` goes out, so
-  a `written` mark the keychain refuses after the card answered still reads
-  as attempted and the retry reconciles instead of sending a twin. In a
-  charge that happens after the PIN verify and before the burn (`LOAD_PROOF`
-  is PIN-gated when a PIN is set); on the keypad's balance read a PIN-less card
-  takes it in the same session and a PIN card is told what is waiting
-  (`CashuCardBalance`). The balance tap is a read: a refused or lost write
-  there never vetoes it, the screen opens with what is still waiting.
+  separate from the settlement queue; v2 since protocol 2.0). On a 2.0 card
+  the change is the card's own (`SPEND_ALL_CHANGE`): `executeCharge` records
+  the mint's half of every change piece — the blinded message `B_`, the blind
+  signature `C_` and its DLEQ — as `owed` **before** the first `LOAD_PROOF`,
+  then finishes each piece from the card's opening (`GET_CHANGE`: nonce, r,
+  date) and loads it with the mint's proof, marking each `written` as the
+  card answers. Whatever is still `owed` is finished on the card's next tap:
+  `reconcileOwedChange` reads the card's openings — a piece whose opening is
+  gone is on the card (the card lets an opening go only once its piece
+  lands) and is marked written; the rest are opened (C = C_ − r·K, with the
+  mint keys kept on the terminal) — then `writeOwedChange` loads them,
+  counting each attempt (`markOwedChangeSending`) BEFORE its `LOAD_PROOF`
+  goes out. In a charge that happens after the PIN verify and before the
+  burn; on the keypad's balance read a PIN-less card, or one whose GET_INFO
+  says the change may go on with no PIN (the tap after a payment), takes it
+  in the same session, and any other PIN card is told what is waiting
+  (`CashuCardBalance`) — a LOAD the card would refuse for want of the PIN is
+  never sent. The balance tap is a read: a refused or lost write there never
+  vetoes it, the screen opens with what is still waiting. 0.x change
+  (terminal-made SIG_INPUTS pieces) is kept on record and never written to a
+  2.0 card.
 - **When the record itself did not land** (the keychain refused the write),
   the loads still run — the card is the only home left — and a load that
   then fails is thrown under `writing change to card (unrecorded)`, so the
@@ -246,13 +299,15 @@ returns stays in the store; nothing else can spend it.
 
 ## Known gaps
 
-- **Spending is not implemented.** `SPEND_PROOF` (`0xB0 0x20`) burns a slot
-  *before* returning the signature, and it is irreversible. Wiring it needs the
-  mint round-trip from `cashu-client` and a decision about what happens when the
-  card marks a proof spent and the network call then fails.
-- **No PIN handling.** `VERIFY_PIN` is unimplemented here. Spending needs no PIN
-  by design (bearer semantics) — see `docs/DECISIONS.md#d12` in cashu-javacard —
-  but `LOAD_PROOF` does.
-- **Hardware validation covers the read path only** (2026-09-23, iOS): the
-  write path (`LOAD_PROOF`, `CLEAR_SPENT` — both PIN-gated) and spend
-  (`SPEND_PROOF`) have not run from this app.
+- **Protocol 2.0 on silicon.** The 2.0 card layer (ENG-674) is proven
+  against the applet in cardsim (jest's replay of the applet's transcript and
+  the simulator e2e) and a local Nutshell 0.20.3; it has not yet run against
+  a 2.0 card on silicon from this app.
+- **A lost SIGN answer with the card gone.** When SPEND_ALL_SIGN's answer is
+  lost and the card cannot even be asked which places are spent, the charge
+  fails as not paid, as a lost burn did on 0.x. The burn is the last thing
+  the card's commit does, so this needs the card to leave in the few
+  milliseconds between the commit and the answer.
+- **No till-held owner key.** The till never holds an owner key: owner
+  commands (`SET_OWNER`, `ALLOW_LOAD`, `SET_LIMIT`, `REFRESH`) are the
+  holder's phone's (flash-mobile).

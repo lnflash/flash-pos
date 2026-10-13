@@ -82,13 +82,24 @@
 	</array>
 	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
 	<array>
+		<!-- cashu-javacard protocol 2.0, FIRST: the package AID ("CASHUCARD"
+		     after F0), then the applet AID. iOS will only SELECT identifiers
+		     listed here, so both forms are declared to match the
+		     prefix-then-full fallback in src/services/cashuCard.ts. -->
+		<string>F0434153485543415244</string>
+		<string>F043415348554341524401</string>
 		<string>D2760000850100</string>
 		<string>D2760000850101</string>
-		<!-- cashu-javacard: package AID, then the applet AID. iOS will only
-		     SELECT identifiers listed here, so both forms are declared to match
-		     the prefix-then-full fallback in src/services/cashuCard.ts. -->
+		<!-- cashu-javacard 0.x: package AID, then the applet AID. KEPT so a 0.x
+		     card is still detected and told "This card needs an update";
+		     dropping them would hide 0.x cards from CoreNFC entirely. -->
 		<string>D2760000850102</string>
 		<string>D276000085010201</string>
+		<!-- Foxy 1.x ("FOXYCARD" after F0): spec/APDU.md names it "needs an
+		     update" too. Listed so CoreNFC lets the legacy probe SELECT it;
+		     a card that is neither still answers 6A82 to all of these, and
+		     the BoltCard/LNURLw fallback reads it as before. -->
+		<string>F0464F585943415244</string>
 	</array>
 </dict>
 </plist>

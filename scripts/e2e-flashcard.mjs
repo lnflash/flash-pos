@@ -11,10 +11,14 @@
  *   app      a Debug build on a booted iOS simulator, driven by Maestro
  *            through .maestro/flashcard/<flow>.yaml.
  *
- * Per flow: mint the flow's proofs P2PK-locked to the card exactly as the
- * app rebuilds them, /reset the card (and check its key did not change),
- * post the INITIAL fixture, then run the flow with every later stage's
- * fixture (and the nonces) in its environment.
+ * Per flow: mint the flow's pieces locked to the card in the 2.0 format-4
+ * SIG_ALL form, exactly as the card and the app rebuild them, each with the
+ * mint's DLEQ; /reset the card (and check its key did not change); post the
+ * INITIAL fixture (the record, the TEST owner anchored at the tip header,
+ * the pieces); then run the flow with every later stage's fixture (and the
+ * nonces) in its environment. A local block-header stub serves the same tip
+ * to the app (the deep link's `headers=`), so a flow's card clock never
+ * moves under it.
  *
  *   node scripts/e2e-flashcard.mjs --username <TEST merchant> [--flow a,b]
  *       [--bridge http://127.0.0.1:9876] [--mint http://127.0.0.1:3338]
@@ -25,7 +29,8 @@
  */
 import {spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
-import {existsSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
+import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -167,12 +172,17 @@ async function loadMint(mintUrl) {
   const {Mint} = await import('@cashu/cashu-ts');
   const mint = new Mint(mintUrl);
   const {keysets} = await mint.getKeySets();
+  // An 8-byte id (forge's) is stored whole; a 33-byte NUT-02 v2 id (a fresh
+  // Nutshell 0.20.3's) by its first 8 bytes, which the app expands back.
   const active = keysets.find(
-    k => k.unit === 'sat' && k.active && /^[0-9a-f]{16}$/i.test(k.id),
+    k =>
+      k.unit === 'sat' &&
+      k.active &&
+      /^[0-9a-f]{16}([0-9a-f]{50})?$/i.test(k.id),
   );
   if (!active) {
     throw new Error(
-      `${mintUrl} has no active sat keyset with an 8-byte id (the card stores 8): ${JSON.stringify(
+      `${mintUrl} has no active sat keyset with an 8- or 33-byte id: ${JSON.stringify(
         keysets.map(k => k.id),
       )}`,
     );
@@ -186,9 +196,11 @@ async function loadMint(mintUrl) {
 }
 
 /**
- * Mints `amounts` (label → sats) P2PK-locked to the card, each output built
- * as `makeCanonicalCardOutput` builds it (src/services/cashuMint.ts): a
- * random nonce, the canonical secret, blinded over its UTF-8 bytes.
+ * Mints `amounts` (label → sats) locked to the card as 2.0 pieces: a random
+ * nonce, the format-4 SIG_ALL secret (`lib.cardSecret`, byte-identical to
+ * `buildCardSigAllSecret`), blinded over its UTF-8 bytes. Each piece keeps
+ * the mint's DLEQ (e, s and the blinding factor r), which the card stores
+ * beside it (LOAD_PROOF P1 = 1) and the app checks offline.
  */
 async function mintCardProofs({mint, keyset}, cardPubkey, amounts) {
   const {Amount, OutputData, blindMessage} = await import('@cashu/cashu-ts');
@@ -218,6 +230,7 @@ async function mintCardProofs({mint, keyset}, cardPubkey, amounts) {
     const nonce = randomBytes(32).toString('hex');
     const secretBytes = utf8ToBytes(lib.cardSecret(nonce, cardPubkey));
     const {r, B_} = blindMessage(secretBytes);
+    const rHex = r.toString(16).padStart(64, '0');
     const data = new OutputData(
       {
         id: keyset.id,
@@ -227,7 +240,7 @@ async function mintCardProofs({mint, keyset}, cardPubkey, amounts) {
       r,
       secretBytes,
     );
-    return {label, sats, nonce, data};
+    return {label, sats, nonce, data, rHex};
   });
   const {signatures} = await mint.mintBolt11({
     quote: quote.quote,
@@ -244,14 +257,58 @@ async function mintCardProofs({mint, keyset}, cardPubkey, amounts) {
     if (proof.secret !== lib.cardSecret(o.nonce, cardPubkey)) {
       throw new Error(`${o.label}: unblinded secret drifted from the card's`);
     }
+    const dleq = signatures[i].dleq;
+    if (!dleq) {
+      throw new Error(`${o.label}: the mint gave no DLEQ proof`);
+    }
     minted[o.label] = {
-      keysetId: keyset.id.toLowerCase(),
+      keysetId: keyset.id.toLowerCase().slice(0, 16),
       amount: o.sats,
       nonce: o.nonce,
       C: proof.C,
+      dleq: {e: String(dleq.e), s: String(dleq.s), r: o.rHex},
     };
   });
   return minted;
+}
+
+// --------------------------------------------------------- block headers
+
+/**
+ * The tip header every card is anchored at and the app is shown: the
+ * newest of cashu-javacard's `spec/vectors/headers.json` (real mainnet work,
+ * so the applet's floor takes it), from the checkout the client came from.
+ */
+function loadTip(clientPath) {
+  const path = clientPath && lib.headerVectorsPath(clientPath);
+  if (!path || !existsSync(path)) {
+    throw new Error(
+      `no spec/vectors/headers.json beside the cardsim client (${clientPath}); pass the client of a cashu-javacard checkout`,
+    );
+  }
+  return lib.tipFromVectors(JSON.parse(readFileSync(path, 'utf8')));
+}
+
+/**
+ * A local Esplora stand-in on 127.0.0.1 (an ephemeral port) that serves
+ * `tip` and nothing else. Resolves to its base URL and a close function.
+ */
+function startHeaderStub(tip) {
+  return new Promise((resolveStub, reject) => {
+    const server = createServer((req, res) => {
+      const answer = lib.headerStubAnswer(req.url || '', tip);
+      res.writeHead(answer.status, {'content-type': 'text/plain'});
+      res.end(answer.body);
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const {port} = server.address();
+      resolveStub({
+        base: `http://127.0.0.1:${port}/api`,
+        close: () => new Promise(done => server.close(() => done())),
+      });
+    });
+  });
 }
 
 // ---------------------------------------------------------------- flows
@@ -259,7 +316,7 @@ async function mintCardProofs({mint, keyset}, cardPubkey, amounts) {
 function maestroArgs(opts, flow, fixtures, minted) {
   const env = {
     BRIDGE_URL: opts.bridge,
-    BRIDGE_LINK: lib.bridgeLink(opts.bridge, flow),
+    BRIDGE_LINK: lib.bridgeLink(opts.bridge, flow, opts.headerApi),
     FLASH_USERNAME: opts.username || '<username>',
     BILL_SAT: String(lib.BILL_SAT),
     PIN: lib.PIN,
@@ -278,11 +335,11 @@ function maestroArgs(opts, flow, fixtures, minted) {
   return args;
 }
 
-function fixturesFor(flow, minted) {
+function fixturesFor(flow, minted, card) {
   return Object.fromEntries(
     Object.entries(lib.FLOWS[flow].stages).map(([stage, spec]) => [
       stage,
-      lib.buildFixture(spec, minted),
+      lib.buildFixture(spec, minted, card),
     ]),
   );
 }
@@ -309,9 +366,10 @@ async function main() {
     } else {
       console.log('fixtures not validated: no cardsim client found\n');
     }
+    opts.headerApi = 'http://127.0.0.1:<stub>/api';
     for (const flow of opts.flows) {
       const minted = lib.placeholderProofs(flow);
-      const fixtures = fixturesFor(flow, minted);
+      const fixtures = fixturesFor(flow, minted, {mint: opts.mint});
       const mintTotal = Object.values(lib.FLOWS[flow].mint).reduce(
         (a, b) => a + b,
         0,
@@ -323,9 +381,13 @@ async function main() {
       );
       for (const [stage, body] of Object.entries(fixtures)) {
         console.log(
-          `  ${stage}: pin=${body.pin ? 'yes' : 'no'} proofs=${
-            body.proofs.length
-          } spent=${(body.spentSlots || []).length}`,
+          `  ${stage}: pin=${body.pin ? 'yes' : 'no'} owner=${
+            body.owner ? 'yes' : 'no'
+          } proofs=${body.proofs.length} spent=${
+            (body.spentSlots || []).length
+          }${body.limits ? ` limits=${JSON.stringify(body.limits)}` : ''}${
+            lib.FLOWS[flow].stages[stage].onTop ? ' (on top, no reset)' : ''
+          }`,
         );
       }
       console.log(
@@ -361,13 +423,20 @@ async function main() {
   console.log(`cardsim warmed in ${(warmMs / 1000).toFixed(1)} s`);
   const mint = await loadMint(opts.mint);
   console.log(`mint ${opts.mint}: keyset ${mint.keyset.id}`);
+  const tip = loadTip(cardSimClientPath(opts));
+  const stub = await startHeaderStub(tip);
+  opts.headerApi = stub.base;
+  console.log(
+    `block headers: ${stub.base} serves tip ${tip.hash.slice(0, 16)}…`,
+  );
+  const card = {mint: opts.mint, anchor: tip.header};
 
   const results = [];
   for (const flow of opts.flows) {
     console.log(`\n=== ${flow}`);
     try {
       const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
-      const fixtures = fixturesFor(flow, minted);
+      const fixtures = fixturesFor(flow, minted, card);
       // Again on the minted proofs, which the placeholders only stand in for.
       lib.validateStages(client, flow, fixtures);
       // The flow starts on this card; later stages are its own to post.
@@ -396,6 +465,7 @@ async function main() {
     }
   }
 
+  await stub.close();
   console.log('\n=== results');
   for (const {flow, ok} of results) {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${flow}`);

@@ -29,6 +29,20 @@ const SUMMARY: CardSummary = {
     secp256k1Native: true,
     schnorr: true,
     pinState: 'set',
+    // Protocol 2.0's GET_INFO fields: what this screen does not show.
+    major: 1,
+    minor: 2,
+    capabilities: 0xff,
+    format: 4,
+    triesLeft: 3,
+    locked: false,
+    recordSet: true,
+    dailyLimit: 0,
+    hasOwner: true,
+    now: 0,
+    windowStart: 0,
+    spentToday: 0,
+    changeGrant: false,
   },
   pubkey: '02c0ffee' + 'ab'.repeat(29),
   balance: 500,
@@ -130,7 +144,7 @@ describe('CashuCardBalance', () => {
 
   it.each([
     ['unset', 'Not set'],
-    ['locked', 'Locked'],
+    ['blocked', 'Blocked'],
     ['unknown', 'Unknown'],
   ] as const)('labels pinState %s as "%s"', (pinState, label) => {
     const {getByText} = renderScreen({

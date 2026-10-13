@@ -13,6 +13,13 @@ import userSlice from '../../src/store/slices/userSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import {PhaseError} from '../../src/services/phaseError';
+import {
+  NEEDS_CARD_BODY,
+  REFUSED_BODY,
+  SIGNATURE_INVALID_BODY,
+  UNCONFIRMED_BODY,
+} from '../../src/components/cashu/charge/money';
+import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
 
 const mockWithCardSession = jest.fn();
 const mockCancelCardSession = jest.fn();
@@ -42,6 +49,13 @@ jest.mock('../../src/services/cashuCharge', () => ({
 
 jest.mock('../../src/services/cashuAutoSettle', () => ({
   runAutoSettlement: (...args: unknown[]) => mockRunAutoSettlement(...args),
+}));
+
+// The card's clock: the screen fetches the tip header on mount. No network
+// in a unit test.
+const mockRefreshTipHeader = jest.fn(async () => null);
+jest.mock('../../src/services/blockHeader', () => ({
+  refreshTipHeader: () => mockRefreshTipHeader(),
 }));
 
 // This screen ships in release builds and imports leaves only: the barrels
@@ -412,6 +426,70 @@ describe('CashuCardCharge', () => {
       jest.advanceTimersByTime(LIFT_HOLD_MS + 20);
     });
     expect(navigation.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches the tip header for the card's clock on mount", async () => {
+    await renderScreen();
+    expect(mockRefreshTipHeader).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 0.x card says it needs an update: no PIN pad, no charge (decision 8)', async () => {
+    mockReadAndPlan.mockRejectedValue(new CardNeedsUpdateError('0.x applet'));
+    const {getByText, getAllByText, queryByText} = await renderScreen();
+    await act(async () => {
+      fireEvent.press(getByText('Tap card to charge'));
+    });
+    // The body, and the pill that carries the failure verbatim.
+    expect(
+      getAllByText('This card needs an update', visible).length,
+    ).toBeGreaterThan(0);
+    expect(queryByText('Enter the card PIN', visible)).toBeNull();
+    expect(mockExecuteCharge).not.toHaveBeenCalled();
+  });
+
+  it('a card whose no-PIN allowance did not cover the bill after all (6A94 at SIGN): the PIN pad opens with the reason, and the PIN re-runs the charge', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    mockExecuteCharge
+      .mockImplementationOnce(
+        async ({onPhase}: {onPhase: (p: string) => void}) => {
+          onPhase('reading card');
+          onPhase('burning 16 sat (proof 1/1)');
+          throw new PhaseError(
+            'burning 16 sat (proof 1/1)',
+            new CardError(0x6a94, 'SPEND_ALL_SIGN'),
+          );
+        },
+      )
+      .mockImplementation(async () => ({
+        amountSat: 16,
+        burned: [],
+        changeSat: 0,
+        changeLoaded: 0,
+        balanceAfter: 0,
+      }));
+    const {getByText, getByLabelText, getByTestId} = await renderScreen({
+      preRead: {...EXACT, pinRequired: false, pinSet: true},
+    });
+
+    expect(getByText('Enter the card PIN', visible)).toBeTruthy();
+    expect(getByTestId('pin-error-text').props.children).toBe(
+      "This payment needs the card's PIN.",
+    );
+    expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+
+    for (const digit of ['1', '9', '8', '4']) {
+      fireEvent.press(getByLabelText(digit));
+    }
+    await act(async () => {
+      jest.advanceTimersByTime(700);
+    });
+    expect(mockExecuteCharge).toHaveBeenCalledTimes(2);
+    expect(mockExecuteCharge.mock.calls[1][0]).toMatchObject({
+      pin: '1984',
+      pinRequired: true,
+      pinSet: true,
+    });
+    expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
   });
 
   it('Cancel in the error state clears the error back to idle', async () => {
@@ -836,6 +914,206 @@ describe('CashuCardCharge', () => {
         '16 sats are paid. Your 8 sats change is saved on this terminal and will be added once the card has a free slot.',
       );
       expect(utils.queryByText('Tap card to charge', visible)).toBeNull();
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a signed payment whose swap fails ambiguously with change due: paid, change owed at the next tap, no "Tap card again" (ENG-674 blocking 2b)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onPhase('verifying PIN');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/2)');
+          onPhase('burning 8 sat (proof 2/2)');
+          onPhase('settling payment and minting change');
+          // The card already signed and burned the bill AND its own
+          // change; the swap itself never confirmed (a network failure,
+          // not a change write — nothing ever reached LOAD_PROOF).
+          throw paidFailure(
+            '[settling payment and minting change (change owed, next tap)] the request never reached the network (TypeError: Network request failed)',
+          );
+        },
+      );
+      const utils = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+      await enterPin(utils.getByLabelText);
+
+      await expectPaidNoRetry(
+        utils,
+        '16 sats are paid. Your 8 sats change is saved on this terminal and will be added the next time this card is charged.',
+      );
+      // No "Tap card again" was ever rendered, and nothing re-charges the
+      // card on its own (this is the exact bug ENG-674 blocking 2 fixes:
+      // before it, this failure was thrown unpaid and the screen offered a
+      // retry here).
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('pieces that could not be checked offline, whose swap fails ambiguously: "Not confirmed yet", never "Paid", and no re-charge (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          onPhase('settling payment');
+          throw paidFailure(
+            '[settling payment — the mint has not confirmed it] the request never reached the network (TypeError: Network request failed)',
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: PLAN});
+      await act(async () => {});
+      await expectPaidNoRetry(utils, UNCONFIRMED_BODY, 'Not confirmed yet');
+      for (const paidTitle of ['Paid', 'Paid — change not on card']) {
+        expect(utils.queryByText(paidTitle, all)).toBeNull();
+      }
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('the mint refuses the swap after the card burned: "Not paid — the mint refused it", Done only, not recorded as a sale (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          onPhase('settling payment and minting change');
+          throw new PhaseError(
+            'settling payment — the mint refused it',
+            new Error('proofs could not be verified'),
+            {refused: true},
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: PLAN});
+      await act(async () => {});
+      const {getByTestId, getByText, queryByText} = utils;
+      expect(getByTestId('error-title').props.children).toBe(
+        'Not paid — the mint refused it',
+      );
+      expect(getByTestId('error-body').props.children).toBe(REFUSED_BODY);
+      // The card has burned: Done is the one way out, never a re-charge.
+      expect(queryByText('Tap card again', all)).toBeNull();
+      expect(queryByText('Cancel', visible)).toBeNull();
+      expect(getByText('Done', visible)).toBeTruthy();
+      // Not a sale: nothing goes into the history.
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('the card answers with a signature that does not verify: "Not paid", Done only, not recorded as a sale, no promise of a settlement (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          throw new PhaseError(
+            "settling payment — the card's signature is not valid",
+            new Error(
+              "the card's signature does not verify against the payment",
+            ),
+            {refused: true},
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: EXACT});
+      await act(async () => {});
+      const {getByTestId, getByText, queryByText} = utils;
+      expect(getByTestId('error-title').props.children).toBe(
+        "Not paid — the card's signature is not valid",
+      );
+      expect(getByTestId('error-body').props.children).toBe(
+        SIGNATURE_INVALID_BODY,
+      );
+      for (const wrong of [
+        'Paid',
+        'Not confirmed yet',
+        'Paid — change not on card',
+      ]) {
+        expect(queryByText(wrong, all)).toBeNull();
+      }
+      expect(queryByText(/keeps trying/, all)).toBeNull();
+      // The card has burned: Done is the one way out, never a re-charge.
+      expect(queryByText('Tap card again', all)).toBeNull();
+      expect(queryByText('Cancel', visible)).toBeNull();
+      expect(getByText('Done', visible)).toBeTruthy();
+      // Not a sale: nothing goes into the history, the invoice is kept.
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
+    });
+
+    it('the card burned and its answer was lost: "Not confirmed yet", recoverable only if its next payment is on this terminal, no re-charge (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          throw paidFailure(
+            '[settling payment — the mint has not confirmed it (signature lost, next tap)] the card burned the payment and its signature was lost',
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: EXACT});
+      await act(async () => {});
+      await expectPaidNoRetry(utils, NEEDS_CARD_BODY, 'Not confirmed yet');
+      expect(utils.queryByText(UNCONFIRMED_BODY, all)).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
       expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
     });
 

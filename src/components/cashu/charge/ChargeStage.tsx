@@ -9,7 +9,14 @@ import {AMOUNT_H, FINALE_BADGE, type ChargeLayout} from './geometry';
 import HoldPill, {type HoldVariant} from './HoldPill';
 import Ledger from './Ledger';
 import MoneyPool from './MoneyPool';
-import {changeOnCard, failureBody, parseFailure} from './money';
+import {
+  changeOnCard,
+  failureBody,
+  parseFailure,
+  settleRefused,
+  settleUnconfirmed,
+  signatureInvalid,
+} from './money';
 import {friendlyLabel, type StageState} from './phaseToStation';
 import StatusBlock, {type StatusShown, type StatusTexts} from './StatusBlock';
 import Stepper from './Stepper';
@@ -48,7 +55,11 @@ export interface ChargeStageProps {
   /** Mode 'error' in the PIN pose: the pad is the retry. */
   pinError: boolean;
   error: string | null;
-  /** The error came after the swap: the bill is paid (`isPaidFailure`). */
+  /**
+   * The error came after the card burned: the bill is paid
+   * (`isPaidFailure`), or the mint refused it (`isRefusedAfterBurn`, titled
+   * by its phase). Either way the charge is over.
+   */
   paid?: boolean;
   stalled: boolean;
   nfcSupported: boolean | null;
@@ -76,6 +87,22 @@ export const PAID_CHANGE_NOT_ON_CARD_TITLE = 'Paid — change not on card';
  * change is on the card (only the payment bookkeeping failed).
  */
 export const PAID_FAILURE_TITLE = 'Paid';
+/**
+ * ENG-674: the card signed, but the mint never confirmed a payment whose
+ * pieces could not be checked offline. Not "Paid": they may be forged.
+ */
+export const UNCONFIRMED_TITLE = 'Not confirmed yet';
+/**
+ * ENG-674: the card burned and the mint refused the swap for good. Not
+ * paid, and the card must not be charged again for this bill.
+ */
+export const REFUSED_TITLE = 'Not paid — the mint refused it';
+/**
+ * ENG-674: the card answered with a signature that does not verify. Not
+ * paid, nothing reached the mint, and the card must not be charged again.
+ */
+export const SIGNATURE_INVALID_TITLE =
+  "Not paid — the card's signature is not valid";
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -151,7 +178,13 @@ function ChargeStage(props: ChargeStageProps) {
       // A bookkeeping failure whose change all landed is plain "Paid": the
       // change is on the card (`changeOnCard`).
       errorTitle: paid
-        ? changeSat > 0 && !changeOnCard(failure)
+        ? signatureInvalid(failure)
+          ? SIGNATURE_INVALID_TITLE
+          : settleRefused(failure)
+          ? REFUSED_TITLE
+          : settleUnconfirmed(failure)
+          ? UNCONFIRMED_TITLE
+          : changeSat > 0 && !changeOnCard(failure)
           ? PAID_CHANGE_NOT_ON_CARD_TITLE
           : PAID_FAILURE_TITLE
         : failure.cardFull

@@ -29,6 +29,37 @@ const TAG_LOST =
   /tag (was )?lost|left the field|not connected|stopped responding/i;
 
 /**
+ * Over the card's daily limit: the pre-flight refusal in `readAndPlan`
+ * (`DAILY_LIMIT_REACHED`) and the card's own 6A8F at SIGN
+ * (`describeStatusWord`: "over the card's daily limit"). Nothing is burned
+ * either way.
+ */
+const DAILY_LIMIT =
+  /over the card's daily limit|reached today's spending limit/i;
+
+/**
+ * The card's owner has locked it (`CARD_LOCKED` in `cashuCharge.ts`): the
+ * till refuses it before anything is planned or burned.
+ */
+const CARD_LOCKED = /card is locked and can't be used to pay/i;
+
+/** The copy for a locked card: nothing was taken, and nothing will be. */
+export const CARD_LOCKED_BODY =
+  "Nothing was taken from the card. This card is locked and can't be used to pay.";
+
+/** The copy for a bill over the card's daily limit (decision 2, Flash voice). */
+export const DAILY_LIMIT_BODY = "This card has reached today's spending limit.";
+
+/**
+ * The card would not sign without its PIN (6A94 at SPEND_ALL_SIGN): the bill
+ * is over its no-PIN allowance. The screen moves to the PIN pad.
+ */
+const PIN_NEEDED = /PIN needed for this payment/i;
+
+/** The PIN pad's line for a bill over the card's no-PIN allowance. */
+export const PIN_NEEDED_TEXT = "This payment needs the card's PIN.";
+
+/**
  * The card has no free slot for the change: the pre-flight refusal in
  * `readAndPlan` ("this card is full: …") and the card's own 6A84 on a LOAD
  * (`describeStatusWord`: "card is full — no free slot") both say so.
@@ -114,16 +145,93 @@ export function parseFailure(message: string | null | undefined): Failure {
 const CHANGE_WRITE = /^writing change to card/i;
 
 /**
- * The charge died writing the change onto the card, after the mint swap
- * settled the bill: the change is recorded owed on the terminal, unless the
- * phase says otherwise. BODY COPY ONLY — whether the bill is paid is
+ * ENG-674: `executeCharge`'s swap failed ambiguously (a transport failure,
+ * a 5xx, a timeout) for a payment whose change was due and whose pieces all
+ * verified offline — `PHASE_SETTLING_CHANGE_OWED` in `cashuCharge.ts`. The
+ * card burned for the bill and its own change together; the change was
+ * never loaded (the swap itself is what failed), so it is owed exactly as
+ * an unwritten change piece is, and gets the same "next tap" promise.
+ */
+const SETTLING_CHANGE_OWED = /\(change owed, next tap\)$/i;
+
+/**
+ * The charge died writing the change onto the card, or settling a payment
+ * whose change never got that far (ENG-674), after the mint swap settled
+ * the bill: the change is recorded owed on the terminal, unless the phase
+ * says otherwise. BODY COPY ONLY — whether the bill is paid is
  * `executeCharge`'s word (`PhaseError.paid`, `isPaidFailure`), never this
  * wording match: a paid charge can fail on a phase that is not a change
  * write (the payment bookkeeping, say), and the screen must end it as paid
  * all the same (ENG-642).
  */
+/**
+ * ENG-674: the card signed and burned, but the bill's pieces could not all
+ * be checked offline (`requiresOnline`) and the swap, their only check,
+ * failed in a way that may not have reached the mint —
+ * `PHASE_SETTLING_UNCONFIRMED` in `cashuCharge.ts`. `PhaseError.paid` is set
+ * so the screen never offers a re-charge, but the payment is NOT confirmed:
+ * the pieces may be forged. The screen must not say "Paid".
+ */
+const SETTLING_UNCONFIRMED = /mint has not confirmed it/i;
+
+export function settleUnconfirmed(failure: Failure): boolean {
+  return SETTLING_UNCONFIRMED.test(failure.phase ?? '');
+}
+
+/**
+ * ENG-674: the card signed and burned, and the mint then refused the swap
+ * for good — `PHASE_SETTLING_REFUSED` in `cashuCharge.ts`, thrown with
+ * `PhaseError.refused`. Not paid; the payment is kept on the terminal for a
+ * human; the card must not be charged again for it (it would burn again).
+ */
+const SETTLING_REFUSED = /mint refused it/i;
+
+export function settleRefused(failure: Failure): boolean {
+  return SETTLING_REFUSED.test(failure.phase ?? '');
+}
+
+/**
+ * ENG-674: the card answered with a signature that does not verify against
+ * the payment — `PHASE_CARD_SIGNATURE_INVALID` in `cashuCharge.ts`, thrown
+ * with `PhaseError.refused`. Not paid, nothing reached the mint, nothing
+ * will retry it; the card must not be charged again (it has burned).
+ */
+const SIGNATURE_INVALID = /card's signature is not valid/i;
+
+export function signatureInvalid(failure: Failure): boolean {
+  return SIGNATURE_INVALID.test(failure.phase ?? '');
+}
+
+/**
+ * ENG-674: the card burned and its answer was lost —
+ * `PHASE_SETTLING_NEEDS_CARD` in `cashuCharge.ts`. Unconfirmed (it also
+ * matches `settleUnconfirmed`, for the title), but only the card's next
+ * payment on this terminal can recover it: SPEND_ALL_AGAIN gives the card's
+ * LAST signature, and a payment made anywhere else first replaces it. The
+ * body must not promise the terminal is retrying on its own, nor that the
+ * payment will be recovered.
+ */
+const SETTLING_NEEDS_CARD = /\(signature lost, next tap\)$/i;
+
+export function settleNeedsCard(failure: Failure): boolean {
+  return SETTLING_NEEDS_CARD.test(failure.phase ?? '');
+}
+
+export const SIGNATURE_INVALID_BODY =
+  "The card's signature for this payment is not valid, so this bill is not paid and nothing reached the mint. Don't charge the card again. The payment is saved on this terminal for review.";
+
+export const NEEDS_CARD_BODY =
+  "The card has paid, but its answer was lost, so this payment is not confirmed. It can be recovered only if the card's next payment is made on this terminal. Hold the goods, and don't charge the card again for this bill.";
+
+export const REFUSED_BODY =
+  "The mint refused this payment after the card paid it, so this bill is not paid. Don't charge the card again. The payment is saved on this terminal for review.";
+
+export const UNCONFIRMED_BODY =
+  "The card has paid, but the mint hasn't confirmed this payment yet. Hold the goods until it settles: the terminal keeps trying while it is online. Don't charge the card again.";
+
 export function failedAfterSwap(failure: Failure): boolean {
-  return CHANGE_WRITE.test(failure.phase ?? '');
+  const phase = failure.phase ?? '';
+  return CHANGE_WRITE.test(phase) || SETTLING_CHANGE_OWED.test(phase);
 }
 
 export interface FailureContext {
@@ -148,6 +256,15 @@ export interface FailureContext {
  */
 export function failureBody(failure: Failure, ctx: FailureContext): string {
   const phase = failure.phase ?? '';
+  if (!ctx.paid && CARD_LOCKED.test(failure.detail)) {
+    // Refused on GET_INFO's lock byte, before anything was planned.
+    return CARD_LOCKED_BODY;
+  }
+  if (!ctx.paid && DAILY_LIMIT.test(failure.detail)) {
+    // The card refuses before it burns (6A8F, or the pre-flight): nothing
+    // was taken, and another tap today will be refused the same way.
+    return DAILY_LIMIT_BODY;
+  }
   if (failure.cardFull && ctx.burnsDone === 0 && !ctx.paid) {
     // The pre-flight (or a LOAD of earlier change) refused before any burn.
     // No instruction: a spend leaves its slot 'spent', not free, and nothing
@@ -199,6 +316,23 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
       ? `${saved} and will be added once the card has a free slot.`
       : `${saved} and will be added the next time this card is charged.`;
   }
+  if (settleNeedsCard(failure)) {
+    // Never "paid", and no "the terminal keeps trying": only the card's
+    // next payment here can give the lost signature back (ENG-674).
+    return NEEDS_CARD_BODY;
+  }
+  if (settleUnconfirmed(failure)) {
+    // Never "paid": the mint has not confirmed it (ENG-674).
+    return UNCONFIRMED_BODY;
+  }
+  if (signatureInvalid(failure)) {
+    // Never "paid", never "try again": the card's answer did not verify.
+    return SIGNATURE_INVALID_BODY;
+  }
+  if (settleRefused(failure)) {
+    // Never "paid", never "try again": the mint said no after the burn.
+    return REFUSED_BODY;
+  }
   if (ctx.paid) {
     // Paid, but not on a change write: the payment bookkeeping or a later
     // step failed. The bill must read as paid — never "hold the card again",
@@ -245,6 +379,9 @@ export function pinFailureText(detail: string): string {
   }
   if (/no PIN set/i.test(detail)) {
     return 'This card has no PIN. Tap again without one.';
+  }
+  if (PIN_NEEDED.test(detail)) {
+    return PIN_NEEDED_TEXT;
   }
   return detail.replace(/^VERIFY_PIN failed: /, '');
 }

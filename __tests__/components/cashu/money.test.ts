@@ -8,6 +8,13 @@ import {
   parseFailure,
   pinFailureText,
   runningTotals,
+  settleRefused,
+  settleUnconfirmed,
+  CARD_LOCKED_BODY,
+  DAILY_LIMIT_BODY,
+  REFUSED_BODY,
+  PIN_NEEDED_TEXT,
+  UNCONFIRMED_BODY,
 } from '../../../src/components/cashu/charge/money';
 import {splitPow2} from '../../../src/utils/denominations';
 
@@ -514,5 +521,135 @@ describe('pinFailureText', () => {
       'wrong length',
     );
     expect(pinFailureText('Tag was lost.')).toBe('Tag was lost.');
+  });
+});
+
+describe('protocol 2.0 copy (decision 2, Flash voice)', () => {
+  const ctx = {
+    burnsDone: 0,
+    paidSat: 16,
+    changeSat: 0,
+    fmt: (sat: number) => `${sat} sats`,
+  };
+
+  it("a bill over the daily limit, from the pre-flight or the card's 6A8F, reads as the limit", () => {
+    expect(DAILY_LIMIT_BODY).toBe(
+      "This card has reached today's spending limit.",
+    );
+    expect(
+      failureBody(
+        parseFailure("This card has reached today's spending limit."),
+        ctx,
+      ),
+    ).toBe(DAILY_LIMIT_BODY);
+    expect(
+      failureBody(
+        parseFailure(
+          "[burning 16 sat (proof 1/1)] SPEND_ALL_SIGN failed: over the card's daily limit (0x6A8F)",
+        ),
+        {...ctx, burnsDone: 1},
+      ),
+    ).toBe(DAILY_LIMIT_BODY);
+  });
+
+  it('a paid failure is never re-worded as the limit', () => {
+    expect(
+      failureBody(
+        parseFailure("[recording the payment] over the card's daily limit"),
+        {...ctx, paid: true},
+      ),
+    ).toBe('16 sats are paid. There is nothing more to do.');
+  });
+
+  it("the PIN pad's line for a bill over the no-PIN allowance (6A94 at SIGN)", () => {
+    expect(PIN_NEEDED_TEXT).toBe("This payment needs the card's PIN.");
+    expect(
+      pinFailureText(
+        'SPEND_ALL_SIGN failed: PIN needed for this payment (0x6A94)',
+      ),
+    ).toBe(PIN_NEEDED_TEXT);
+  });
+
+  it('an old card is told it needs an update, verbatim (decision 8)', () => {
+    expect(failureBody(parseFailure('This card needs an update'), ctx)).toBe(
+      'This card needs an update',
+    );
+  });
+});
+
+describe('settleUnconfirmed (ENG-674)', () => {
+  const unconfirmed = parseFailure(
+    '[settling payment — the mint has not confirmed it] the request never reached the network',
+  );
+
+  it('matches only the unconfirmed settling phase', () => {
+    expect(settleUnconfirmed(unconfirmed)).toBe(true);
+    expect(
+      settleUnconfirmed(parseFailure('[settling payment] mint unreachable')),
+    ).toBe(false);
+    expect(
+      settleUnconfirmed(
+        parseFailure(
+          '[settling payment and minting change (change owed, next tap)] x',
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it('never says paid, even when the charge is flagged paid to block a re-charge', () => {
+    const body = failureBody(unconfirmed, {
+      burnsDone: 1,
+      paidSat: 16,
+      changeSat: 0,
+      paid: true,
+      fmt: (n: number) => `${n} sats`,
+    });
+    expect(body).toBe(UNCONFIRMED_BODY);
+    expect(body).not.toMatch(/\bis paid\b|\bare paid\b|nothing more to do/);
+  });
+});
+
+describe('settleRefused (ENG-674)', () => {
+  const refused = parseFailure(
+    '[settling payment — the mint refused it] proofs could not be verified',
+  );
+  const ctx = {
+    burnsDone: 1,
+    paidSat: 16,
+    changeSat: 0,
+    paid: true,
+    fmt: (n: number) => `${n} sats`,
+  };
+
+  it('matches only the refused settling phase', () => {
+    expect(settleRefused(refused)).toBe(true);
+    expect(
+      settleRefused(
+        parseFailure(
+          '[settling payment — the mint has not confirmed it] offline',
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      settleRefused(parseFailure('[settling payment and minting change] x')),
+    ).toBe(false);
+  });
+
+  it('says the bill is not paid and not to charge the card again', () => {
+    const body = failureBody(refused, ctx);
+    expect(body).toBe(REFUSED_BODY);
+    expect(body).toMatch(/not paid/);
+    expect(body).toMatch(/Don't charge the card again/);
+    expect(body).not.toMatch(/\bis paid\b|\bare paid\b|nothing more to do/);
+  });
+});
+
+describe('a locked card (ENG-674)', () => {
+  it('nothing was taken, and it says why', () => {
+    const body = failureBody(
+      parseFailure("This card is locked and can't be used to pay."),
+      {burnsDone: 0, paidSat: 16, changeSat: 0, fmt: n => `${n} sats`},
+    );
+    expect(body).toBe(CARD_LOCKED_BODY);
   });
 });

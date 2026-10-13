@@ -30,27 +30,47 @@
  * later step can sweep them to the flash backend; nothing here assumes one.
  */
 import {
-  Amount,
   blindMessage,
   HttpResponseError,
   isMintOperationError,
   isP2PKSpendAuthorised,
-  OutputData,
+  pointFromHex,
+  schnorrVerifyDigest,
   serializeSwapPreview,
+  unblindSignature,
+  verifyDLEQProof_reblind,
   Wallet,
   type Proof,
   type ProofLike,
 } from '@cashu/cashu-ts';
-import {bytesToHex, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
+import {sha256} from '@noble/hashes/sha256';
+import {
+  bytesToHex,
+  hexToBytes,
+  randomBytes,
+  utf8ToBytes,
+} from '@noble/hashes/utils';
 
 import {
+  allAttempted,
   PermanentSettlementError,
   ProofAlreadySpentError,
+  recordOwedCardChange,
   TransportSettlementError,
   toCashuProof,
+  toSigAllInputs,
+  type MerchantBlinding,
+  type OwedCardChange,
   type SettlementEntry,
+  type SettlementInput,
+  type SettlementOutput,
 } from './cashuSettlement';
-import {getSecureStrict, removeSecure, setSecure} from './secureStorage';
+import {
+  getSecure,
+  getSecureStrict,
+  removeSecure,
+  setSecure,
+} from './secureStorage';
 import {splitPow2} from '../utils/denominations';
 
 /** NUT-XX: the mint holds this exact proof already. */
@@ -60,15 +80,9 @@ const SETTLED_PROOFS_KEY = '@cashu_settled_proofs';
 const pendingKey = (id: string) => `@cashu_settlement_swap:${id}`;
 
 /**
- * The NUT-10 secret for a card-loaded proof, rebuilt from the two values the
- * card does report.
- *
- * Byte-exactness is the whole function: the mint hashed this string at mint
- * time (`hashToCurve(utf8(secret))`), and a reconstruction that differs by a
- * space or a key order is a different secret — a proof the mint will reject
- * as unknown *after* the card has burned its slot. This must stay identical
- * to `buildP2PKSecret` in cashu-client (the loader's serialization) and is
- * pinned by a fixture test against a proof minted by the real toolchain.
+ * The NUT-10 secret of a 0.x card proof (SIG_INPUTS), rebuilt from the nonce
+ * and the card key. Kept only so a v1 settlement entry written before protocol
+ * 2.0 can still be read and drained; nothing new is made in this form.
  */
 export function buildCardP2PKSecret(nonce: string, cardPubkey: string): string {
   return JSON.stringify([
@@ -82,30 +96,112 @@ export function buildCardP2PKSecret(nonce: string, cardPubkey: string): string {
 }
 
 /**
- * A blinded output whose secret is byte-identical to what
- * `buildCardP2PKSecret` rebuilds at spend time.
+ * The format-4 secret of a 2.0 card piece (cashu-javacard spec/NUT-XX.md),
+ * rebuilt from what the card stores — the nonce and the date — and its key
+ * and refund key:
  *
- * cashu-ts's own `createSingleP2PKData` omits the `sigflag` tag for the
- * default SIG_INPUTS flag, so its serialized secret differs by four bytes
- * from the canonical form — a different hashToCurve, a different Y, and a
- * proof the mint refuses the moment the card's slot is rebuilt. Found in
- * the field: change minted through the cashu-ts path and written onto a
- * card was unspendable at the next tap ("proofs could not be verified").
- * Every card-bound output MUST go through this factory.
+ *   ["P2PK",{"nonce":"…","data":"<card key>","tags":[["sigflag","SIG_ALL"]]}]
+ *   ["P2PK",{"nonce":"…","data":"<card key>","tags":[["locktime","<date>"],["refund","<key>"],["sigflag","SIG_ALL"]]}]
+ *
+ * Byte-exactness is the whole function: the card hashes exactly this text
+ * into the SIG_ALL message it signs, and the mint hashed it at mint time. A
+ * reconstruction that differs by a space, a key order or a hex case is a
+ * different secret — a payment the mint refuses AFTER the card burned it.
+ * Pinned against the applet's own vectors (spec/vectors/secret.json).
  */
-export function makeCanonicalCardOutput(
-  amount: number,
-  keysetId: string,
+export function buildCardSigAllSecret(
+  nonce: string,
   cardPubkey: string,
-): OutputData {
-  const secret = buildCardP2PKSecret(bytesToHex(randomBytes(32)), cardPubkey);
-  const secretBytes = utf8ToBytes(secret);
-  const {r, B_} = blindMessage(secretBytes);
-  return new OutputData(
-    {id: keysetId, amount: Amount.from(amount), B_: bytesToHex(B_.toBytes(true))},
-    r,
-    secretBytes,
-  );
+  date = 0,
+  refundKey: string | null = null,
+): string {
+  const tags: string[][] = [];
+  if (date) {
+    if (!refundKey) {
+      throw new Error("a dated piece names the card's refund key");
+    }
+    tags.push(['locktime', String(date)], ['refund', refundKey.toLowerCase()]);
+  }
+  tags.push(['sigflag', 'SIG_ALL']);
+  return JSON.stringify([
+    'P2PK',
+    {nonce: nonce.toLowerCase(), data: cardPubkey.toLowerCase(), tags},
+  ]);
+}
+
+/**
+ * The NUT-11 SIG_ALL message's SHA-256: every input's secret and C (hex),
+ * then every output's amount (decimal) and B_ (hex), concatenated as text in
+ * the order the card signs them. What the card's one signature is over, and
+ * what the terminal verifies that signature (and any SPEND_ALL_AGAIN reply)
+ * against before it is used.
+ */
+export function sigAllMessage(
+  inputs: {secret: string; C: string}[],
+  outputs: {amount: number; B_: string}[],
+): Uint8Array {
+  let text = '';
+  for (const input of inputs) {
+    text += input.secret + input.C.toLowerCase();
+  }
+  for (const output of outputs) {
+    text += String(output.amount) + output.B_.toLowerCase();
+  }
+  return sha256(utf8ToBytes(text));
+}
+
+/** True when `signature` (hex) is the card's over `message` (32 bytes or hex). */
+export function verifyCardSignature(
+  signature: string,
+  message: Uint8Array | string,
+  cardPubkey: string,
+): boolean {
+  try {
+    return schnorrVerifyDigest(
+      signature,
+      typeof message === 'string' ? hexToBytes(message) : message,
+      cardPubkey,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * NUT-12 for a piece as the card keeps it: rebuild B' = Y + r·G and
+ * C' = C + r·K from the secret, C and the kept r, and check the mint's (e, s)
+ * with its key K for the amount. A piece that passes was signed by the mint;
+ * it says nothing about whether the piece is still unspent.
+ *
+ * `keys` maps amount → the mint's compressed public key (a keyset's keys,
+ * persisted so the check works offline: `cachedKeysets`).
+ */
+export function verifyPieceDleq(
+  piece: {secret: string; C: string; amount: number},
+  dleq: {e: string; s: string; r: string} | null | undefined,
+  keys: Record<string, string> | undefined,
+): boolean {
+  if (!dleq || !keys) {
+    return false;
+  }
+  const K = keys[String(piece.amount)];
+  if (!K) {
+    return false;
+  }
+  try {
+    return verifyDLEQProof_reblind(
+      utf8ToBytes(piece.secret),
+      {
+        e: hexToBytes(dleq.e),
+        s: hexToBytes(dleq.s),
+        r: BigInt(`0x${dleq.r}`),
+      },
+      pointFromHex(piece.C),
+      pointFromHex(K),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Bearer ecash the merchant holds once a settlement confirms. */
@@ -122,7 +218,9 @@ export interface SettledProof {
 
 export interface SettlementAdapter {
   swap: (entry: SettlementEntry) => Promise<void>;
-  checkState: (entry: SettlementEntry) => Promise<'spent' | 'unspent' | 'unknown'>;
+  checkState: (
+    entry: SettlementEntry,
+  ) => Promise<'spent' | 'unspent' | 'unknown'>;
 }
 
 // One wallet per mint, shared by the settlement adapter and the payout melt.
@@ -138,6 +236,9 @@ function getWallet(mintUrl: string): Promise<Wallet> {
     wallet = (async () => {
       const w = new Wallet(mintUrl);
       await w.loadMint();
+      // Best effort: the keysets (and their public keys) are what an offline
+      // charge checks a card's pieces against and blinds its outputs for.
+      await persistKeysets(mintUrl, w).catch(() => {});
       return w;
     })();
     wallets.set(mintUrl, wallet);
@@ -156,12 +257,434 @@ export function __resetWalletCache(): void {
   wallets.clear();
 }
 
+// ── keysets, kept for offline use ───────────────────────────────────────────
+
+/**
+ * A mint keyset as this terminal keeps it: enough to expand a card's 8-byte
+ * keyset id, price a swap's input fee, blind outputs and check a piece's
+ * DLEQ with no network.
+ */
+export interface CachedKeyset {
+  id: string;
+  unit: string;
+  active: boolean;
+  /** NUT-02 input fee, parts per thousand per input. */
+  inputFeePpk: number;
+  /** amount → the mint's compressed public key for it. */
+  keys: Record<string, string>;
+}
+
+const keysetsKey = (mintUrl: string) => `@cashu_keysets:${mintUrl}`;
+
+/** The keysets last seen at `mintUrl`; `[]` when none were kept or they will not read. */
+export async function cachedKeysets(mintUrl: string): Promise<CachedKeyset[]> {
+  try {
+    const raw = await getSecure(keysetsKey(mintUrl));
+    if (!raw) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as CachedKeyset[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Keep `keysets` for `mintUrl` (public data: ids, fees and public keys). */
+export async function saveKeysets(
+  mintUrl: string,
+  keysets: CachedKeyset[],
+): Promise<void> {
+  await setSecure(keysetsKey(mintUrl), JSON.stringify(keysets));
+}
+
+async function persistKeysets(mintUrl: string, wallet: Wallet): Promise<void> {
+  const chain = (wallet as {keyChain?: {getKeysets?: () => unknown[]}})
+    .keyChain;
+  if (!chain || typeof chain.getKeysets !== 'function') {
+    return;
+  }
+  const listed = chain.getKeysets();
+  if (!Array.isArray(listed) || listed.length === 0) {
+    return;
+  }
+  const fresh = (
+    listed as {
+      id: string;
+      unit: string;
+      isActive: boolean;
+      fee: number;
+      hasKeys: boolean;
+      keys: Record<number, string>;
+    }[]
+  ).map(
+    (k): CachedKeyset => ({
+      id: k.id,
+      unit: k.unit,
+      active: k.isActive,
+      inputFeePpk: k.fee ?? 0,
+      keys: k.hasKeys
+        ? Object.fromEntries(
+            Object.entries(k.keys).map(([a, key]) => [String(a), key]),
+          )
+        : {},
+    }),
+  );
+  // Keep keys learned earlier for a keyset the mint now lists without them
+  // (an inactive keyset whose keys were fetched once): the pieces on a card
+  // can be older than the mint's active keyset.
+  const previous = new Map((await cachedKeysets(mintUrl)).map(k => [k.id, k]));
+  await saveKeysets(
+    mintUrl,
+    fresh.map(k =>
+      Object.keys(k.keys).length === 0 && previous.get(k.id)
+        ? {...k, keys: previous.get(k.id)!.keys}
+        : k,
+    ),
+  );
+}
+
+/** No keyset of the mint matches what the card stores. */
+export class UnknownKeysetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnknownKeysetError';
+  }
+}
+
+/**
+ * The keyset a card's stored 8 bytes name: the ONE keyset whose id begins
+ * with them (an 8-byte id is itself; a 33-byte v2 id is named by its first 8
+ * bytes). Refuses an ambiguous or unknown prefix rather than guessing.
+ */
+export function expandKeysetId(
+  cardKeysetId: string,
+  keysets: CachedKeyset[],
+): CachedKeyset {
+  const prefix = cardKeysetId.toLowerCase().slice(0, 16);
+  const found = keysets.filter(k => k.id.toLowerCase().startsWith(prefix));
+  if (found.length !== 1) {
+    throw new UnknownKeysetError(
+      found.length === 0
+        ? `the mint has no keyset ${prefix}`
+        : `keyset ${prefix} names ${found.length} keysets`,
+    );
+  }
+  return found[0];
+}
+
+/**
+ * The keyset a card piece names, with its keys: from the kept keysets when
+ * they have it, else (with `online`) from the mint, which refreshes what is
+ * kept. Throws `UnknownKeysetError` when neither has it.
+ */
+export async function keysetFor(
+  mintUrl: string,
+  cardKeysetId: string,
+  {online = true}: {online?: boolean} = {},
+): Promise<CachedKeyset> {
+  const kept = await cachedKeysets(mintUrl);
+  try {
+    const hit = expandKeysetId(cardKeysetId, kept);
+    if (Object.keys(hit.keys).length > 0) {
+      return hit;
+    }
+  } catch (error) {
+    if (!online) {
+      throw error;
+    }
+  }
+  if (!online) {
+    throw new UnknownKeysetError(
+      `the keys of keyset ${cardKeysetId} are not kept on this terminal`,
+    );
+  }
+  const wallet = await getWallet(mintUrl);
+  const chain = (
+    wallet as {
+      keyChain?: {
+        getKeysets?: () => {id: string}[];
+        ensureKeysetKeys?: (id: string) => Promise<unknown>;
+      };
+    }
+  ).keyChain;
+  if (chain?.getKeysets && chain.ensureKeysetKeys) {
+    const prefix = cardKeysetId.toLowerCase().slice(0, 16);
+    const ids = chain
+      .getKeysets()
+      .map(k => k.id)
+      .filter(id => id.toLowerCase().startsWith(prefix));
+    if (ids.length === 1) {
+      await chain.ensureKeysetKeys(ids[0]);
+    }
+  }
+  await persistKeysets(mintUrl, wallet);
+  const refreshed = expandKeysetId(cardKeysetId, await cachedKeysets(mintUrl));
+  if (Object.keys(refreshed.keys).length === 0) {
+    throw new UnknownKeysetError(
+      `the mint gave no keys for keyset ${refreshed.id}`,
+    );
+  }
+  return refreshed;
+}
+
+/**
+ * Force a fresh listing of `mintUrl`'s keysets from the mint, overwriting
+ * whatever is cached (ENG-674 should-fix): `keysetFor`'s offline-first
+ * lookup returns a cached keyset as soon as it has keys, never checking
+ * whether the mint has since rotated it — and SIG_ALL binds the change
+ * keyset's `active` flag and its fee into the swap's outputs for good, so a
+ * charge about to build them must not trust a cache that might be stale.
+ * Resolves true only once the fresh listing is persisted. False when the
+ * mint will not answer in full within `timeoutMs` (a failed or slow keys
+ * fetch, a store write refused), leaving whatever is cached untouched: the
+ * caller must then treat the cache as stale, as it would with no mint at
+ * all — never sign on it as if it were fresh (ENG-674). A refresh that
+ * lands after the deadline may still update the cache; the caller has
+ * already been told "not fresh" and acts on that.
+ */
+export async function refreshKeysets(
+  mintUrl: string,
+  timeoutMs = 3000,
+): Promise<boolean> {
+  const attempt = (async () => {
+    try {
+      const wallet = await getWallet(mintUrl);
+      await wallet.loadMint(true);
+      await persistKeysets(mintUrl, wallet);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([attempt, deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Whether the mint answers at all, within `timeoutMs` — asked before a card
+ * pays with pieces this terminal cannot check offline (no DLEQ, or no keys
+ * kept): such a payment must be swapped in the same tap. A transport or
+ * HTTP failure is "no".
+ */
+export async function mintReachable(
+  mintUrl: string,
+  timeoutMs = 3000,
+  fetchFn: typeof fetch = fetch,
+): Promise<boolean> {
+  const controller =
+    typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  try {
+    const res = await fetchFn(
+      `${mintUrl.replace(/\/+$/, '')}/v1/keysets`,
+      controller ? {signal: controller.signal} : {},
+    );
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/** NUT-02: the input fee for `inputs` pieces of `keyset`, rounded up. */
+export const inputFee = (keyset: CachedKeyset, inputs: number): number =>
+  Math.ceil(((keyset.inputFeePpk ?? 0) * inputs) / 1000);
+
+// ── the charge's swap: SIG_ALL outputs made BEFORE the card signs ───────────
+
+/** The merchant's side of a charge's outputs: the blinded messages and their openings. */
+export interface ChargeOutputs {
+  outputs: SettlementOutput[];
+  blinding: MerchantBlinding[];
+}
+
+/**
+ * The merchant's outputs for a charge, blinded locally (no network): one
+ * random-secret output per power-of-two piece of `merchantSat`, in
+ * `keysetId`. They must exist before SPEND_ALL_SIGN, because SIG_ALL signs
+ * the swap's outputs; the blinding is kept with the payment (the queue
+ * entry) so whoever completes the swap can unblind them.
+ */
+export function prepareChargeOutputs({
+  keysetId,
+  merchantSat,
+}: {
+  keysetId: string;
+  merchantSat: number;
+}): ChargeOutputs {
+  if (!Number.isInteger(merchantSat) || merchantSat <= 0) {
+    throw new Error(
+      `the merchant's outputs must be worth something, got ${merchantSat}`,
+    );
+  }
+  const outputs: SettlementOutput[] = [];
+  const blinding: MerchantBlinding[] = [];
+  for (const amount of splitPow2(merchantSat)) {
+    const secret = bytesToHex(randomBytes(32));
+    const {B_, r} = blindMessage(utf8ToBytes(secret));
+    outputs.push({amount, B_: bytesToHex(B_.toBytes(true)), keysetId});
+    blinding.push({r: r.toString(16).padStart(64, '0'), secret});
+  }
+  return {outputs, blinding};
+}
+
+/** A swap signature's amount, whatever cashu-ts normalised it to. */
+const amountOf = (amount: unknown): number =>
+  typeof amount === 'object' &&
+  amount !== null &&
+  typeof (amount as {toNumber?: unknown}).toNumber === 'function'
+    ? (amount as {toNumber: () => number}).toNumber()
+    : Number(amount);
+
+/** C = C_ − r·K, compressed hex. */
+function unblind(C_: string, r: string, K: string): string {
+  return unblindSignature(
+    pointFromHex(C_),
+    BigInt(`0x${r}`),
+    pointFromHex(K),
+  ).toHex(true);
+}
+
+export interface SignedSwap {
+  /** Every piece the payment burned, in the order the card signed them. */
+  inputs: SettlementInput[];
+  /** The card's one SIG_ALL signature, hex. */
+  witness: string;
+  /** Every output, in the order the card signed them. */
+  outputs: SettlementOutput[];
+  /** Unblinding for `outputs[0 .. blinding.length)`, the merchant's. */
+  merchantBlinding: MerchantBlinding[];
+  /** The first output that is the card's own change; absent for none. */
+  cardChangeIndex?: number;
+}
+
+export interface SwapSignedResult {
+  /** The merchant's outputs, unblinded: liquid proofs for the till. */
+  till: SettledProof[];
+  /** The card's change: the mint's blind signatures, as the card's openings need them. */
+  cardChange: OwedCardChange[];
+}
+
+/**
+ * Submit a SIG_ALL swap exactly as the card signed it — the one witness on
+ * the first input, the stored outputs in the stored order — and split what
+ * the mint signs: the merchant's outputs are unblinded into till proofs, the
+ * card's change comes back as blind signatures (C_ with its DLEQ) for the
+ * card's own openings to finish.
+ *
+ * The caller (the charge, or the drain's adapter) owns the error mapping and
+ * the bookkeeping order. A throw before the response is "the swap did not
+ * happen or its outcome is unknown"; nothing is written here.
+ */
+export async function swapSigned(
+  mintUrl: string,
+  signed: SignedSwap,
+): Promise<SwapSignedResult> {
+  const wallet = await getWallet(mintUrl);
+  const witness = JSON.stringify({signatures: [signed.witness]});
+  const response = await withRateLimitRetry(() =>
+    wallet.mint.swap({
+      inputs: signed.inputs.map((input, i) => ({
+        id: input.keysetId,
+        amount: input.amount,
+        secret: input.secret,
+        C: input.C,
+        ...(i === 0 ? {witness} : {}),
+      })) as unknown as Proof[],
+      outputs: signed.outputs.map(o => ({
+        amount: o.amount,
+        id: o.keysetId,
+        B_: o.B_,
+      })) as never,
+    }),
+  );
+  const signatures = response.signatures;
+  if (signatures.length !== signed.outputs.length) {
+    throw new Error(
+      `the mint signed ${signatures.length} of ${signed.outputs.length} outputs`,
+    );
+  }
+  const till: SettledProof[] = [];
+  const cardChange: OwedCardChange[] = [];
+  const changeAt = signed.cardChangeIndex ?? signed.outputs.length;
+  for (let i = 0; i < signatures.length; i++) {
+    const sig = signatures[i];
+    const output = signed.outputs[i];
+    const amount = amountOf(sig.amount);
+    const dleq = sig.dleq
+      ? {e: String(sig.dleq.e), s: String(sig.dleq.s)}
+      : undefined;
+    if (i >= changeAt) {
+      cardChange.push({
+        keysetId: output.keysetId,
+        amount,
+        B_: output.B_,
+        C_: sig.C_,
+        ...(dleq ? {dleq} : {}),
+      });
+      continue;
+    }
+    const blinding = signed.merchantBlinding[i];
+    if (!blinding) {
+      throw new Error(`no blinding kept for the merchant's output ${i}`);
+    }
+    const keyset = await keysetFor(mintUrl, output.keysetId);
+    const K = keyset.keys[String(amount)];
+    if (!K) {
+      throw new Error(`keyset ${keyset.id} has no key for ${amount}`);
+    }
+    till.push({
+      id: output.keysetId,
+      amount,
+      secret: blinding.secret,
+      C: unblind(sig.C_, blinding.r, K),
+      mintUrl,
+    });
+  }
+  return {till, cardChange};
+}
+
+/**
+ * The card's change, finished: C = C_ − r·K with the r from the card's
+ * opening. `keys` is the change keyset's (amount → K).
+ */
+export function finishCardChange(
+  C_: string,
+  r: string,
+  amount: number,
+  keys: Record<string, string>,
+): string {
+  const K = keys[String(amount)];
+  if (!K) {
+    throw new UnknownKeysetError(`no key for ${amount}`);
+  }
+  return unblind(C_, r, K);
+}
+
 export function createSettlementAdapter(): SettlementAdapter {
   // drainQueue does not filter entries by mint — it hands every pending entry
   // to swap — so the adapter must settle each proof against the mint that
   // issued it (SettlementEntry.mintUrl), not against whatever the terminal is
   // currently configured with.
   const swap = async (entry: SettlementEntry): Promise<void> => {
+    if (entry.sigflag === 'SIG_ALL') {
+      return settleSigAll(entry);
+    }
     const wallet = await getWallet(entry.mintUrl);
 
     // The queue rebuilt this from the entry alone; cashu-ts accepts the
@@ -237,6 +760,59 @@ export function createSettlementAdapter(): SettlementAdapter {
     await removeSecure(pendingKey(entry.id));
   };
 
+  /**
+   * A 2.0 payment: resubmit EXACTLY the stored inputs and outputs (SIG_ALL
+   * binds them; fresh outputs would void the witness). The witness is checked
+   * against the stored message, and the message against the stored payment,
+   * before any network call — a local mistake must not become a mint-side
+   * rejection. The card's change comes back as blind signatures and is
+   * recorded owed to its card (the next tap loads it from the card's own
+   * openings), the merchant's outputs join the till.
+   */
+  const settleSigAll = async (entry: SettlementEntry): Promise<void> => {
+    // Throws for an entry with no witness: nothing to submit yet.
+    toSigAllInputs(entry);
+    const message = bytesToHex(sigAllMessage(entry.inputs, entry.outputs));
+    if (
+      !entry.message ||
+      message !== entry.message.toLowerCase() ||
+      !verifyCardSignature(entry.witness!, message, entry.cardPubkey)
+    ) {
+      throw new PermanentSettlementError(
+        `settlement ${entry.id}: the card's witness does not sign this payment`,
+      );
+    }
+    let result: SwapSignedResult;
+    try {
+      result = await swapSigned(entry.mintUrl, {
+        inputs: entry.inputs,
+        witness: entry.witness!,
+        outputs: entry.outputs,
+        merchantBlinding: entry.merchantBlinding,
+        cardChangeIndex: entry.cardChangeIndex,
+      });
+    } catch (error) {
+      throw mapSwapError(error, entry);
+    }
+    // The mint holds the payment. From here a failure is a persistence
+    // problem: the customer's change and the merchant's take each exist
+    // nowhere else, so BOTH writes always run, whether or not the other
+    // lands (ENG-642's `allAttempted` pattern) — a keychain that refuses
+    // the change write must never cost the merchant's take, and the other
+    // way round. Rethrowing the first failure leaves the entry ambiguous,
+    // which the drain resolves by checkState — honest, never marked failed.
+    await allAttempted([
+      () =>
+        recordOwedCardChange(
+          entry.cardPubkey,
+          result.cardChange,
+          {mintUrl: entry.mintUrl, unit: entry.unit},
+          Date.now(),
+        ),
+      () => appendSettledProofs(result.till),
+    ]);
+  };
+
   const checkState = async (
     entry: SettlementEntry,
   ): Promise<'spent' | 'unspent' | 'unknown'> => {
@@ -261,8 +837,12 @@ export function createSettlementAdapter(): SettlementAdapter {
  * Map a cashu-ts failure onto the queue's error classes. Anything not mapped
  * is rethrown unchanged: the queue reads a plain throw as "outcome unknown",
  * which is the conservative default for everything ambiguous.
+ *
+ * Shared with `executeCharge`'s inline swap (ENG-674): a mint rejection or
+ * HTTP 4xx must never be deferred as paid there either, so both callers
+ * classify a swap failure the same way.
  */
-function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
+export function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
   if (isMintOperationError(error)) {
     if (error.code === TOKEN_ALREADY_SPENT) {
       return new ProofAlreadySpentError(
@@ -283,13 +863,17 @@ function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
   }
   if (isFetchNetworkError(error)) {
     return new TransportSettlementError(
-      `settlement ${entry.id}: the request never reached the network (${String(error)})`,
+      `settlement ${entry.id}: the request never reached the network (${String(
+        error,
+      )})`,
     );
   }
   return error;
 }
 
-function isHttpResponse(error: unknown): error is {status: number; message: string} {
+function isHttpResponse(
+  error: unknown,
+): error is {status: number; message: string} {
   return (
     typeof error === 'object' &&
     error !== null &&
@@ -307,12 +891,11 @@ function isFetchNetworkError(error: unknown): boolean {
 }
 
 /** Append merchant-take proofs to the till (the settled store). */
-export async function appendSettledProofsTill(proofs: SettledProof[]): Promise<void> {
+export async function appendSettledProofsTill(
+  proofs: SettledProof[],
+): Promise<void> {
   const existing = await listSettledProofs();
-  await setSecure(
-    SETTLED_PROOFS_KEY,
-    JSON.stringify([...existing, ...proofs]),
-  );
+  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...existing, ...proofs]));
 }
 
 export async function listSettledProofs(): Promise<SettledProof[]> {
@@ -329,10 +912,7 @@ export async function listSettledProofs(): Promise<SettledProof[]> {
 
 async function appendSettledProofs(proofs: SettledProof[]): Promise<void> {
   const existing = await listSettledProofs();
-  await setSecure(
-    SETTLED_PROOFS_KEY,
-    JSON.stringify([...existing, ...proofs]),
-  );
+  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...existing, ...proofs]));
 }
 
 // ── payout: melt settled proofs to a bolt11 invoice or lightning address ──
@@ -467,8 +1047,7 @@ export async function meltSettledProofs({
       bolt11 ??
       (await resolveLightningAddress(lightningAddress!, attemptSat, lnurlpUrl));
     quote = await wallet.createMeltQuoteBolt11(request);
-    const needed =
-      Number(quote.amount) + Number(quote.fee_reserve);
+    const needed = Number(quote.amount) + Number(quote.fee_reserve);
     if (needed <= totalSat || bolt11) {
       if (needed > totalSat) {
         throw new Error(
@@ -492,8 +1071,7 @@ export async function meltSettledProofs({
     throw new Error('payout: no melt quote');
   }
 
-  const needed =
-    Number(quote.amount) + Number(quote.fee_reserve);
+  const needed = Number(quote.amount) + Number(quote.fee_reserve);
   if (needed > totalSat) {
     throw new Error(
       `payout needs ${needed} sat but the settled balance is ${totalSat} sat`,
@@ -504,15 +1082,18 @@ export async function meltSettledProofs({
   // the mint pays, these secrets + quote are the reconciliation record.
   await setSecure(
     PENDING_PAYOUT_KEY,
-    JSON.stringify({quoteId: quote.quote, bolt11, lightningAddress, secrets: proofs.map(p => p.secret), at: now}),
+    JSON.stringify({
+      quoteId: quote.quote,
+      bolt11,
+      lightningAddress,
+      secrets: proofs.map(p => p.secret),
+      at: now,
+    }),
   );
 
   let response: Awaited<ReturnType<typeof wallet.meltProofsBolt11>>;
   try {
-    const result = await wallet.meltProofsBolt11(
-      quote,
-      proofs as ProofLike[],
-    );
+    const result = await wallet.meltProofsBolt11(quote, proofs as ProofLike[]);
     if (result.quote.state !== 'PAID') {
       throw new Error(
         `payout quote ${quote.quote} did not settle: ${result.quote.state}`,
@@ -539,7 +1120,10 @@ export async function meltSettledProofs({
   const remaining = (await listSettledProofs()).filter(
     p => !meltedSecrets.has(p.secret),
   );
-  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...remaining, ...change]));
+  await setSecure(
+    SETTLED_PROOFS_KEY,
+    JSON.stringify([...remaining, ...change]),
+  );
   await removeSecure(PENDING_PAYOUT_KEY);
 
   return {
@@ -564,7 +1148,9 @@ export function selectChangeFromTill(
   proofs: SettledProof[],
   changeSat: number,
 ): SettledProof[] | null {
-  if (changeSat === 0) {return [];}
+  if (changeSat === 0) {
+    return [];
+  }
   // Small first — spend small denominations before breaking big ones.
   const sorted = [...proofs].sort((a, b) => a.amount - b.amount);
   let remaining = changeSat;
@@ -590,7 +1176,9 @@ export async function rebalanceTill(
   needSat?: number,
 ): Promise<number> {
   const proofs = await listSettledProofs();
-  if (proofs.length === 0) {return 0;}
+  if (proofs.length === 0) {
+    return 0;
+  }
   const sortedDesc = [...proofs].sort((a, b) => b.amount - a.amount);
   let target = sortedDesc[0];
   let swapAmount = Math.floor(target.amount / 2);
@@ -598,9 +1186,9 @@ export async function rebalanceTill(
     // Break the SMALLEST proof that covers the need — preserves bigger
     // denominations. No single proof covers it: the purchase plan already
     // reported that, so this call is a no-op.
-    const sufficient = [...proofs].sort((a, b) => a.amount - b.amount).find(
-      p => p.amount >= needSat,
-    );
+    const sufficient = [...proofs]
+      .sort((a, b) => a.amount - b.amount)
+      .find(p => p.amount >= needSat);
     if (!sufficient) {
       return 0;
     }
@@ -614,7 +1202,12 @@ export async function rebalanceTill(
   // keep/send union is the whole reborn proof set (see the settlement comment).
   const preview = await withRateLimitRetry(() =>
     wallet.prepareSwapToSend(swapAmount, [
-      {id: target.id, amount: target.amount, secret: target.secret, C: target.C},
+      {
+        id: target.id,
+        amount: target.amount,
+        secret: target.secret,
+        C: target.C,
+      },
     ]),
   );
   const {keep, send} = await withRateLimitRetry(() =>
@@ -631,7 +1224,10 @@ export async function rebalanceTill(
   const remaining = (await listSettledProofs()).filter(
     p => !swappedSecret.has(p.secret),
   );
-  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...remaining, ...reborn]));
+  await setSecure(
+    SETTLED_PROOFS_KEY,
+    JSON.stringify([...remaining, ...reborn]),
+  );
   return reborn.length;
 }
 
@@ -658,8 +1254,8 @@ export function isRateLimited(error: unknown): boolean {
     error instanceof Error
       ? error.message
       : typeof error === 'string'
-        ? error
-        : '';
+      ? error
+      : '';
   // Only an explicit HTTP status counts: a bare `429` in free text is just
   // as likely an amount (`payout needs 429 sat …`), and a real payout
   // failure must never be read as a throttle. The lnurlp fetches above say
@@ -706,19 +1302,21 @@ export async function reconcileTill(
     return 0;
   }
   const proofs = await listSettledProofs();
-  if (proofs.length === 0) {return 0;}
+  if (proofs.length === 0) {
+    return 0;
+  }
   // Stamp the attempt, not the success: a throttled or offline reconcile
   // must not be re-asked on the next tick either.
   lastReconcileAt = now;
   try {
     const wallet = await getWallet(mintUrl);
-    const states = await wallet.checkProofsStates(
-      proofs as unknown as Proof[],
-    );
+    const states = await wallet.checkProofsStates(proofs as unknown as Proof[]);
     const spent = new Set(
       proofs.filter((_, i) => states[i]?.state === 'SPENT').map(p => p.secret),
     );
-    if (spent.size === 0) {return 0;}
+    if (spent.size === 0) {
+      return 0;
+    }
     const remaining = proofs.filter(p => !spent.has(p.secret));
     await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
     return spent.size;
@@ -781,7 +1379,9 @@ export async function sweepSettledProofs(opts: {
     let acc = 0;
     const meltSet = new Set<string>();
     for (const p of sorted) {
-      if (acc >= meltTarget) {break;}
+      if (acc >= meltTarget) {
+        break;
+      }
       meltSet.add(p.secret);
       acc += p.amount;
     }
@@ -814,7 +1414,7 @@ export async function sweepSettledProofs(opts: {
   }
 }
 
-// ── change minting: till proofs → P2PK proofs for the customer's card ──────
+// ── the mint's throttle ───────────────────────────────────────────────────
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -829,206 +1429,11 @@ async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    if (!isRateLimited(error)) {throw error;}
-    const wait =
-      (error as {retryAfterMs?: number}).retryAfterMs ?? 2500;
+    if (!isRateLimited(error)) {
+      throw error;
+    }
+    const wait = (error as {retryAfterMs?: number}).retryAfterMs ?? 2500;
     await sleep(wait);
     return fn();
   }
-}
-
-
-/**
- * Mint `changeSat` of change from the till, P2PK-locked to `p2pkPubkey` —
- * the customer's card key — so the proofs can be written straight onto their
- * card and spent by it later.
- *
- * The change is NEW mint-signed value: the till proofs are consumed as swap
- * inputs and the outputs are blinded with OUR canonical P2PK secrets
- * (buildCardP2PKSecret-shape — cashu-ts's serializer is byte-identical, so
- * the host's spend-time reconstruction reads them back exactly). When the
- * till cannot make the change exactly, one ONLINE rebalance is attempted
- * first; offline the function reports the shortfall and nothing moves.
- */
-export async function makeChangeOnTill({
-  mintUrl,
-  changeSat,
-  p2pkPubkey,
-}: {
-  mintUrl: string;
-  changeSat: number;
-  p2pkPubkey: string;
-}): Promise<
-  | {ok: true; change: SettledProof[]}
-  | {ok: false; reason: string}
-> {
-  if (changeSat <= 0) {return {ok: true, change: []};}
-
-  let proofs = await listSettledProofs();
-  let chosen = selectChangeFromTill(proofs, changeSat);
-  if (chosen === null) {
-    // ONLINE recovery: reshape the till, then select once more.
-    try {
-      await rebalanceTill(mintUrl, changeSat);
-      proofs = await listSettledProofs();
-      chosen = selectChangeFromTill(proofs, changeSat);
-    } catch {
-      // Offline: fall through to the refusal.
-    }
-  }
-  if (chosen === null) {
-    const total = proofs.reduce((t, p) => t + p.amount, 0);
-    return {
-      ok: false,
-      reason: `the till cannot make ${changeSat} sat exact change (holds ${total} sat)`,
-    };
-  }
-
-  let chosenFinal = chosen;
-  const keysetId = chosenFinal[0].id;
-  const wallet = await getWallet(mintUrl);
-  const keyset = await wallet.getKeyset(keysetId);
-
-  // Outputs: the change as P2PK pieces locked to the customer's card.
-  const pieces = splitPow2(changeSat);
-  const outputData = pieces.map(a =>
-    makeCanonicalCardOutput(a, keysetId, p2pkPubkey),
-  );
-
-  // A till listing can drift from mint reality: an earlier swap may have
-  // consumed a proof the store still holds. The mint says so with 11001 —
-  // reconcile (checkstate every input, drop the spent listings) and retry
-  // once, so one stale listing cannot block change-making.
-  let swapResponse;
-  try {
-    swapResponse = await wallet.mint.swap({
-      inputs: chosen as unknown as Proof[],
-      outputs: outputData.map(od => od.blindedMessage),
-    });
-  } catch (error) {
-    if (!isMintOperationError(error) || error.code !== TOKEN_ALREADY_SPENT) {
-      throw error;
-    }
-    const states = await wallet.checkProofsStates(chosen as unknown as Proof[]);
-    const spent = new Set(
-      chosen
-        .filter((_, i) => states[i]?.state === 'SPENT')
-        .map(p => p.secret),
-    );
-    if (spent.size === 0) {throw error;}
-    const remaining = (await listSettledProofs()).filter(
-      p => !spent.has(p.secret),
-    );
-    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
-    const reChosen = selectChangeFromTill(remaining, changeSat);
-    if (reChosen === null) {
-      throw error;
-    }
-    swapResponse = await wallet.mint.swap({
-      inputs: reChosen as unknown as Proof[],
-      outputs: outputData.map(od => od.blindedMessage),
-    });
-    chosenFinal = reChosen;
-  }
-
-  const change = swapResponse.signatures.map((sig, i) => {
-    const proof = outputData[i].toProof(
-      sig,
-      keyset as Parameters<OutputData['toProof']>[1],
-    );
-    return {
-      id: proof.id,
-      amount: Number(proof.amount),
-      secret: proof.secret,
-      C: proof.C,
-      mintUrl,
-    };
-  });
-
-  // Commit: the consumed till proofs leave the store.
-  const consumed = new Set(chosenFinal.map(p => p.secret));
-  const remaining = (await listSettledProofs()).filter(
-    p => !consumed.has(p.secret),
-  );
-  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
-  return {ok: true, change};
-}
-
-/**
- * The charge swap: consume the burned proofs (witnessed) and mint the outputs
- * in ONE atomic swap —
- *
- *   inputs : the customer's burned proofs (NUT-11 witnesses attached)
- *   outputs: P2PK(change, customer's card key) + random(burned − change)
- *
- * The P2PK outputs are the customer's change, written straight onto their
- * card; the random outputs are the merchant's take, appended to the till for
- * the sweep. When the device is ONLINE this is the whole settlement — the
- * till never gates anything, and change of any size is possible by
- * construction. Requires the burned entries to carry witnesses.
- */
-export async function mintChargeChange({
-  mintUrl,
-  entries,
-  changeSat,
-  p2pkPubkey,
-}: {
-  mintUrl: string;
-  entries: {id: string; keysetId: string; amount: number; secret: string; C: string; witness: string}[];
-  changeSat: number;
-  p2pkPubkey: string;
-}): Promise<{change: SettledProof[]; till: SettledProof[]}> {
-  const burnedTotal = entries.reduce((t, e) => t + e.amount, 0);
-  if (changeSat > burnedTotal) {
-    throw new Error(
-      `change ${changeSat} sat exceeds the burned ${burnedTotal} sat`,
-    );
-  }
-  const wallet = await getWallet(mintUrl);
-  const keysetId = entries[0].keysetId;
-  const keyset = await wallet.getKeyset(keysetId);
-
-  // Change pieces: P2PK-locked to the customer's card, OUR canonical secrets.
-  const changePieces = splitPow2(changeSat);
-  const changeData = changePieces.map(a =>
-    makeCanonicalCardOutput(a, keysetId, p2pkPubkey),
-  );
-
-  // Merchant take: random secrets, liquid till proofs for the sweep.
-  const merchantSat = burnedTotal - changeSat;
-  const merchantList =
-    merchantSat > 0
-      ? OutputData.createRandomData(merchantSat, keyset)
-      : [];
-
-  const allOutputs = [...changeData, ...merchantList];
-
-  const swapResponse = await withRateLimitRetry(() =>
-    wallet.mint.swap({
-      inputs: entries as unknown as Proof[],
-      outputs: allOutputs.map(od => od.blindedMessage),
-    }),
-  );
-
-  const change: SettledProof[] = [];
-  const till: SettledProof[] = [];
-  swapResponse.signatures.forEach((sig, i) => {
-    const proof = allOutputs[i].toProof(
-      sig,
-      keyset as Parameters<OutputData['toProof']>[1],
-    );
-    const settled = {
-      id: proof.id,
-      amount: Number(proof.amount),
-      secret: proof.secret,
-      C: proof.C,
-      mintUrl,
-    };
-    if (i < changeData.length) {
-      change.push(settled);
-    } else {
-      till.push(settled);
-    }
-  });
-  return {change, till};
 }

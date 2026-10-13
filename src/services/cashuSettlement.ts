@@ -12,10 +12,19 @@
  *
  * If the app is killed between the tap and the mint call, the entry is on disk
  * and settles on the next drain. If the mint call fails, it retries. If the
- * witness itself was lost — the card left the field mid-response — the entry is
- * recorded as `needs-card` and recovers by re-signing from the same card
- * (`resignWitness`), which works because a spent slot is still readable and
- * `SIGN_ARBITRARY` consumes nothing.
+ * witness itself was lost — the card left the field after the commit that
+ * burned the payment and before its answer — the entry is recorded as
+ * `needs-card` with everything the payment signed (its inputs, its outputs,
+ * the merchant's blinding and the message), and recovers on the card's next
+ * tap from `SPEND_ALL_AGAIN`, which gives the card's last signature again.
+ * That signature is accepted only if it verifies against the stored message:
+ * a payment the card signed in between makes the entry unrecoverable, and it
+ * is marked `failed` for a human.
+ *
+ * Schema v2 (protocol 2.0): an entry is one PAYMENT — every piece it burned,
+ * under one NUT-11 SIG_ALL witness that binds the swap's outputs, so the
+ * drain resubmits exactly the stored outputs. A v1 entry is one 0.x proof
+ * (SIG_INPUTS) and migrates as a single-input entry that still drains.
  *
  * The merchant carries the residual risk knowingly, so it is shown to them
  * rather than hidden: see `pendingExposure()`.
@@ -126,7 +135,7 @@ export const MAX_QUEUE_ENTRIES = 200;
  * entries lacking the v2 field under a v2 tag, and the v2 validator drops them
  * as corrupt, which is worse.)
  */
-export const QUEUE_SCHEMA_VERSION = 1;
+export const QUEUE_SCHEMA_VERSION = 2;
 
 /**
  * Stand-in `mintUrl` for a `v0` entry, which predates the field.
@@ -182,16 +191,55 @@ export type SettlementStatus =
    * settlement. See `drainQueue`.
    */
   | 'submitting'
-  /** The slot burned but the witness was lost. Needs the card once more. */
+  /**
+   * The payment burned but its witness was lost. Needs the card once more
+   * (SPEND_ALL_AGAIN). A 0.x (SIG_INPUTS) entry in this state can never be
+   * re-signed: the v2 migration marks it `failed` for the operator's sweep.
+   */
   | 'needs-card'
   /** The mint confirmed. Money is ours. */
   | 'settled'
   /** Permanently rejected by the mint. Needs a human. */
   | 'failed';
 
+/**
+ * How the entry's witness signs: one 0.x proof signed alone (`SIG_INPUTS`,
+ * v1 entries only) or a whole 2.0 payment under one NUT-11 SIG_ALL signature.
+ */
+export type SigFlag = 'SIG_INPUTS' | 'SIG_ALL';
+
+/** One piece a payment burned, as the swap submits it. */
+export interface SettlementInput {
+  slot: number;
+  nonce: string;
+  /** The full NUT-10 secret, verbatim. */
+  secret: string;
+  C: string;
+  amount: number;
+  /** The full keyset id (expanded from the card's 8 bytes). */
+  keysetId: string;
+}
+
+/** One output of the payment's swap, in the order the card signed it. */
+export interface SettlementOutput {
+  amount: number;
+  /** The blinded message, 33 bytes compressed, hex. */
+  B_: string;
+  keysetId: string;
+}
+
+/** How to unblind one of the merchant's outputs (by index into `outputs`). */
+export interface MerchantBlinding {
+  /** The blinding factor, 32 bytes hex. */
+  r: string;
+  /** The output's secret, verbatim. */
+  secret: string;
+}
+
 export interface SettlementEntry {
   /**
-   * `<cardPubkey>:<slot>:<nonce>` — derived from the burn itself, never
+   * `<cardPubkey>:<slot>:<nonce>` of the payment's FIRST piece — derived from
+   * the burn itself, never
    * supplied by a caller. Unique per burn by construction, so recording the
    * same burn twice is recognisable as the same entry rather than as a
    * conflict. See `settlementId`.
@@ -252,9 +300,38 @@ export interface SettlementEntry {
    * of money the merchant lost and the queue keeps it, cap or no cap.
    */
   acknowledgedAt?: number;
+  /**
+   * v2. `SIG_ALL` for a 2.0 payment; `SIG_INPUTS` for a 0.x proof (every v1
+   * entry, migrated). The top-level `slot`/`nonce`/`secret`/`C`/`keysetId`
+   * are the FIRST input's and `amount` is the inputs' sum, so a build that
+   * predates v2 still reads the entry.
+   */
+  sigflag: SigFlag;
+  /** v2. Every piece the payment burned, in the order the card signed them. */
+  inputs: SettlementInput[];
+  /**
+   * v2. Every output of the swap, in the order the card signed them: the
+   * merchant's first, then the card's own change. `[]` for SIG_INPUTS, whose
+   * outputs the drain chooses. SIG_ALL binds these: the drain resubmits
+   * exactly them, never fresh ones.
+   */
+  outputs: SettlementOutput[];
+  /** v2. Unblinding for the merchant's outputs: `merchantBlinding[i]` is `outputs[i]`'s. */
+  merchantBlinding: MerchantBlinding[];
+  /**
+   * v2. The index of the first output that is the card's own change (the
+   * rest of `outputs` from here). Absent: no change.
+   */
+  cardChangeIndex?: number;
+  /** v2, SIG_ALL. Hex SHA-256 of the SIG_ALL message the witness signs. */
+  message?: string;
 }
 
-/** What `recordSpend` needs. Everything else is derived. */
+/**
+ * What `recordSpend` needs. Everything else is derived. The v2 fields are
+ * optional here: a record without them is a single 0.x proof (SIG_INPUTS)
+ * and they are derived from its top-level fields.
+ */
 export type SpendRecord = Omit<
   SettlementEntry,
   | 'id'
@@ -264,7 +341,14 @@ export type SpendRecord = Omit<
   | 'attempts'
   | 'lastError'
   | 'acknowledgedAt'
->;
+  | 'sigflag'
+  | 'inputs'
+  | 'outputs'
+  | 'merchantBlinding'
+> &
+  Partial<
+    Pick<SettlementEntry, 'sigflag' | 'inputs' | 'outputs' | 'merchantBlinding'>
+  >;
 
 /**
  * The queue id of a burn: `<cardPubkey>:<slot>:<nonce>`.
@@ -289,8 +373,11 @@ export interface CashuProof {
   amount: number;
   secret: string;
   C: string;
-  /** NUT-11 witness envelope: `{"signatures":["<64-byte hex>"]}`. */
-  witness: string;
+  /**
+   * NUT-11 witness envelope: `{"signatures":["<64-byte hex>"]}`. For a
+   * SIG_ALL swap only the first input carries it.
+   */
+  witness?: string;
 }
 
 /** The settlement queue could not be read. Never confuse this with "empty". */
@@ -377,6 +464,31 @@ export class ProofAlreadySpentError extends PermanentSettlementError {
 }
 
 /**
+ * Run every write in order, each whether or not an earlier one failed, then
+ * throw the first failure. For bookkeeping where one write refusing must not
+ * cost the record another write would have kept (ENG-642's pattern: the
+ * merchant's take and the customer's change must each be attempted on their
+ * own, never short-circuited by the other's failure).
+ */
+export async function allAttempted(
+  writes: Array<() => Promise<unknown>>,
+): Promise<void> {
+  let first: {error: unknown} | null = null;
+  for (const write of writes) {
+    try {
+      await write();
+    } catch (error) {
+      if (!first) {
+        first = {error};
+      }
+    }
+  }
+  if (first) {
+    throw first.error;
+  }
+}
+
+/**
  * Rebuild the proof to submit to the mint from a queue entry alone.
  *
  * This is the whole point of persisting `secret`: after a relaunch the card is
@@ -395,6 +507,27 @@ export function toCashuProof(entry: SettlementEntry): CashuProof {
     C: entry.C,
     witness: JSON.stringify({signatures: [entry.witness]}),
   };
+}
+
+/**
+ * A SIG_ALL payment's swap inputs, rebuilt from the entry alone: every piece,
+ * the one witness on the FIRST input only (NUT-11 SIG_ALL), in the order the
+ * card signed them.
+ */
+export function toSigAllInputs(entry: SettlementEntry): CashuProof[] {
+  if (!entry.witness) {
+    throw new Error(
+      `settlement ${entry.id} has no witness; the card must give it again first`,
+    );
+  }
+  const witness = JSON.stringify({signatures: [entry.witness]});
+  return entry.inputs.map((input, i) => ({
+    id: input.keysetId,
+    amount: input.amount,
+    secret: input.secret,
+    C: input.C,
+    ...(i === 0 ? {witness} : {}),
+  }));
 }
 
 /**
@@ -454,6 +587,40 @@ const isNum = (v: unknown): v is number =>
  * blocks settlement for every well-formed entry sitting beside the bad one.
  */
 function isSettlementEntry(value: unknown): value is SettlementEntry {
+  if (!isV1Entry(value)) {
+    return false;
+  }
+  const e = value as unknown as Record<string, unknown>;
+  if (e.sigflag !== 'SIG_INPUTS' && e.sigflag !== 'SIG_ALL') {
+    return false;
+  }
+  if (
+    !Array.isArray(e.inputs) ||
+    e.inputs.length === 0 ||
+    !e.inputs.every(isSettlementInput) ||
+    !Array.isArray(e.outputs) ||
+    !e.outputs.every(isSettlementOutput) ||
+    !Array.isArray(e.merchantBlinding) ||
+    !e.merchantBlinding.every(isMerchantBlinding) ||
+    (e.cardChangeIndex !== undefined && !isNum(e.cardChangeIndex)) ||
+    (e.message !== undefined && !isText(e.message))
+  ) {
+    return false;
+  }
+  // A SIG_ALL witness is bound to its outputs and its message: an entry
+  // without them could never be resubmitted, nor its witness checked.
+  return (
+    e.sigflag === 'SIG_INPUTS' || (e.outputs.length > 0 && isText(e.message))
+  );
+}
+
+/** The v1 shape: v0 plus the mint and the unit. */
+function isV1Entry(
+  value: unknown,
+): value is Omit<
+  SettlementEntry,
+  'sigflag' | 'inputs' | 'outputs' | 'merchantBlinding'
+> {
   if (!isV0Entry(value)) {
     return false;
   }
@@ -463,6 +630,37 @@ function isSettlementEntry(value: unknown): value is SettlementEntry {
     // length. `unit` has a non-empty legacy stand-in and so is checked as text.
     typeof e.mintUrl === 'string' && isText(e.unit)
   );
+}
+
+function isSettlementInput(value: unknown): value is SettlementInput {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const i = value as Record<string, unknown>;
+  return (
+    isNum(i.slot) &&
+    isText(i.nonce) &&
+    isText(i.secret) &&
+    isText(i.C) &&
+    isNum(i.amount) &&
+    isText(i.keysetId)
+  );
+}
+
+function isSettlementOutput(value: unknown): value is SettlementOutput {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const o = value as Record<string, unknown>;
+  return isNum(o.amount) && isText(o.B_) && isText(o.keysetId);
+}
+
+function isMerchantBlinding(value: unknown): value is MerchantBlinding {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const b = value as Record<string, unknown>;
+  return isText(b.r) && isText(b.secret);
 }
 
 /**
@@ -658,17 +856,82 @@ function migrate(version: number, elements: unknown[]): SettlementEntry[] {
     // overwrite the real mint with the stand-in — the adapter then falls back
     // to the configured mint, the proof is rejected as unknown, and money the
     // merchant is owed is booked as lost.
-    return elements.filter(isV0Entry).map(e => {
-      const carried = e as Record<string, unknown>;
-      return {
-        ...e,
-        mintUrl: isText(carried.mintUrl) ? carried.mintUrl : LEGACY_MINT_URL,
-        unit: isText(carried.unit) ? carried.unit : LEGACY_UNIT,
-      };
-    });
+    return migrateV1(
+      elements.filter(isV0Entry).map(e => {
+        const carried = e as Record<string, unknown>;
+        return {
+          ...e,
+          mintUrl: isText(carried.mintUrl) ? carried.mintUrl : LEGACY_MINT_URL,
+          unit: isText(carried.unit) ? carried.unit : LEGACY_UNIT,
+        };
+      }),
+    );
   }
-  // v1, and every version after it this build has not been taught about.
+  if (version === 1) {
+    return migrateV1(elements);
+  }
+  // v2, and every version after it this build has not been taught about.
   return elements.filter(isSettlementEntry);
+}
+
+/** Why a 0.x `needs-card` entry is failed by the v2 migration (decision 5). */
+export const LEGACY_NEEDS_CARD_REASON =
+  'a 0.x payment whose witness was lost cannot be re-signed on protocol 2.0: the card needs the operator sweep';
+
+/**
+ * v1 → v2: a v1 entry is one 0.x proof, so it becomes a single-input
+ * SIG_INPUTS entry. Every v2 field is supplied only when it is ABSENT (the
+ * rule at `QUEUE_SCHEMA_VERSION`): a v2 entry a downgraded build re-stamped
+ * as v1 carries its own `sigflag` and keeps every field it has.
+ *
+ * A 0.x `needs-card` entry (no `sigflag` yet: it really is v1) can never be
+ * recovered: the 0.x SIGN_ARBITRARY that re-signed it is gone from 2.0
+ * cards, and a 0.x card is refused as "needs an update" before anything is
+ * sent. It becomes `failed`, with the reason, for the operator — never
+ * dropped (decision 5). A 0.x `pending` entry holds its witness and still
+ * drains as it always did.
+ */
+function migrateV1(elements: unknown[]): SettlementEntry[] {
+  return elements
+    .filter(isV1Entry)
+    .map(e => {
+      const carried = e as Record<string, unknown>;
+      if (carried.sigflag !== undefined) {
+        // Already v2 (re-stamped by a downgrade): fill nothing it has.
+        return e as unknown as SettlementEntry;
+      }
+      const legacy: SettlementEntry = {
+        ...e,
+        sigflag: 'SIG_INPUTS',
+        inputs: Array.isArray(carried.inputs)
+          ? (carried.inputs as SettlementInput[])
+          : [
+              {
+                slot: e.slot,
+                nonce: e.nonce,
+                secret: e.secret,
+                C: e.C,
+                amount: e.amount,
+                keysetId: e.keysetId,
+              },
+            ],
+        outputs: Array.isArray(carried.outputs)
+          ? (carried.outputs as SettlementOutput[])
+          : [],
+        merchantBlinding: Array.isArray(carried.merchantBlinding)
+          ? (carried.merchantBlinding as MerchantBlinding[])
+          : [],
+      };
+      if (legacy.status === 'needs-card') {
+        return {
+          ...legacy,
+          status: 'failed',
+          lastError: LEGACY_NEEDS_CARD_REASON,
+        };
+      }
+      return legacy;
+    })
+    .filter(isSettlementEntry);
 }
 
 /**
@@ -852,11 +1115,34 @@ export async function recordSpend(
     // An amount with no unit cannot be totalled honestly beside another.
     throw new Error('settlement record is missing the keyset unit');
   }
+  const sigflag = record.sigflag ?? 'SIG_INPUTS';
+  if (sigflag === 'SIG_ALL') {
+    if (!record.inputs?.length || !record.outputs?.length || !record.message) {
+      // A SIG_ALL witness binds its outputs: without them (and the message
+      // to check a recovered witness against) the entry could never settle.
+      throw new Error(
+        'settlement record is missing the payment its witness signs',
+      );
+    }
+  }
   const id = settlementId(record);
   const entry: SettlementEntry = {
     ...record,
+    sigflag,
+    inputs: record.inputs ?? [
+      {
+        slot: record.slot,
+        nonce: record.nonce,
+        secret: record.secret,
+        C: record.C,
+        amount: record.amount,
+        keysetId: record.keysetId,
+      },
+    ],
+    outputs: record.outputs ?? [],
+    merchantBlinding: record.merchantBlinding ?? [],
     id,
-    // No witness means the card burned the slot without returning a signature.
+    // No witness means the card burned the payment without returning a signature.
     status: record.witness ? 'pending' : 'needs-card',
     createdAt: now,
     updatedAt: now,
@@ -1540,7 +1826,7 @@ export const owedChangeQuarantineKeyFor = (raw: string): string =>
  * `QUEUE_SCHEMA_VERSION`: a new version may add fields, never remove or
  * retype one, and unknown fields ride through a read untouched.
  */
-export const OWED_CHANGE_SCHEMA_VERSION = 1;
+export const OWED_CHANGE_SCHEMA_VERSION = 2;
 
 /**
  * Soft cap on the owed-change store. Only `'written'` entries are ever
@@ -1552,21 +1838,52 @@ export const MAX_OWED_CHANGE_ENTRIES = 200;
 export type OwedChangeStatus =
   /** Minted for the card, not yet confirmed on it. Written on the next tap. */
   | 'owed'
-  /** `LOAD_PROOF` answered with a slot, or the nonce was found on the card. */
+  /**
+   * `LOAD_PROOF` answered with a slot (or `6A94`: already there), or the card
+   * no longer holds the piece's opening — which it lets go only once the
+   * piece is on it.
+   */
   | 'written';
 
+/**
+ * Change minted for a card and not yet confirmed on it. Two forms:
+ *
+ * - **2.0 (the card's own change, `SPEND_ALL_CHANGE`)**: the terminal holds
+ *   the mint's half — the blinded message `B_` the card made, the blind
+ *   signature `C_` and its DLEQ (e, s). The opening (nonce, r, date) stays on
+ *   the card (`GET_CHANGE`) until the piece lands; once read, it is copied in
+ *   (`markOwedChangeOpened`) and the entry is a whole piece.
+ * - **0.x (legacy)**: terminal-made SIG_INPUTS change with its `secret`, `C`
+ *   and `nonce`. Never written to a 2.0 card (decision 8): kept for the record.
+ */
 export interface OwedChangeEntry {
-  /** `<cardPubkey>:<nonce>` — derived from the proof, never supplied. See `owedChangeId`. */
+  /**
+   * `<cardPubkey>:<B_>` (2.0) or `<cardPubkey>:<nonce>` (0.x) — derived, never
+   * supplied. See `owedChangeId` / `owedCardChangeId`.
+   */
   id: string;
   cardPubkey: string;
   mintUrl: string;
   unit: string;
+  /** The full keyset id the change was minted in. */
   keysetId: string;
   amount: number;
-  /** The full NUT-10 P2PK secret, verbatim — what the LOAD rebuilds the nonce from. */
-  secret: string;
-  C: string;
-  nonce: string;
+  /** The full NUT-10 P2PK secret, verbatim (0.x; 2.0 once opened). */
+  secret?: string;
+  /** The unblinded signature (0.x; 2.0 once opened). */
+  C?: string;
+  nonce?: string;
+  /** 2.0: the blinded message the card made for its change. */
+  B_?: string;
+  /** 2.0: the mint's blind signature on `B_`. */
+  C_?: string;
+  /** 2.0: the mint's NUT-12 proof on `C_`, kept so the piece loads with it. */
+  dleqE?: string;
+  dleqS?: string;
+  /** 2.0, once opened: the payment's date (locktime). */
+  date?: number;
+  /** 2.0, once opened: the blinding factor from the card's opening. */
+  r?: string;
   status: OwedChangeStatus;
   /** The slot `LOAD_PROOF` answered with, or the slot the nonce was found in. */
   slot?: number;
@@ -1576,6 +1893,9 @@ export interface OwedChangeEntry {
   lastError?: string;
 }
 
+/** True for a 2.0 entry: the card's own change, held as the mint's half. */
+export const isCardChange = (e: OwedChangeEntry): boolean => isText(e.B_);
+
 /**
  * The owed-change id of a proof: `<cardPubkey>:<nonce>`. The nonce is fresh
  * per minted output, so recording the same change twice lands on the same
@@ -1583,6 +1903,14 @@ export interface OwedChangeEntry {
  */
 export const owedChangeId = (cardPubkey: string, nonce: string): string =>
   `${cardPubkey}:${nonce}`;
+
+/**
+ * The owed-change id of the card's own change: `<cardPubkey>:<B_>`. The
+ * blinded message is fresh per output (the card draws a new nonce and r),
+ * so the same change recorded twice lands on the same entry.
+ */
+export const owedCardChangeId = (cardPubkey: string, B_: string): string =>
+  `${cardPubkey}:${B_.toLowerCase()}`;
 
 /**
  * The nonce lives inside the P2PK secret this terminal built; recover it for
@@ -1612,15 +1940,13 @@ function isOwedChangeEntry(value: unknown): value is OwedChangeEntry {
     return false;
   }
   const e = value as Record<string, unknown>;
-  return (
+  const optionalText = (v: unknown) => v === undefined || isText(v);
+  const base =
     isText(e.id) &&
     isText(e.cardPubkey) &&
     typeof e.mintUrl === 'string' &&
     isText(e.unit) &&
     isText(e.keysetId) &&
-    isText(e.secret) &&
-    isText(e.C) &&
-    isText(e.nonce) &&
     isNum(e.amount) &&
     isNum(e.createdAt) &&
     isNum(e.updatedAt) &&
@@ -1628,8 +1954,23 @@ function isOwedChangeEntry(value: unknown): value is OwedChangeEntry {
     typeof e.status === 'string' &&
     OWED_CHANGE_STATUSES.has(e.status) &&
     (e.slot === undefined || isNum(e.slot)) &&
-    (e.lastError === undefined || typeof e.lastError === 'string')
-  );
+    (e.lastError === undefined || typeof e.lastError === 'string') &&
+    optionalText(e.secret) &&
+    optionalText(e.C) &&
+    optionalText(e.nonce) &&
+    optionalText(e.B_) &&
+    optionalText(e.C_) &&
+    optionalText(e.dleqE) &&
+    optionalText(e.dleqS) &&
+    optionalText(e.r) &&
+    (e.date === undefined || isNum(e.date));
+  if (!base) {
+    return false;
+  }
+  // 0.x: the whole piece. 2.0: at least the mint's half.
+  const legacy = isText(e.secret) && isText(e.C) && isText(e.nonce);
+  const card = isText(e.B_) && isText(e.C_);
+  return legacy || card;
 }
 
 interface OwedChangeRead {
@@ -1768,6 +2109,77 @@ function evictOwedChange(entries: OwedChangeEntry[]): OwedChangeEntry[] {
   return entries.filter(e => !drop.has(e));
 }
 
+/** The card's own change as the swap answered it: the mint's half of the piece. */
+export interface OwedCardChange {
+  keysetId: string;
+  amount: number;
+  /** The blinded message the card made (SPEND_ALL_CHANGE). */
+  B_: string;
+  /** The mint's blind signature on it. */
+  C_: string;
+  /** The mint's NUT-12 proof on `C_`, when it gave one. */
+  dleq?: {e: string; s: string};
+}
+
+/**
+ * Durably record the card's own change, as the swap answered it. **Await this
+ * before the first `LOAD_PROOF`** — the same contract as `recordOwedChange`:
+ * the blind signatures exist only in this process until the card takes the
+ * pieces. Idempotent by `B_`.
+ */
+export async function recordOwedCardChange(
+  cardPubkey: string,
+  change: OwedCardChange[],
+  {mintUrl, unit}: {mintUrl: string; unit: string},
+  now: number,
+): Promise<OwedChangeEntry[]> {
+  if (change.length === 0) {
+    return [];
+  }
+  if (!mintUrl) {
+    throw new Error('owed change record is missing the mint url');
+  }
+  if (!unit) {
+    throw new Error('owed change record is missing the keyset unit');
+  }
+  const fresh = change.map(
+    (c): OwedChangeEntry => ({
+      id: owedCardChangeId(cardPubkey, c.B_),
+      cardPubkey,
+      mintUrl,
+      unit,
+      keysetId: c.keysetId,
+      amount: c.amount,
+      B_: c.B_.toLowerCase(),
+      C_: c.C_.toLowerCase(),
+      ...(c.dleq ? {dleqE: c.dleq.e, dleqS: c.dleq.s} : {}),
+      status: 'owed',
+      createdAt: now,
+      updatedAt: now,
+      attempts: 0,
+    }),
+  );
+  return withOwedChange(async ({entries}) => {
+    const byId = new Map(entries.map(e => [e.id, e]));
+    const result: OwedChangeEntry[] = [];
+    const added: OwedChangeEntry[] = [];
+    for (const entry of fresh) {
+      const existing = byId.get(entry.id);
+      if (existing) {
+        result.push(existing);
+      } else {
+        byId.set(entry.id, entry);
+        added.push(entry);
+        result.push(entry);
+      }
+    }
+    if (added.length > 0) {
+      await writeOwedChangeStore(evictOwedChange([...entries, ...added]));
+    }
+    return result;
+  });
+}
+
 /** The minted change proof as the mint adapter returns it (`SettledProof`). */
 export interface OwedChangeProof {
   /** The keyset id. */
@@ -1883,14 +2295,38 @@ async function updateOwedChange(
   });
 }
 
-/** The card took the piece (LOAD_PROOF answered `slot`), or it was found there. */
-export const markOwedChangeWritten = (id: string, slot: number, now: number) =>
+/**
+ * The card took the piece (LOAD_PROOF answered `slot`), or it was found there.
+ * `slot` is undefined when the card is known to hold the piece without saying
+ * where (a `6A94`, or its opening let go).
+ */
+export const markOwedChangeWritten = (
+  id: string,
+  slot: number | undefined,
+  now: number,
+) =>
   updateOwedChange(id, e => ({
     ...e,
     status: 'written',
-    slot,
+    ...(slot === undefined ? {} : {slot}),
     updatedAt: now,
     lastError: undefined,
+  }));
+
+/**
+ * The card's opening for a 2.0 entry was read: copy in what makes it a whole
+ * piece (nonce, secret, the unblinded C, the date and r), so a later tap can
+ * load it without reading the opening again.
+ */
+export const markOwedChangeOpened = (
+  id: string,
+  opened: {nonce: string; secret: string; C: string; date: number; r: string},
+  now: number,
+) =>
+  updateOwedChange(id, e => ({
+    ...e,
+    ...opened,
+    updatedAt: now,
   }));
 
 /**

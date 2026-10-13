@@ -45,6 +45,12 @@ import {
   owedChangeId,
   owedChangeQuarantineKeyFor,
   recordOwedChange,
+  LEGACY_NEEDS_CARD_REASON,
+  isCardChange,
+  markOwedChangeOpened,
+  owedCardChangeId,
+  recordOwedCardChange,
+  toSigAllInputs,
   type DrainResult,
   type OwedChangeEntry,
   type SettlementEntry,
@@ -1133,7 +1139,9 @@ describe('resolving an unknown outcome with a state check', () => {
     await record();
     const checkState = jest.fn(async () => 'unspent' as const);
     const result = await drainQueue(async () => {}, T0, {checkState});
-    expect(checkState).toHaveBeenCalledWith(expect.objectContaining({status: 'pending'}));
+    expect(checkState).toHaveBeenCalledWith(
+      expect.objectContaining({status: 'pending'}),
+    );
     // Unspent → the swap runs and settles normally.
     expect(result.settled).toBe(1);
   });
@@ -1853,18 +1861,18 @@ describe('owed change store (ENG-630)', () => {
     await expect(recordOwedChange(CARD, [], opts, T0)).resolves.toEqual([]);
     expect(mockStore[OWED_CHANGE_KEY]).toBeUndefined();
     await expect(
-      recordOwedChange(CARD, [proof(4, nonceA)], {mintUrl: '', unit: 'sat'}, T0),
+      recordOwedChange(
+        CARD,
+        [proof(4, nonceA)],
+        {mintUrl: '', unit: 'sat'},
+        T0,
+      ),
     ).rejects.toThrow(/mint url/);
     await expect(
       recordOwedChange(CARD, [proof(4, nonceA)], {mintUrl: MINT, unit: ''}, T0),
     ).rejects.toThrow(/unit/);
     await expect(
-      recordOwedChange(
-        CARD,
-        [{...proof(4, nonceA), secret: 'junk'}],
-        opts,
-        T0,
-      ),
+      recordOwedChange(CARD, [{...proof(4, nonceA), secret: 'junk'}], opts, T0),
     ).rejects.toThrow(/non-canonical/);
   });
 
@@ -1881,7 +1889,9 @@ describe('owed change store (ENG-630)', () => {
     await expect(markOwedChangeSending(b.id, T0 + 1)).resolves.toEqual(
       expect.objectContaining({status: 'owed', attempts: 1}),
     );
-    await expect(markOwedChangeAttemptFailed(b.id, '6A84', T0 + 1)).resolves.toEqual(
+    await expect(
+      markOwedChangeAttemptFailed(b.id, '6A84', T0 + 1),
+    ).resolves.toEqual(
       expect.objectContaining({status: 'owed', attempts: 1, lastError: '6A84'}),
     );
     await expect(markOwedChangeSending('nope', T0)).resolves.toBeNull();
@@ -1903,9 +1913,9 @@ describe('owed change store (ENG-630)', () => {
     await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
       QueueUnavailableError,
     );
-    await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toBeInstanceOf(
-      QueueUnavailableError,
-    );
+    await expect(
+      recordOwedChange(CARD, [proof(4, nonceA)], opts, T0),
+    ).rejects.toBeInstanceOf(QueueUnavailableError);
   });
 
   it('quarantines corrupt bytes by content and answers with what validated', async () => {
@@ -1915,7 +1925,9 @@ describe('owed change store (ENG-630)', () => {
     // operator, and the reader answers — it does not refuse every charge on
     // the terminal forever.
     await expect(outstandingChangeForCard(CARD)).resolves.toEqual([]);
-    expect(mockStore[owedChangeQuarantineKeyFor('{not json')]).toBe('{not json');
+    expect(mockStore[owedChangeQuarantineKeyFor('{not json')]).toBe(
+      '{not json',
+    );
     expect(mockStore[CORRUPT_OWED_CHANGE_KEY]).toBe('{not json');
 
     // One bad element beside a good one: the good entry is still owed, is
@@ -1940,9 +1952,9 @@ describe('owed change store (ENG-630)', () => {
     await expect(outstandingChangeForCard(CARD)).rejects.toBeInstanceOf(
       QueueUnavailableError,
     );
-    await expect(recordOwedChange(CARD, [proof(4, nonceA)], opts, T0)).rejects.toThrow(
-      /could not be quarantined/,
-    );
+    await expect(
+      recordOwedChange(CARD, [proof(4, nonceA)], opts, T0),
+    ).rejects.toThrow(/could not be quarantined/);
     expect(mockStore[OWED_CHANGE_KEY]).toBe('{not json');
   });
 
@@ -2009,5 +2021,490 @@ describe('owed change store (ENG-630)', () => {
     expect(exposure.totals).toEqual({});
     await expect(hasUnsettledForCard(CARD)).resolves.toBe(false);
     expect(mockStore[QUEUE_KEY]).toBeUndefined();
+  });
+});
+
+// ── schema v2 (protocol 2.0): one entry is one SIG_ALL payment ──────────────
+
+describe('schema v2: a payment under one SIG_ALL witness', () => {
+  const B = (n: number) => `02${n.toString(16).padStart(2, '0').repeat(32)}`;
+  const sigAll = (over: Partial<SpendRecord> = {}): SpendRecord => ({
+    ...spend(),
+    amount: 24,
+    sigflag: 'SIG_ALL',
+    inputs: [
+      {
+        slot: 0,
+        nonce: 'ab'.repeat(32),
+        secret: SECRET,
+        C: '02' + 'cd'.repeat(32),
+        amount: 16,
+        keysetId: '0059534ce0bfa19a',
+      },
+      {
+        slot: 3,
+        nonce: 'bc'.repeat(32),
+        secret: SECRET.replace('abab', 'bcbc'),
+        C: '03' + 'cd'.repeat(32),
+        amount: 8,
+        keysetId: '0059534ce0bfa19a',
+      },
+    ],
+    outputs: [
+      {amount: 16, B_: B(1), keysetId: '0059534ce0bfa19a'},
+      {amount: 4, B_: B(2), keysetId: '0059534ce0bfa19a'},
+      {amount: 4, B_: B(3), keysetId: '0059534ce0bfa19a'},
+    ],
+    merchantBlinding: [
+      {r: '01'.repeat(32), secret: 'aa'},
+      {r: '02'.repeat(32), secret: 'bb'},
+    ],
+    cardChangeIndex: 2,
+    message: 'ee'.repeat(32),
+    ...over,
+  });
+
+  it('records the whole payment once, keyed by its first piece', async () => {
+    const entry = await recordSpend(sigAll(), T0);
+    expect(entry.id).toBe(`${CARD}:0:${'ab'.repeat(32)}`);
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0]).toMatchObject({
+      sigflag: 'SIG_ALL',
+      status: 'pending',
+      amount: 24,
+      cardChangeIndex: 2,
+      message: 'ee'.repeat(32),
+    });
+    expect(stored()[0].outputs).toHaveLength(3);
+    expect(JSON.parse(mockStore[QUEUE_KEY]).v).toBe(2);
+  });
+
+  it('refuses a SIG_ALL record without the outputs or the message its witness signs', async () => {
+    await expect(recordSpend(sigAll({outputs: []}), T0)).rejects.toThrow(
+      /missing the payment its witness signs/,
+    );
+    await expect(recordSpend(sigAll({message: undefined}), T0)).rejects.toThrow(
+      /missing the payment/,
+    );
+    expect(mockStore[QUEUE_KEY]).toBeUndefined();
+  });
+
+  it('a SIG_INPUTS record derives its single input', async () => {
+    const entry = await record();
+    expect(entry.sigflag).toBe('SIG_INPUTS');
+    expect(entry.inputs).toEqual([
+      {
+        slot: 0,
+        nonce: 'ab'.repeat(32),
+        secret: SECRET,
+        C: '02' + 'cd'.repeat(32),
+        amount: 40,
+        keysetId: '0059534ce0bfa19a',
+      },
+    ]);
+    expect(entry.outputs).toEqual([]);
+  });
+
+  it('toSigAllInputs puts the one witness on the FIRST input only', async () => {
+    const entry = await recordSpend(sigAll(), T0);
+    const inputs = toSigAllInputs(entry);
+    expect(inputs.map(i => i.secret)).toEqual(entry.inputs.map(i => i.secret));
+    expect(inputs[0].witness).toBe(
+      JSON.stringify({signatures: [entry.witness]}),
+    );
+    expect(inputs[1].witness).toBeUndefined();
+    expect(() => toSigAllInputs({...entry, witness: undefined})).toThrow(
+      /no witness/,
+    );
+  });
+
+  it('the drain resubmits exactly the stored outputs (SIG_ALL binds them)', async () => {
+    const entry = await recordSpend(sigAll(), T0);
+    const seen: SettlementEntry[] = [];
+    await drainQueue(async e => {
+      seen.push(JSON.parse(JSON.stringify(e)));
+      throw new Error('timeout');
+    }, T0 + 1);
+    await drainQueue(async e => {
+      seen.push(JSON.parse(JSON.stringify(e)));
+    }, T0 + 2);
+
+    expect(seen).toHaveLength(2);
+    for (const submitted of seen) {
+      expect(submitted.outputs).toEqual(entry.outputs);
+      expect(submitted.inputs).toEqual(entry.inputs);
+      expect(submitted.merchantBlinding).toEqual(entry.merchantBlinding);
+      expect(submitted.witness).toBe(entry.witness);
+    }
+    expect(stored()[0].status).toBe('settled');
+  });
+
+  it('a needs-card payment holds everything it signed until the card gives the witness again', async () => {
+    const entry = await recordSpend(sigAll({witness: undefined}), T0);
+    expect(entry.status).toBe('needs-card');
+    expect(await recoverableForCard(CARD)).toEqual([
+      expect.objectContaining({
+        id: entry.id,
+        outputs: entry.outputs,
+        merchantBlinding: entry.merchantBlinding,
+        message: entry.message,
+      }),
+    ]);
+    const swap = jest.fn();
+    await drainQueue(swap, T0 + 1);
+    expect(swap).not.toHaveBeenCalled();
+
+    await attachRecoveredWitness(entry.id, 'aa'.repeat(64), T0 + 2);
+    expect(stored()[0]).toMatchObject({
+      status: 'pending',
+      witness: 'aa'.repeat(64),
+    });
+  });
+
+  it('a stored SIG_ALL entry without its message is not a settlement entry', async () => {
+    await recordSpend(sigAll(), T0);
+    const broken = {...stored()[0]} as Record<string, unknown>;
+    delete broken.message;
+    storeRaw([broken]);
+    expect(await listSettlements()).toEqual([]);
+    await expect(pendingExposure()).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+  });
+});
+
+describe('schema v2 migration (v1 → v2)', () => {
+  /** An entry exactly as the v1 release wrote it: no v2 field at all. */
+  const asV1 = (entry: SettlementEntry): Record<string, unknown> => {
+    const v1: Record<string, unknown> = {...entry};
+    for (const k of [
+      'sigflag',
+      'inputs',
+      'outputs',
+      'merchantBlinding',
+      'cardChangeIndex',
+      'message',
+    ]) {
+      delete v1[k];
+    }
+    return v1;
+  };
+
+  /** One v1 entry in every status the queue has. */
+  async function v1Queue() {
+    await record({slot: 0, amount: 40});
+    await record({slot: 1, amount: 8});
+    await record({slot: 2, amount: 2, witness: undefined});
+    await record({slot: 3, amount: 4});
+    await record({slot: 4, amount: 16});
+    const v1 = stored().map(asV1);
+    v1[0] = {...v1[0], status: 'submitting', attempts: 1, lastError: 'timeout'};
+    v1[3] = {...v1[3], status: 'settled', updatedAt: T0 + 1};
+    // A failure past its retries: the drain leaves it for a human.
+    v1[4] = {
+      ...v1[4],
+      status: 'failed',
+      attempts: 8,
+      lastError: 'malformed proof',
+    };
+    expect(v1.map(e => e.status)).toEqual([
+      'submitting',
+      'pending',
+      'needs-card',
+      'settled',
+      'failed',
+    ]);
+    return v1;
+  }
+
+  it('round-trips every v1 entry: every field kept, the v2 fields supplied', async () => {
+    const v1 = await v1Queue();
+    storeRaw(v1, 1);
+
+    const migrated = await listSettlements();
+    expect(migrated).toHaveLength(v1.length);
+    migrated.forEach((entry, i) => {
+      const before = v1[i] as unknown as SettlementEntry;
+      // Every v1 field, as it was — but a needs-card entry's status.
+      for (const [k, v] of Object.entries(before)) {
+        if (
+          before.status === 'needs-card' &&
+          (k === 'status' || k === 'lastError')
+        ) {
+          continue;
+        }
+        expect((entry as unknown as Record<string, unknown>)[k]).toEqual(v);
+      }
+      expect(entry.sigflag).toBe('SIG_INPUTS');
+      expect(entry.inputs).toEqual([
+        {
+          slot: before.slot,
+          nonce: before.nonce,
+          secret: before.secret,
+          C: before.C,
+          amount: before.amount,
+          keysetId: before.keysetId,
+        },
+      ]);
+      expect(entry.outputs).toEqual([]);
+      expect(entry.merchantBlinding).toEqual([]);
+    });
+    // Nothing quarantined: a whole release of entries is not corruption.
+    expect(mockStore[CORRUPT_QUEUE_KEY]).toBeUndefined();
+    expect(mockStore[UNKNOWN_EXPOSURE_KEY]).toBeUndefined();
+  });
+
+  it('a 0.x needs-card entry becomes failed for the operator, never dropped (decision 5)', async () => {
+    const v1 = await v1Queue();
+    storeRaw(v1, 1);
+    const entry = (await listSettlements()).find(e => e.slot === 2)!;
+    expect(entry.status).toBe('failed');
+    expect(entry.lastError).toBe(LEGACY_NEEDS_CARD_REASON);
+    expect(entry.amount).toBe(2);
+    expect(await recoverableForCard(CARD)).toEqual([]);
+    const exposure = await pendingExposure();
+    expect(exposure.failed).toBe(2);
+    expect(exposure.failedSat).toBe(2 + 16);
+  });
+
+  it('a 0.x pending entry still drains, as SIG_INPUTS', async () => {
+    const v1 = await v1Queue();
+    storeRaw(v1, 1);
+    const swap = jest.fn(async (_entry: SettlementEntry) => {});
+    const result = await drainQueue(swap, T0 + 10);
+    const swapped = swap.mock.calls.map(
+      ([e]) => e as unknown as SettlementEntry,
+    );
+    expect(swapped.every(e => e.sigflag === 'SIG_INPUTS')).toBe(true);
+    expect(swapped.map(e => e.slot).sort()).toEqual([0, 1]);
+    expect(result.settled).toBe(2);
+  });
+
+  it('reading a v1 queue writes nothing: the v1 bytes stay as they were', async () => {
+    const v1 = await v1Queue();
+    storeRaw(v1, 1);
+    const before = mockStore[QUEUE_KEY];
+
+    await listSettlements();
+    await pendingExposure();
+    await hasUnsettledForCard(CARD);
+    await recoverableForCard(CARD);
+
+    expect(mockStore[QUEUE_KEY]).toBe(before);
+    expect(JSON.parse(mockStore[QUEUE_KEY]).v).toBe(1);
+  });
+
+  it('the first write stamps v2 with every entry migrated', async () => {
+    const v1 = await v1Queue();
+    storeRaw(v1, 1);
+    await record({slot: 9, amount: 1});
+    const blob = JSON.parse(mockStore[QUEUE_KEY]);
+    expect(blob.v).toBe(2);
+    expect(blob.entries).toHaveLength(v1.length + 1);
+    expect(
+      blob.entries.every((e: SettlementEntry) => Array.isArray(e.inputs)),
+    ).toBe(true);
+  });
+
+  it('a migration that fails for an element keeps the v1 bytes intact for the operator', async () => {
+    const v1 = await v1Queue();
+    // One element v1 never wrote: no secret.
+    const bad = {...v1[0]};
+    delete bad.secret;
+    const raw = JSON.stringify({v: 1, entries: [bad, ...v1.slice(1)]});
+    mockStore[QUEUE_KEY] = raw;
+
+    const readable = await listSettlements();
+    expect(readable).toHaveLength(v1.length - 1);
+    // The v1 blob, byte for byte, is quarantined under its content key …
+    expect(mockStore[quarantineKeyFor(raw)]).toBe(raw);
+    // … the corruption is recorded before anything may overwrite it …
+    expect(JSON.parse(mockStore[UNKNOWN_EXPOSURE_KEY]).quarantineKey).toBe(
+      quarantineKeyFor(raw),
+    );
+    // … and no read touched the queue itself.
+    expect(mockStore[QUEUE_KEY]).toBe(raw);
+  });
+
+  it('a migration whose corruption cannot be recorded refuses to overwrite the v1 queue', async () => {
+    const v1 = await v1Queue();
+    const bad = {...v1[0]};
+    delete bad.secret;
+    const raw = JSON.stringify({v: 1, entries: [bad, ...v1.slice(1)]});
+    mockStore[QUEUE_KEY] = raw;
+    mockWriteFails = new Error('keychain write denied');
+
+    await expect(record({slot: 9})).rejects.toBeInstanceOf(
+      QueueUnavailableError,
+    );
+    expect(mockStore[QUEUE_KEY]).toBe(raw);
+  });
+
+  it('a v0 queue migrates all the way: mint, unit and the v2 fields', async () => {
+    await record({amount: 40});
+    const v0 = stored().map(e => {
+      const out = asV1(e);
+      delete out.mintUrl;
+      delete out.unit;
+      return out;
+    });
+    mockStore[QUEUE_KEY] = JSON.stringify(v0);
+    const [entry] = await listSettlements();
+    expect(entry.mintUrl).toBe(LEGACY_MINT_URL);
+    expect(entry.sigflag).toBe('SIG_INPUTS');
+    expect(entry.inputs).toHaveLength(1);
+  });
+
+  // A downgrade re-stamps a v2 blob at v1 with the v2 fields riding along;
+  // the roll-forward must not treat those entries as 0.x ones.
+  it('never fails or reshapes a v2 entry a downgraded build re-stamped as v1', async () => {
+    await recordSpend(
+      {
+        ...spend(),
+        sigflag: 'SIG_ALL',
+        witness: undefined,
+        inputs: [
+          {
+            slot: 0,
+            nonce: 'ab'.repeat(32),
+            secret: SECRET,
+            C: '02' + 'cd'.repeat(32),
+            amount: 40,
+            keysetId: '0059534ce0bfa19a',
+          },
+        ],
+        outputs: [
+          {
+            amount: 40,
+            B_: '02' + '11'.repeat(32),
+            keysetId: '0059534ce0bfa19a',
+          },
+        ],
+        merchantBlinding: [{r: '01'.repeat(32), secret: 'aa'}],
+        message: 'ee'.repeat(32),
+      },
+      T0,
+    );
+    storeRaw(stored(), 1);
+    const [entry] = await listSettlements();
+    expect(entry.status).toBe('needs-card');
+    expect(entry.sigflag).toBe('SIG_ALL');
+    expect(entry.outputs).toHaveLength(1);
+  });
+});
+
+describe("owed change, 2.0: the card's own change", () => {
+  const B = (n: number) => `02${n.toString(16).padStart(2, '0').repeat(32)}`;
+  const change = (amount: number, n: number) => ({
+    keysetId: '0059534ce0bfa19a',
+    amount,
+    B_: B(n),
+    C_: `03${'77'.repeat(32)}`,
+    dleq: {e: 'e1'.repeat(32), s: '51'.repeat(32)},
+  });
+  const opts = {mintUrl: MINT, unit: 'sat'};
+
+  it("records the mint's half, idempotent by B_", async () => {
+    const first = await recordOwedCardChange(
+      CARD,
+      [change(4, 1), change(1, 2)],
+      opts,
+      T0,
+    );
+    const again = await recordOwedCardChange(
+      CARD,
+      [change(4, 1)],
+      opts,
+      T0 + 5,
+    );
+
+    expect(first.map(e => e.id)).toEqual([
+      owedCardChangeId(CARD, B(1)),
+      owedCardChangeId(CARD, B(2)),
+    ]);
+    expect(again[0]).toEqual(first[0]);
+    const owed = await outstandingChangeForCard(CARD);
+    expect(owed).toHaveLength(2);
+    expect(owed[0]).toMatchObject({
+      B_: B(1),
+      C_: `03${'77'.repeat(32)}`,
+      dleqE: 'e1'.repeat(32),
+      dleqS: '51'.repeat(32),
+      status: 'owed',
+      attempts: 0,
+    });
+    expect(owed[0].nonce).toBeUndefined();
+    expect(isCardChange(owed[0])).toBe(true);
+    expect(JSON.parse(mockStore[OWED_CHANGE_KEY]).v).toBe(2);
+  });
+
+  it('refuses a record with no mint or unit', async () => {
+    await expect(
+      recordOwedCardChange(
+        CARD,
+        [change(4, 1)],
+        {mintUrl: '', unit: 'sat'},
+        T0,
+      ),
+    ).rejects.toThrow(/mint url/);
+    await expect(
+      recordOwedCardChange(CARD, [change(4, 1)], {mintUrl: MINT, unit: ''}, T0),
+    ).rejects.toThrow(/unit/);
+  });
+
+  it('opening an entry copies in the piece, and written may name no slot', async () => {
+    const [entry] = await recordOwedCardChange(CARD, [change(4, 1)], opts, T0);
+    await markOwedChangeOpened(
+      entry.id,
+      {
+        nonce: 'aa'.repeat(32),
+        secret: 's',
+        C: B(9),
+        date: 0,
+        r: 'bb'.repeat(32),
+      },
+      T0 + 1,
+    );
+    expect((await outstandingChangeForCard(CARD))[0]).toMatchObject({
+      nonce: 'aa'.repeat(32),
+      C: B(9),
+      r: 'bb'.repeat(32),
+      date: 0,
+    });
+    await markOwedChangeWritten(entry.id, undefined, T0 + 2);
+    const [written] = await listOwedChange();
+    expect(written.status).toBe('written');
+    expect(written.slot).toBeUndefined();
+  });
+
+  it('a v1 owed-change store (0.x change) still reads, beside 2.0 entries', async () => {
+    const legacy = {
+      id: owedChangeId(CARD, '11'.repeat(32)),
+      cardPubkey: CARD,
+      mintUrl: MINT,
+      unit: 'sat',
+      keysetId: '0059534ce0bfa19a',
+      amount: 4,
+      secret: 'legacy-secret',
+      C: '02' + 'cd'.repeat(32),
+      nonce: '11'.repeat(32),
+      status: 'owed',
+      createdAt: T0,
+      updatedAt: T0,
+      attempts: 0,
+    };
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify({v: 1, entries: [legacy]});
+    await recordOwedCardChange(CARD, [change(1, 2)], opts, T0 + 1);
+    const owed = await outstandingChangeForCard(CARD);
+    expect(owed.map(e => isCardChange(e))).toEqual([false, true]);
+    expect(mockStore[`${OWED_CHANGE_KEY}_corrupt`]).toBeUndefined();
+  });
+
+  it("an entry with neither a whole piece nor the mint's half is corrupt", async () => {
+    const [entry] = await recordOwedCardChange(CARD, [change(4, 1)], opts, T0);
+    const broken = {...entry} as Record<string, unknown>;
+    delete broken.C_;
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify({v: 2, entries: [broken]});
+    expect(await listOwedChange()).toEqual([]);
   });
 });

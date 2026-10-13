@@ -23,6 +23,7 @@
 import {Linking, LogBox} from 'react-native';
 import {NfcError, type TagEvent} from 'react-native-nfc-manager';
 
+import {setHeaderApisOverride} from './blockHeader';
 import type {Transceiver} from './cashuCard';
 
 export interface CardBridgeConfig {
@@ -41,6 +42,13 @@ export interface CardBridgeConfig {
    * (ENG-645: Back mid-write). At most `MAX_HOLD_LOAD_MS`.
    */
   holdLoadMs?: number;
+  /**
+   * Where the till takes the Bitcoin tip header it shows the card (an
+   * Esplora API base: `<api>/blocks/tip/hash`, `<api>/block/<hash>/header`),
+   * in place of mempool.space and blockstream.info: the e2e run's stub, so a
+   * flow's card clock is the run's to choose (`blockHeader.ts`).
+   */
+  headerApi?: string;
 }
 
 /** The longest `holdLoadMs` the bridge takes: a flow, not a hang. */
@@ -54,7 +62,7 @@ export const CARD_BRIDGE_TIMEOUT_MS = 5000;
 
 /**
  * Where the deep link lives:
- * `flashpos://dev/card-bridge?url=…&dropLoad=…&holdLoad=<ms>`.
+ * `flashpos://dev/card-bridge?url=…&dropLoad=…&holdLoad=<ms>&headers=<api>`.
  */
 export const CARD_BRIDGE_LINK = 'flashpos://dev/card-bridge';
 
@@ -116,10 +124,17 @@ export function setCardBridge(config: CardBridgeConfig | null): void {
       `card bridge: holdLoadMs must be a whole number of ms from 1 to ${MAX_HOLD_LOAD_MS}, got ${holdLoadMs}`,
     );
   }
+  const headerApi = config.headerApi?.trim();
+  if (headerApi !== undefined && !/^https?:\/\/[^\s/]+/i.test(headerApi)) {
+    throw new Error(
+      `card bridge: the header API must start with http:// or https://, got "${config.headerApi}"`,
+    );
+  }
   bridge = {
     url: url.replace(/\/+$/, ''),
     ...(dropLoad ? {dropLoad} : {}),
     ...(holdLoadMs ? {holdLoadMs} : {}),
+    ...(headerApi ? {headerApi: headerApi.replace(/\/+$/, '')} : {}),
   };
   loadsSent = 0;
 }
@@ -226,11 +241,12 @@ export type CardBridgeLink =
   | {action: 'clear'};
 
 /**
- * Reads `flashpos://dev/card-bridge?url=<bridge>[&dropLoad=<n>][&holdLoad=<ms>]`
+ * Reads `flashpos://dev/card-bridge?url=<bridge>[&dropLoad=<n>][&holdLoad=<ms>][&headers=<api>]`
  * or `…?off=1`. Anything else — another link, a missing or non-http URL, a
  * `dropLoad` that is not a positive integer, a `holdLoad` that is not a
- * whole number of ms up to `MAX_HOLD_LOAD_MS` — answers `null`. The URL may
- * arrive percent-encoded or raw (`url=http://127.0.0.1:9876`).
+ * whole number of ms up to `MAX_HOLD_LOAD_MS`, a `headers` that is not an
+ * http(s) URL — answers `null`. The URLs may arrive percent-encoded or raw
+ * (`url=http://127.0.0.1:9876`).
  */
 export function parseCardBridgeLink(link: string): CardBridgeLink | null {
   if (!link.startsWith(CARD_BRIDGE_LINK)) {
@@ -279,6 +295,13 @@ export function parseCardBridgeLink(link: string): CardBridgeLink | null {
     }
     config.holdLoadMs = holdLoadMs;
   }
+  const headers = params.get('headers');
+  if (headers !== undefined) {
+    if (!/^https?:\/\/[^\s/]+/i.test(headers)) {
+      return null;
+    }
+    config.headerApi = headers.replace(/\/+$/, '');
+  }
   return {action: 'set', config};
 }
 
@@ -296,10 +319,14 @@ function applyCardBridgeLink(link: string | null | undefined): void {
   }
   if (parsed.action === 'clear') {
     setCardBridge(null);
+    setHeaderApisOverride(null);
     console.log('[card-bridge] off: card sessions use NFC');
     return;
   }
   setCardBridge(parsed.config);
+  setHeaderApisOverride(
+    parsed.config.headerApi ? [parsed.config.headerApi] : null,
+  );
   // The link is how automation (Maestro) sets the bridge; a LogBox toast
   // from an unrelated dev warning would sit over the keypad it taps.
   LogBox.ignoreAllLogs(true);
@@ -310,6 +337,9 @@ function applyCardBridgeLink(link: string | null | undefined): void {
         : '') +
       (parsed.config.holdLoadMs
         ? ` (holding every LOAD ${parsed.config.holdLoadMs} ms)`
+        : '') +
+      (parsed.config.headerApi
+        ? ` (block headers from ${parsed.config.headerApi})`
         : ''),
   );
 }

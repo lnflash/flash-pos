@@ -82,7 +82,8 @@ export interface ChargeViewProps {
   onPinConfirm: () => void;
   onOpenNfcSettings?: () => void;
   /**
-   * The error came AFTER the mint swap settled the bill (`isPaidFailure`):
+   * The error came AFTER the card burned for the bill — the mint swap
+   * settled it (`isPaidFailure`), or refused it (`isRefusedAfterBurn`):
    * the charge is over and paid, so the error state offers only `onDone` —
    * no "Tap card again" and no Cancel back to a fresh charge for the same
    * bill (ENG-642). Hardware Back runs `onDone` too. Needs `onDone`; without

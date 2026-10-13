@@ -44,3 +44,17 @@ declare module '@env' {
   export const EVENT_DISPLAY_MESSAGE = string; // Event message
   export const EVENT_SHOW_PROGRESS = string; // Show progress (e.g., "true")
 }
+
+/**
+ * Optional build settings (babel.config.js, `@env-optional`): undefined when
+ * the .env and the build's environment lack them, so a build never fails on
+ * one; the code holds the default.
+ */
+declare module '@env-optional' {
+  /**
+   * The block-header sources a till takes the Bitcoin tip from, in order,
+   * comma-separated Esplora API bases (blockHeader.ts). Absent: mempool.space,
+   * then blockstream.info.
+   */
+  export const FLASH_HEADER_APIS: string | undefined;
+}

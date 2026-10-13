@@ -1,6 +1,9 @@
 const base = {
   preset: 'react-native',
   setupFiles: ['<rootDir>/jest.setup.js'],
+  // __tests__/support holds shared harnesses (the 2.0 card and mint models),
+  // not test files.
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/__tests__/support/'],
   moduleNameMapper: {
     '@react-native-async-storage/async-storage':
       '@react-native-async-storage/async-storage/jest/async-storage-mock.js',

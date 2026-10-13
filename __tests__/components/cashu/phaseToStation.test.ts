@@ -2,6 +2,7 @@ import {
   INITIAL_STAGE,
   PHASE_CHANGE,
   PHASE_PIN,
+  PHASE_PREPARING,
   PHASE_READING,
   PHASE_SETTLING,
   friendlyLabel,
@@ -206,5 +207,15 @@ describe('owed change from an earlier charge (ENG-630)', () => {
         }),
       ).title,
     ).toBe('Adding 1 sat of change from an earlier charge');
+  });
+});
+
+describe('protocol 2.0: the commands before the card signs', () => {
+  it('"preparing the payment" moves no station and has plain words', () => {
+    const [read, prep] = run(['reading card', PHASE_PREPARING]);
+    expect(PHASE_PREPARING).toBe('preparing the payment');
+    expect(prep.station).toBe(read.station);
+    expect(prep.burnsDone).toBe(0);
+    expect(friendlyLabel(prep).title).toBe('Getting the payment ready');
   });
 });

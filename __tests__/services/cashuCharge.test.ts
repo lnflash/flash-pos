@@ -1,24 +1,50 @@
 /**
- * cashuCharge — Model B: enter amount, tap, exact spend with change from the
- * till. The fake card (cashuSpend.test.ts's harness, extended with VERIFY_PIN
- * and LOAD_PROOF) meets the REAL planning, till staging, and queue recording;
- * the mint adapter is the seam (its wire behaviour is cashuMint.test.ts's).
+ * cashuCharge — Model B on a 2.0 card: enter amount, tap, ONE SIG_ALL
+ * signature over the pieces, the merchant's outputs and the card's own
+ * change; the swap at the mint; the change finished from the card's
+ * openings and loaded back.
+ *
+ * The 2.0 card model and the test mint (`__tests__/support/cardProtocol2.ts`)
+ * meet the REAL planning, the REAL swap path (cashu-ts's Wallet is replaced
+ * by a double whose `mint.swap` is the test mint, which checks the SIG_ALL
+ * witness and every input's C) and the REAL queues over a mocked keychain.
+ * The ENG-630/642/645 guarantees keep their shape: change recorded before
+ * the first LOAD, a failure after the swap is PAID, the burn point held.
  */
 import {
+  CARD_NEEDS_UPDATE,
   CardError,
+  CardNeedsUpdateError,
   describeStatusWord,
   isAppletNotFound,
-  toHex,
+  isPinNeededForPayment,
   type Transceiver,
 } from '../../src/services/cashuCard';
 import {
-  buildCardP2PKSecret,
+  __resetWalletCache,
+  buildCardSigAllSecret,
+  cachedKeysets,
   listSettledProofs,
+  saveKeysets,
 } from '../../src/services/cashuMint';
 import {
+  CARD_LOCKED,
+  CARD_NOT_SATS,
+  CHANGE_NEEDS_MINT,
+  DAILY_LIMIT_REACHED,
+  ONLINE_ONLY,
+  MINT_BUDGET_MS,
+  NOT_THE_CARD_READ,
+  PHASE_CARD_SIGNATURE_INVALID,
+  PHASE_SETTLING_NEEDS_CARD,
+  PHASE_SETTLING_REFUSED,
+  PHASE_SETTLING_UNCONFIRMED,
+  allowanceCovers,
   chargeCard,
   executeCharge,
+  headerTime,
   isPaidFailure,
+  overDailyLimit,
   owedChangePhase,
   PHASE_RECORDING_PAYMENT,
   PHASE_RECORDING_PAYMENT_CHANGE_ON_CARD,
@@ -38,31 +64,47 @@ import {
   listSettlements,
   OWED_CHANGE_KEY,
   outstandingChangeForCard,
-  recordOwedChange,
+  recordOwedCardChange,
+  type OwedChangeEntry,
 } from '../../src/services/cashuSettlement';
 import {describeCardFailure} from '../../src/services/cashuCardNfc';
+import {isRefusedAfterBurn} from '../../src/services/phaseError';
 import {
+  CARD_LOCKED_BODY,
+  NEEDS_CARD_BODY,
+  REFUSED_BODY,
+  SIGNATURE_INVALID_BODY,
+  UNCONFIRMED_BODY,
   changeOnCard,
   failedAfterSwap,
   failureBody,
   parseFailure,
+  pinFailureText,
+  settleRefused,
+  settleUnconfirmed,
 } from '../../src/components/cashu/charge/money';
+import {
+  FakeCard2,
+  KEYSET_ID,
+  MINT_URL,
+  cardWithPieces,
+  headerVectors,
+  pieceNonce,
+  resetTestMint,
+  scalar,
+  setMintHangs,
+  setMintOffline,
+  testMint,
+  type FakeCardOptions,
+} from '../support/cardProtocol2';
 
 const mockStore: Record<string, string> = {};
-const mockMintChargeChange = jest.fn();
 
-const mockAdapterSwap = jest.fn();
-
-jest.mock('../../src/services/cashuMint', () => ({
-  ...jest.requireActual('../../src/services/cashuMint'),
-  mintChargeChange: (...args: unknown[]) => mockMintChargeChange(...args),
-  // The settlement drain's swap succeeds in-test: entries settle instead of
-  // hitting the real mint with structurally-fake proofs.
-  createSettlementAdapter: () => ({
-    swap: (...args: unknown[]) => mockAdapterSwap(...args),
-    checkState: async () => 'SPENT',
-  }),
-}));
+jest.mock('@cashu/cashu-ts', () => {
+  const actual = jest.requireActual('@cashu/cashu-ts');
+  const {MockWallet} = jest.requireActual('../support/cardProtocol2');
+  return {...actual, Wallet: MockWallet};
+});
 
 jest.mock('../../src/services/secureStorage', () => ({
   getSecureStrict: jest.fn(async (k: string) => mockStore[k] ?? null),
@@ -75,252 +117,106 @@ jest.mock('../../src/services/secureStorage', () => ({
   }),
 }));
 
-const MINT_URL = 'https://forge.flashapp.me';
-const OK = [0x90, 0x00];
-const ok = (data: number[] = []) => [...data, ...OK];
-const sw = (code: number) => [(code >> 8) & 0xff, code & 0xff];
+/** The tip header the charge shows the card is the test's to give: none by default. */
+jest.mock('../../src/services/blockHeader', () => ({
+  ...jest.requireActual('../../src/services/blockHeader'),
+  cachedTipHeader: jest.fn(() => null),
+}));
 
-const PUBKEY = [0x03, ...Array.from({length: 32}, (_, i) => 0xa0 + i)];
-const CARD_PUBKEY_HEX = toHex(PUBKEY);
-const KEYSET_BYTES = [0x00, 0x59, 0x53, 0x4c, 0xe0, 0xbf, 0xa1, 0x9a];
-const KEYSET_ID = toHex(KEYSET_BYTES);
-const SIGNATURE = Array.from({length: 64}, (_, i) => (i * 3 + 1) & 0xff);
-
-interface SlotSpec {
-  amount: number;
-  status: number;
-}
-
-/** The deterministic nonce the harness reports for a seeded slot. */
-const seededNonce = (slot: number) =>
-  toHex(Array.from({length: 32}, (_, i) => (0x40 + slot * 4 + i) & 0xff));
-
-/** A slot the harness holds: seeded (deterministic nonce) or loaded (the LOAD's). */
-interface Cell extends SlotSpec {
-  nonce?: string;
-  C?: string;
-  keysetId?: string;
-}
-
-function fakeCard(opts: {
-  slots: SlotSpec[];
-  pin?: string;
-  loadsGiven?: {slot: number}[];
-  /**
-   * Slot count the card reports; the seeded slots fill from 0 and the rest
-   * are empty. Defaults to room for any change the fixtures mint. A card with
-   * exactly `slots.length` is full.
-   */
-  maxSlots?: number;
-  /**
-   * The n-th LOAD attempt (0-based, counted across sessions) answers 6A84
-   * even though a slot was free.
-   */
-  refuseLoad?: (loadAttempt: number) => boolean;
-  /**
-   * The n-th LOAD attempt lands on the card but its answer never reaches the
-   * host: the tag is reported lost instead (the card does not dedup, so the
-   * host must re-read before re-sending).
-   */
-  loseAnswerOnLoad?: (loadAttempt: number) => boolean;
-  /** The tag is lost on any balance read once a slot has burned. */
-  loseTagOnBalanceAfterBurn?: boolean;
-}) {
-  const sent: number[][] = [];
-  const loads: {keysetId: string; amount: number; nonce: string; C: string}[] =
-    [];
-  const burned = new Set<number>();
-  const maxSlots = opts.maxSlots ?? opts.slots.length + 8;
-  const cells: (Cell | null)[] = Array.from({length: maxSlots}, (_, i) =>
-    i < opts.slots.length ? {...opts.slots[i]} : null,
-  );
-  const statusOf = (i: number): number => {
-    const c = cells[i];
-    if (!c) {
-      return 0x00;
-    }
-    return burned.has(i) ? 0x02 : c.status;
-  };
-  let burnCount = 0;
-  let loadAttempts = 0;
-  const transceive: Transceiver = async apdu => {
-    sent.push(apdu);
-    const [, ins] = apdu;
-    const p1 = apdu[2];
-    switch (ins) {
-      case 0xa4:
-        // SELECT: v0.2 applet.
-        return ok([0, 2]);
-      case 0x01: {
-        const counts = cells.map((_, i) => statusOf(i));
-        const unspent = counts.filter(st => st === 0x01).length;
-        const spent = counts.filter(st => st === 0x02).length;
-        const empty = counts.filter(st => st === 0x00).length;
-        return ok([
-          0,
-          2,
-          maxSlots,
-          unspent,
-          spent,
-          empty,
-          0x03,
-          opts.pin === undefined ? 0x00 : 0x01,
-        ]);
-      }
-      case 0x10:
-        return ok(PUBKEY);
-      case 0x11: {
-        if (opts.loseTagOnBalanceAfterBurn && burnCount > 0) {
-          throw new Error('Tag was lost.');
-        }
-        const bal = cells
-          .map((c, i) => (c && statusOf(i) === 0x01 ? c.amount : 0))
-          .reduce((t, a) => t + a, 0);
-        return ok([0, 0, (bal >> 8) & 0xff, bal & 0xff]);
-      }
-      case 0x40:
-        if (opts.pin === undefined) return sw(0x6984);
-        const given = apdu.slice(5, 5 + apdu[4]);
-        const expected = Array.from(opts.pin).map(c => c.charCodeAt(0));
-        return Buffer.from(given).equals(Buffer.from(expected))
-          ? ok()
-          : sw(0x63c2);
-      case 0x14:
-        return ok(cells.map((_, i) => statusOf(i)));
-      case 0x13: {
-        const s = cells[p1];
-        if (!s) {
-          return sw(0x6a88);
-        }
-        const status = statusOf(p1);
-        const nonceHex = s.nonce ?? seededNonce(p1);
-        const nonce = (nonceHex.match(/../g) ?? []).map(h => parseInt(h, 16));
-        const c = s.C
-          ? (s.C.match(/../g) ?? []).map(h => parseInt(h, 16))
-          : [
-              0x02,
-              ...Array.from({length: 32}, (_, i) => (0x80 + p1 * 2 + i) & 0xff),
-            ];
-        const keyset = s.keysetId
-          ? (s.keysetId.match(/../g) ?? []).map(h => parseInt(h, 16))
-          : KEYSET_BYTES;
-        const a = s.amount;
-        return ok([
-          status,
-          ...keyset,
-          (a >>> 24) & 0xff,
-          (a >>> 16) & 0xff,
-          (a >>> 8) & 0xff,
-          a & 0xff,
-          ...nonce,
-          ...c,
-        ]);
-      }
-      case 0x20:
-        burnCount += 1;
-        burned.add(p1);
-        return ok(SIGNATURE);
-      case 0x30: {
-        const loadIndex = loadAttempts++;
-        const body = apdu.slice(5, 5 + apdu[4]);
-        const amount =
-          (body[8] << 24) | (body[9] << 16) | (body[10] << 8) | body[11];
-        const record = {
-          keysetId: toHex(body.slice(0, 8)),
-          amount,
-          nonce: toHex(body.slice(12, 44)),
-          C: toHex(body.slice(44, 77)),
-        };
-        const free = cells.findIndex(c => c === null);
-        if (free === -1 || opts.refuseLoad?.(loadIndex)) {
-          return sw(0x6a84);
-        }
-        loads.push(record);
-        cells[free] = {...record, status: 0x01};
-        (opts.loadsGiven ?? (opts.loadsGiven = [])).push({slot: free});
-        if (opts.loseAnswerOnLoad?.(loadIndex)) {
-          throw new Error('Tag was lost.');
-        }
-        return ok([free]);
-      }
-      default:
-        return sw(0x6d00);
-    }
-  };
-  return {
-    transceive,
-    sent,
-    loads,
-    get burnCount() {
-      return burnCount;
-    },
-    /** Slot statuses as `getSlotStatuses` would decode them now. */
-    get statuses() {
-      return cells.map(
-        (_, i) => (['empty', 'unspent', 'spent'] as const)[statusOf(i)],
-      );
-    },
-  };
-}
-
-function seedTill(proofs: {amount: number; denom: number}[]) {
-  mockStore['@cashu_settled_proofs'] = JSON.stringify(
-    proofs.map((p, i) => ({
-      id: KEYSET_ID,
-      amount: p.amount,
-      // Canonical P2PK secrets, as real till proofs carry — the change-write
-      // recovers the nonce from them, so fixtures must be well-formed.
-      secret: buildCardP2PKSecret(
-        Array.from({length: 32}, (_, j) => (0x50 + i * 8 + j) & 0xff)
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(''),
-        CARD_PUBKEY_HEX,
-      ),
-      C: CARD_PUBKEY_HEX,
-      mintUrl: MINT_URL,
-    })),
-  );
-}
+const OFFLINE = () => new TypeError('Network request failed');
+const insOf = (apdu: number[]) => apdu[1];
+const PAYMENT_INS = [0x22, 0x23, 0x24, 0x25, 0x26];
 
 const tillProofs = () =>
   JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]') as {
     secret: string;
     amount: number;
+    C: string;
   }[];
+
+const owedStore = () =>
+  (JSON.parse(mockStore[OWED_CHANGE_KEY] ?? '{"v":2,"entries":[]}').entries ??
+    []) as OwedChangeEntry[];
+
+/** The card's own 6A84, by class and status word: raw, or as a PhaseError's cause. */
+const expectCardFull = (failure: unknown) => {
+  const cause =
+    failure instanceof PhaseError ? (failure.cause as unknown) : failure;
+  expect(cause).toBeInstanceOf(CardError);
+  expect((cause as CardError).sw).toBe(0x6a84);
+};
+
+/** A refusal of the n-th LOAD_PROOF with 6A84 (no free slot). */
+const refuseLoadFull = (which: (n: number) => boolean) => (n: number) =>
+  which(n) ? 0x6a84 : undefined;
+
+let owedCounter = 0;
+
+/**
+ * Change an EARLIER charge left owed to this card: the openings sit on the
+ * card (pending) and the mint's half is in the owed-change store, exactly as
+ * a change write that never happened leaves them. `cards` get the same
+ * openings (one physical card, read as several taps).
+ */
+async function owedFromEarlierCharge(
+  amounts: number[],
+  cards: FakeCard2[],
+  now = 1000,
+): Promise<OwedChangeEntry[]> {
+  const change = amounts.map(amount => {
+    owedCounter += 1;
+    const nonce = scalar(`owed-nonce:${owedCounter}`);
+    const r = scalar(`owed-r:${owedCounter}`);
+    const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
+    let B_ = '';
+    for (const card of cards) {
+      B_ = card.addPendingChange({amount, nonce: hex(nonce), r: hex(r)});
+    }
+    const sig = testMint().sign(B_, amount);
+    return {
+      keysetId: KEYSET_ID,
+      amount,
+      B_,
+      C_: sig.C_,
+      dleq: sig.dleq,
+    };
+  });
+  return recordOwedCardChange(
+    cards[0].pubkey,
+    change,
+    {mintUrl: MINT_URL, unit: 'sat'},
+    now,
+  );
+}
+
+/** A PIN card holding real pieces of `amounts`. */
+const pinCard = (
+  amounts: number[],
+  opts: Parameters<typeof cardWithPieces>[1] = {},
+) => cardWithPieces(amounts, {pin: '1234', ...opts});
 
 beforeEach(async () => {
   jest.clearAllMocks();
-  mockAdapterSwap.mockResolvedValue(undefined);
-  for (const k of Object.keys(mockStore)) delete mockStore[k];
+  for (const k of Object.keys(mockStore)) {
+    delete mockStore[k];
+  }
+  resetTestMint();
+  __resetWalletCache();
+  await saveKeysets(MINT_URL, [testMint().cachedKeyset()]);
   await clearQueue();
+  // ENG-674: a charge whose change is due now asks `mintReachable` before
+  // the card signs, whatever `requiresOnline` says — default it to a real
+  // mint being there, same as a merchant's terminal normally is, so no test
+  // makes an unmocked call to the real MINT_URL. A test that wants the mint
+  // unreachable overrides this spy itself.
+  jest.spyOn(globalThis, 'fetch').mockResolvedValue({ok: true} as Response);
 });
 
 describe('planPurchase', () => {
   const slots = [
-    {
-      slot: 0,
-      amount: 16,
-      keysetId: KEYSET_ID,
-      nonce: 'aa',
-      C: CARD_PUBKEY_HEX,
-      status: 'unspent' as const,
-    },
-    {
-      slot: 1,
-      amount: 4,
-      keysetId: KEYSET_ID,
-      nonce: 'bb',
-      C: CARD_PUBKEY_HEX,
-      status: 'unspent' as const,
-    },
-    {
-      slot: 2,
-      amount: 1,
-      keysetId: KEYSET_ID,
-      nonce: 'cc',
-      C: CARD_PUBKEY_HEX,
-      status: 'unspent' as const,
-    },
+    {slot: 0, amount: 16},
+    {slot: 1, amount: 4},
+    {slot: 2, amount: 1},
   ];
   const first = (r: ReturnType<typeof planPurchase>) => r[0];
 
@@ -349,17 +245,7 @@ describe('planPurchase', () => {
   });
 
   it('a bigger card yields the tightest single-proof over-cover', () => {
-    const rich = [
-      ...slots,
-      {
-        slot: 3,
-        amount: 256,
-        keysetId: KEYSET_ID,
-        nonce: 'dd',
-        C: CARD_PUBKEY_HEX,
-        status: 'unspent' as const,
-      },
-    ];
+    const rich = [...slots, {slot: 3, amount: 256}];
     // For a 14-sat bill the 16 beats the 256: change 2, not 242.
     expect(first(planPurchase(rich, 14))).toEqual({
       slots: [0],
@@ -371,325 +257,22 @@ describe('planPurchase', () => {
   it('refuses when the card cannot cover the bill at all', () => {
     expect(planPurchase(slots, 99)).toEqual([]);
   });
-});
 
-describe('readAndPlan', () => {
-  it('reads, plans and reports the phases', async () => {
-    const card = fakeCard({
-      slots: [
-        {amount: 8, status: 0x01},
-        {amount: 16, status: 0x01},
-      ],
-    });
-    const phases: string[] = [];
-
-    const preRead = await readAndPlan({
-      transceive: card.transceive,
-      amountSat: 16,
-      onPhase: phase => phases.push(phase),
-    });
-
-    expect(preRead.plan.burnedSat).toBe(16);
-    expect(preRead.cardPubkey).toBe(CARD_PUBKEY_HEX);
-    expect(phases[0]).toBe('reading card');
-  });
-
-  it('wraps a phase failure with the phase in the message and the CardError as cause', async () => {
-    // A BoltCard (NTAG 424 DNA) answers the applet SELECT with 0x6A82: the
-    // router must be able to tell that apart from a Cashu card that failed,
-    // by class and status word, after the phase wrapper has re-thrown it.
-    const transceive: Transceiver = async () => sw(0x6a82);
-
-    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
-      e => e,
-    );
-
-    expect(failure).toBeInstanceOf(PhaseError);
-    expect(failure.message).toMatch(/^\[reading card\] SELECT failed/);
-    expect(failure.cause).toBeInstanceOf(CardError);
-    expect((failure.cause as CardError).sw).toBe(0x6a82);
-    expect(isAppletNotFound(failure)).toBe(true);
-  });
-
-  it('a different card refusal is wrapped the same way but is not "applet not found"', async () => {
-    const transceive: Transceiver = async () => sw(0x6983);
-
-    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
-      e => e,
-    );
-
-    expect(failure).toBeInstanceOf(PhaseError);
-    expect((failure.cause as CardError).sw).toBe(0x6983);
-    expect(isAppletNotFound(failure)).toBe(false);
+  it('never mixes pieces of different dates in one payment (the card refuses it)', () => {
+    const dated = [
+      {slot: 0, amount: 4, date: 0},
+      {slot: 1, amount: 4, date: 1700000000},
+      {slot: 2, amount: 2, date: 0},
+    ];
+    const plans = planPurchase(dated, 6);
+    expect(plans.length).toBeGreaterThan(0);
+    for (const plan of plans) {
+      const dates = new Set(plan.slots.map(s => dated[s].date));
+      expect(dates.size).toBe(1);
+    }
+    expect(first(plans)).toEqual({slots: [0, 2], burnedSat: 6, changeSat: 0});
   });
 });
-
-describe('chargeCard', () => {
-  it('exact charge: verifies PIN, burns, settles inline — the take joins the till', async () => {
-    const card = fakeCard({
-      slots: [
-        {amount: 16, status: 0x01},
-        {amount: 4, status: 0x01},
-        {amount: 1, status: 0x01},
-      ],
-      pin: '1234',
-    });
-    seedTill([{amount: 8, denom: 8}]);
-    mockMintChargeChange.mockResolvedValue({
-      change: [],
-      till: [
-        {
-          id: KEYSET_ID,
-          amount: 5,
-          secret: buildCardP2PKSecret('aa'.repeat(32), CARD_PUBKEY_HEX),
-          C: CARD_PUBKEY_HEX,
-          mintUrl: MINT_URL,
-        },
-      ],
-    });
-
-    const result = await chargeCard({
-      transceive: card.transceive,
-      amountSat: 5,
-      pin: '1234',
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-
-    expect(result.amountSat).toBe(5);
-    expect(result.changeSat).toBe(0);
-    expect(result.changeLoaded).toBe(0);
-    expect(result.burned).toHaveLength(2);
-    expect(mockMintChargeChange).toHaveBeenCalledWith(
-      expect.objectContaining({changeSat: 0}),
-    );
-
-    // VERIFY_PIN before any burn (D13): its APDU precedes the SPEND_PROOFs.
-    const verifyIdx = card.sent.findIndex(([, ins]) => ins === 0x40);
-    const burnIdx = card.sent.findIndex(([, ins]) => ins === 0x20);
-    expect(verifyIdx).toBeGreaterThanOrEqual(0);
-    expect(verifyIdx).toBeLessThan(burnIdx);
-
-    // The exact-bill swap settled inline — no dependence on the drain.
-    const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'settled')).toHaveLength(2);
-    expect(tillProofs()).toHaveLength(2);
-    expect(tillProofs().some(t => t.amount === 5)).toBe(true);
-  });
-
-  it('exact bill with a failed swap defers to the drain instead of failing', async () => {
-    const card = fakeCard({
-      slots: [
-        {amount: 16, status: 0x01},
-        {amount: 4, status: 0x01},
-        {amount: 1, status: 0x01},
-      ],
-      pin: '1234',
-    });
-    seedTill([{amount: 8, denom: 8}]);
-    mockMintChargeChange.mockRejectedValue(new Error('429 rate limited'));
-
-    const result = await chargeCard({
-      transceive: card.transceive,
-      amountSat: 5,
-      pin: '1234',
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-
-    // The customer's payment still completes; the burned entries stay
-    // 'pending' for the drain (nothing owed back onto the card).
-    expect(result.changeSat).toBe(0);
-    expect(result.changeLoaded).toBe(0);
-    const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'pending')).toHaveLength(2);
-    expect(tillProofs()).toHaveLength(1);
-  });
-
-  it('makes change from the till and writes it back onto the card', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-    });
-    seedTill([
-      {amount: 4, denom: 4},
-      {amount: 2, denom: 2},
-    ]);
-    // The change proofs are minted P2PK-locked to the customer's card —
-    // canonical secrets whose nonces round-trip through the LOAD.
-    const changeNonces = ['77'.repeat(32), '88'.repeat(32)];
-    mockMintChargeChange.mockResolvedValue({
-      change: [
-        {
-          id: KEYSET_ID,
-          amount: 4,
-          secret: buildCardP2PKSecret(changeNonces[0], CARD_PUBKEY_HEX),
-          C: CARD_PUBKEY_HEX,
-          mintUrl: MINT_URL,
-        },
-        {
-          id: KEYSET_ID,
-          amount: 2,
-          secret: buildCardP2PKSecret(changeNonces[1], CARD_PUBKEY_HEX),
-          C: CARD_PUBKEY_HEX,
-          mintUrl: MINT_URL,
-        },
-      ],
-      till: [
-        {
-          id: KEYSET_ID,
-          amount: 10,
-          secret: 'aa'.repeat(32),
-          C: CARD_PUBKEY_HEX,
-          mintUrl: MINT_URL,
-        },
-      ],
-    });
-
-    const result = await chargeCard({
-      transceive: card.transceive,
-      amountSat: 10,
-      pin: '1234',
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-
-    expect(result.burned).toHaveLength(1);
-    expect(result.changeSat).toBe(6);
-    expect(mockMintChargeChange).toHaveBeenCalledWith(
-      expect.objectContaining({changeSat: 6, p2pkPubkey: CARD_PUBKEY_HEX}),
-    );
-    expect(result.changeLoaded).toBe(2);
-    expect(card.loads.map(l => l.nonce)).toEqual(changeNonces);
-    // The swap consumed the burned proofs: the entry ends settled, and the
-    // merchant's take joined the till.
-    const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
-    expect(tillProofs().some(t => t.amount === 10)).toBe(true);
-    await expect(hasUnsettledForCard(CARD_PUBKEY_HEX)).resolves.toBe(false);
-  });
-
-  it('an online charge mints change even when the till was short', async () => {
-    // The till (16) cannot back the 6-sat change up front — but ONLINE the
-    // burned value settles in-session and backs the change itself. The old
-    // pre-burn refusal would have blocked a legitimate payment.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-    });
-    seedTill([{amount: 16, denom: 16}]);
-
-    const result = await chargeCard({
-      transceive: card.transceive,
-      amountSat: 10,
-      pin: '1234',
-      mintUrl: MINT_URL,
-      now: 1000,
-    });
-
-    expect(result.burned).toHaveLength(1);
-    expect(result.changeSat).toBe(6);
-    expect(result.changeLoaded).toBe(2);
-    const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
-  });
-
-  it('a failed change-mint records the burns and reports the owed change honestly', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-    });
-    seedTill([{amount: 16, denom: 16}]);
-    mockMintChargeChange.mockRejectedValue(
-      new Error('the till cannot make 6 sat exact change'),
-    );
-
-    await expect(
-      chargeCard({
-        transceive: card.transceive,
-        amountSat: 10,
-        pin: '1234',
-        mintUrl: MINT_URL,
-        now: 1000,
-      }),
-    ).rejects.toThrow(/cannot make 6 sat/);
-    // The swap never landed: the burn entry stays PENDING with its witness
-    // intact — the next online auto-run settles it. Nothing is lost, and the
-    // UI did not claim success.
-    const entries = await listSettlements();
-    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
-    expect(tillProofs()).toHaveLength(1);
-  });
-
-  it('a wrong PIN burns nothing', async () => {
-    const card = fakeCard({
-      slots: [{amount: 4, status: 0x01}],
-      pin: '1234',
-    });
-    await expect(
-      chargeCard({
-        transceive: card.transceive,
-        amountSat: 4,
-        pin: '9999',
-        mintUrl: MINT_URL,
-      }),
-    ).rejects.toBeTruthy();
-    const burnApdu = card.sent.find(([, ins]) => ins === 0x20);
-    expect(burnApdu).toBeUndefined();
-    await expect(listSettlements()).resolves.toEqual([]);
-  });
-
-  it('the nonce written back is the one the change was minted with', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    seedTill([
-      {amount: 4, denom: 4},
-      {amount: 2, denom: 2},
-    ]);
-    const changeNonce = '99'.repeat(32);
-    mockMintChargeChange.mockResolvedValue({
-      change: [
-        {
-          id: KEYSET_ID,
-          amount: 6,
-          secret: buildCardP2PKSecret(changeNonce, CARD_PUBKEY_HEX),
-          C: CARD_PUBKEY_HEX,
-          mintUrl: MINT_URL,
-        },
-      ],
-      till: [],
-    });
-
-    await chargeCard({
-      transceive: card.transceive,
-      amountSat: 10,
-      pin: '1234',
-      mintUrl: MINT_URL,
-    });
-
-    // The LOAD carries the nonce from the minted P2PK secret, so the
-    // customer's later spend reconstructs exactly what the mint signed.
-    expect(card.loads.map(l => l.nonce)).toEqual([changeNonce]);
-  });
-});
-
-/** A minted change proof P2PK-locked to the test card, in the adapter's shape. */
-const changeProof = (amount: number, nonce: string) => ({
-  id: KEYSET_ID,
-  amount,
-  secret: buildCardP2PKSecret(nonce, CARD_PUBKEY_HEX),
-  C: CARD_PUBKEY_HEX,
-  mintUrl: MINT_URL,
-});
-
-const insOf = (apdu: number[]) => apdu[1];
-
-/** The card's own 6A84, by class and status word: raw, or as a PhaseError's cause. */
-const expectCardFull = (failure: unknown) => {
-  const cause =
-    failure instanceof PhaseError ? (failure.cause as unknown) : failure;
-  expect(cause).toBeInstanceOf(CardError);
-  expect((cause as CardError).sw).toBe(0x6a84);
-};
 
 describe('selectFittingPlan', () => {
   const plans = [
@@ -714,14 +297,768 @@ describe('selectFittingPlan', () => {
   });
 });
 
+describe('readAndPlan', () => {
+  it('reads, plans and reports the phases', async () => {
+    const card = cardWithPieces([8, 16]);
+    const phases: string[] = [];
+
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+      onPhase: phase => phases.push(phase),
+    });
+
+    expect(preRead.plan.burnedSat).toBe(16);
+    expect(preRead.cardPubkey).toBe(card.pubkey);
+    expect(preRead.pinRequired).toBe(false);
+    expect(preRead.requiresOnline).toBe(false);
+    expect(phases[0]).toBe('reading card');
+    // Read only: GET_INFO, GET_CARD, GET_PUBKEY, GET_PIECES, GET_CHANGE,
+    // GET_DLEQ — no payment command, no load.
+    expect(
+      card.insSent.filter(i => PAYMENT_INS.includes(i) || i === 0x30),
+    ).toEqual([]);
+  });
+
+  it('wraps a phase failure with the phase in the message and the CardError as cause', async () => {
+    // A BoltCard (NTAG 424 DNA) answers every SELECT with 0x6A82: the router
+    // must be able to tell that apart from a Cashu card that failed, by
+    // class and status word, after the phase wrapper has re-thrown it.
+    const transceive: Transceiver = async () => [0x6a, 0x82];
+
+    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
+      e => e,
+    );
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(/^\[reading card\] SELECT failed/);
+    expect(failure.cause).toBeInstanceOf(CardError);
+    expect((failure.cause as CardError).sw).toBe(0x6a82);
+    expect(isAppletNotFound(failure)).toBe(true);
+  });
+
+  it('a different card refusal is wrapped the same way but is not "applet not found"', async () => {
+    // A 2.0 card that selects, then refuses the read.
+    const transceive: Transceiver = async apdu =>
+      apdu[1] === 0xa4 ? [0x02, 0x00, 0x90, 0x00] : [0x69, 0x83];
+
+    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
+      e => e,
+    );
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect((failure.cause as CardError).sw).toBe(0x6983);
+    expect(isAppletNotFound(failure)).toBe(false);
+  });
+
+  it('a SELECT answered with anything but 02xx 9000 or 6A82 needs an update (cardsim README, "Old cards")', async () => {
+    const transceive: Transceiver = async () => [0x69, 0x83];
+
+    const failure = await readAndPlan({transceive, amountSat: 16}).catch(
+      e => e,
+    );
+
+    expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+    expect(isAppletNotFound(failure)).toBe(false);
+  });
+
+  it('a 0.x card short-circuits as "needs an update": nothing but SELECT commands, no plan', async () => {
+    const card = new FakeCard2({legacy: true, pieces: []});
+
+    const failure = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+    expect(failure).not.toBeInstanceOf(PhaseError);
+    expect(failure.message).toBe(CARD_NEEDS_UPDATE);
+    expect(card.insSent.every(i => i === 0xa4)).toBe(true);
+  });
+
+  it('asks for the PIN on a PIN card whose allowance does not cover the bill', async () => {
+    const card = pinCard([16], {allowance: 10, noPinSpent: 0});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.pinRequired).toBe(true);
+    expect(preRead.pinSet).toBe(true);
+  });
+
+  it('does not ask for the PIN when the no-PIN allowance covers the bill (decision 11)', async () => {
+    const card = pinCard([16], {allowance: 50, noPinSpent: 30});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.pinRequired).toBe(false);
+    expect(preRead.pinSet).toBe(true);
+  });
+
+  it('a piece with no DLEQ kept makes the charge online-only', async () => {
+    const card = cardWithPieces([16], {withDleq: false});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.requiresOnline).toBe(true);
+  });
+
+  it('a piece whose DLEQ does not verify makes the charge online-only', async () => {
+    const card = cardWithPieces([16]);
+    card.slots[0]!.C = card.pubkey;
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.requiresOnline).toBe(true);
+  });
+
+  it('no mint keys kept on the terminal makes the charge online-only', async () => {
+    const card = cardWithPieces([16]);
+    await saveKeysets(MINT_URL, []);
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.requiresOnline).toBe(true);
+  });
+
+  it('a blocked PIN is refused before any plan', async () => {
+    const card = pinCard([16], {pinBlocked: true});
+    await expect(
+      readAndPlan({transceive: card.transceive, amountSat: 16}),
+    ).rejects.toThrow(/PIN is blocked/);
+  });
+});
+
+describe('the daily limit (decision 2)', () => {
+  const info = {
+    dailyLimit: 100,
+    now: 1_000_000,
+    windowStart: 990_000,
+    spentToday: 90,
+  };
+  const record = {rolls: 0, rollBudget: 7};
+
+  it('overDailyLimit: over what the day has left', () => {
+    expect(overDailyLimit(info, record, 10)).toBe(false);
+    expect(overDailyLimit(info, record, 11)).toBe(true);
+    expect(overDailyLimit({...info, dailyLimit: 0}, record, 1_000_000)).toBe(
+      false,
+    );
+  });
+
+  it('a day that is over begins again — while the rollover budget lasts', () => {
+    const dayLater = 990_000 + 86_400;
+    expect(overDailyLimit({...info, now: dayLater}, record, 100)).toBe(false);
+    expect(
+      overDailyLimit({...info, now: dayLater}, {rolls: 7, rollBudget: 7}, 100),
+    ).toBe(true);
+    // The header about to be shown to the card counts as its clock.
+    expect(overDailyLimit(info, record, 100, dayLater)).toBe(false);
+  });
+
+  it("headerTime reads a block header's time", () => {
+    const v = headerVectors()[0];
+    expect(headerTime(Array.from(Buffer.from(v.header, 'hex')))).toBe(v.time);
+    expect(headerTime(null)).toBe(0);
+  });
+
+  it("a bill over the card's daily limit is refused before anything burns", async () => {
+    const card = pinCard([16], {
+      dailyLimit: 20,
+      spentToday: 10,
+      now: 1_000_000,
+      windowStart: 990_000,
+    });
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+    }).catch(e => e);
+
+    expect(failure.message).toBe(DAILY_LIMIT_REACHED);
+    expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
+    const body = failureBody(parseFailure(describeCardFailure(failure)), {
+      burnsDone: 0,
+      paidSat: 16,
+      changeSat: 0,
+      fmt: (sat: number) => `${sat} sats`,
+    });
+    expect(body).toBe("This card has reached today's spending limit.");
+  });
+
+  it("the card's own 6A8F at SIGN burns nothing, is not paid, and reads as the limit", async () => {
+    const card = pinCard([16]);
+    const transceive: Transceiver = async apdu =>
+      insOf(apdu) === 0x24 ? [0x6a, 0x8f] : card.transceive(apdu);
+
+    const failure = await chargeCard({
+      transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(isPaidFailure(failure)).toBe(false);
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
+    expect(
+      failureBody(parseFailure(describeCardFailure(failure)), {
+        burnsDone: 1,
+        paidSat: 16,
+        changeSat: 0,
+        fmt: (sat: number) => `${sat} sats`,
+      }),
+    ).toBe("This card has reached today's spending limit.");
+  });
+});
+
+describe('the no-PIN allowance (decision 11)', () => {
+  it("allowanceCovers: what is left of the day's allowance", () => {
+    expect(allowanceCovers({allowance: 50, noPinSpent: 30}, 20)).toBe(true);
+    expect(allowanceCovers({allowance: 50, noPinSpent: 30}, 21)).toBe(false);
+    expect(allowanceCovers({allowance: 0, noPinSpent: 0}, 1)).toBe(false);
+    expect(allowanceCovers({}, 1)).toBe(false);
+  });
+
+  it('a bill under the allowance is paid with no PIN, and its change goes on under the change grant', async () => {
+    const card = pinCard([16], {allowance: 50});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 10,
+    });
+    expect(preRead.pinRequired).toBe(false);
+
+    const result = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 10,
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(card.insSent).not.toContain(0x40);
+    expect(result.changeSat).toBe(6);
+    expect(result.changeLoaded).toBe(2);
+    expect(card.balance).toBe(6);
+    // The change went on after a fresh SELECT took the payment's change grant.
+    const afterSign = card.insSent.slice(card.insSent.indexOf(0x24) + 1);
+    expect(afterSign.indexOf(0xa4)).toBeLessThan(afterSign.indexOf(0x30));
+  });
+
+  it('a card that says the PIN is needed after all (6A94 at SIGN): nothing burned, the PIN is asked for', async () => {
+    // The till thought the allowance covered it; the card's day disagrees.
+    const card = pinCard([16], {allowance: 50});
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    expect(preRead.pinRequired).toBe(false);
+    card.noPinSpent = 45;
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(isPinNeededForPayment(failure)).toBe(true);
+    expect(isPaidFailure(failure)).toBe(false);
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
+    // The PIN pad says why, in plain words.
+    expect(
+      pinFailureText(parseFailure(describeCardFailure(failure)).detail),
+    ).toBe("This payment needs the card's PIN.");
+
+    // The screen asks for the PIN and re-taps: the same plan, now with it.
+    const result = await executeCharge({
+      ...preRead,
+      pinRequired: true,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 2000,
+    });
+    expect(result.changeSat).toBe(0);
+    expect(card.burnCount).toBe(1);
+  });
+});
+
+describe('chargeCard', () => {
+  it('exact charge: verifies PIN, burns, settles inline — the take joins the till', async () => {
+    const card = pinCard([16, 4, 1]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 5,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.amountSat).toBe(5);
+    expect(result.changeSat).toBe(0);
+    expect(result.changeLoaded).toBe(0);
+    // One payment, two pieces, one signature.
+    expect(result.burned).toHaveLength(1);
+    expect(result.burned[0].inputs.map(i => i.amount)).toEqual([4, 1]);
+    expect(card.burnCount).toBe(2);
+
+    // VERIFY_PIN before the signature (D13): its APDU precedes SPEND_ALL_SIGN.
+    const verifyIdx = card.insSent.indexOf(0x40);
+    const signIdx = card.insSent.indexOf(0x24);
+    expect(verifyIdx).toBeGreaterThanOrEqual(0);
+    expect(verifyIdx).toBeLessThan(card.insSent.indexOf(0x22));
+    expect(verifyIdx).toBeLessThan(signIdx);
+
+    // The exact-bill swap settled inline — no dependence on the drain.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+    expect(tillProofs().map(t => t.amount)).toEqual([4, 1]);
+    for (const p of tillProofs()) {
+      expect(testMint().verifyProof(p.secret, p.C, p.amount)).toBe(true);
+    }
+  });
+
+  it('exact bill with a failed swap defers to the drain instead of failing', async () => {
+    const card = pinCard([16, 4, 1]);
+    testMint().failAll = OFFLINE();
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 5,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    // The customer's payment still completes; the payment stays 'pending'
+    // for the drain (nothing owed back onto the card).
+    expect(result.changeSat).toBe(0);
+    expect(result.changeLoaded).toBe(0);
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
+    expect(tillProofs()).toHaveLength(0);
+  });
+
+  it('makes change on the card and writes it back onto the card', async () => {
+    const card = pinCard([16]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.burned).toHaveLength(1);
+    expect(result.changeSat).toBe(6);
+    expect(result.changeLoaded).toBe(2);
+    // The card made its own change (SPEND_ALL_CHANGE, 4 then 2) and took it back.
+    expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual([
+      4, 2,
+    ]);
+    expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+    expect(card.loads.every(l => l.dleq)).toBe(true);
+    expect(card.balance).toBe(6);
+    // The swap consumed the burned pieces: the payment ends settled, and the
+    // merchant's take joined the till.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
+    expect(tillProofs().map(t => t.amount)).toEqual([8, 2]);
+    await expect(hasUnsettledForCard(card.pubkey)).resolves.toBe(false);
+  });
+
+  it('change is credited once: the card gets its change, the till the bill, and nothing twice (decision 13)', async () => {
+    const card = pinCard([16]);
+    const before = card.balance;
+
+    await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    // One swap: its outputs are the till's 10 and the card's 6, once each.
+    expect(testMint().swaps).toHaveLength(1);
+    const [swap] = testMint().swaps;
+    expect(swap.outputs.reduce((t, o) => t + Number(o.amount), 0)).toBe(16);
+    expect(card.balance).toBe(before - 10);
+    expect(tillProofs().reduce((t, p) => t + p.amount, 0)).toBe(10);
+    // The owed record holds each change piece once, both written.
+    expect(owedStore().map(e => [e.amount, e.status])).toEqual([
+      [4, 'written'],
+      [2, 'written'],
+    ]);
+    // And no terminal-made change: every change output was the card's own.
+    const cardMade = card.sent.filter(a => insOf(a) === 0x26).length;
+    expect(cardMade).toBe(2);
+  });
+
+  it("the piece loaded back is the card's own opening, finished with the mint's signature", async () => {
+    const card = pinCard([16]);
+
+    await chargeCard({
+      transceive: card.transceive,
+      amountSat: 12,
+      pin: '1234',
+      mintUrl: MINT_URL,
+    });
+
+    expect(card.loads).toHaveLength(1);
+    const [load] = card.loads;
+    // The nonce the card drew for its change, and a C the mint signed for the
+    // secret the card will rebuild from it at its next payment.
+    const secret = buildCardSigAllSecret(load.nonce, card.pubkey);
+    expect(testMint().verifyProof(secret, load.C, load.amount)).toBe(true);
+    expect(card.openings).toEqual([]);
+  });
+
+  it('a failed swap with change records the payment PAID (ENG-674 blocking 2) and reports the change honestly, queued', async () => {
+    const card = pinCard([16]);
+    testMint().failAll = OFFLINE();
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message).toMatch(
+      /^\[settling payment and minting change \(change owed, next tap\)/,
+    );
+    // The card already signed and burned, so this must never be reported
+    // unpaid: the screen's retry would burn it again for the same bill
+    // (ENG-674 blocking 2 — before the fix, this threw unpaid and the entry
+    // sat pending with nothing stopping a re-charge).
+    expect(isPaidFailure(failure)).toBe(true);
+    // The swap never landed: the payment stays PENDING with its witness and
+    // its exact outputs — the next online auto-run settles it, and the
+    // card's change comes back from it. Nothing is lost, and the UI did not
+    // claim success.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
+    expect(entries[0].outputs.map(o => o.amount)).toEqual([8, 2, 4, 2]);
+    expect(tillProofs()).toHaveLength(0);
+  });
+
+  it('a wrong PIN burns nothing', async () => {
+    const card = pinCard([4]);
+    await expect(
+      chargeCard({
+        transceive: card.transceive,
+        amountSat: 4,
+        pin: '9999',
+        mintUrl: MINT_URL,
+      }),
+    ).rejects.toBeTruthy();
+    expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+    await expect(listSettlements()).resolves.toEqual([]);
+  });
+
+  it("the mint's input fee comes out of the merchant's take, never the customer's change", async () => {
+    resetTestMint({inputFeePpk: 1000});
+    await saveKeysets(MINT_URL, [testMint().cachedKeyset()]);
+    const card = pinCard([16]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+    });
+
+    expect(result.changeLoaded).toBe(2);
+    expect(card.balance).toBe(6);
+    expect(tillProofs().reduce((t, p) => t + p.amount, 0)).toBe(9);
+  });
+
+  it('pieces it cannot check offline are refused before the burn when the mint is out of reach', async () => {
+    const card = pinCard([16], {withDleq: false});
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(OFFLINE());
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+      }).catch(e => e);
+      expect(failure.message).toBe(`[preparing the payment] ${ONLINE_ONLY}`);
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      await expect(listSettlements()).resolves.toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('pieces it cannot check offline are paid when the mint answers', async () => {
+    const card = pinCard([16], {withDleq: false});
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ok: true} as Response);
+    try {
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+      });
+      expect(result.changeSat).toBe(0);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${MINT_URL}/v1/keysets`,
+        expect.anything(),
+      );
+      expect((await listSettlements())[0].status).toBe('settled');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('offline, an exact bill on pieces with a valid DLEQ is taken without the mint', async () => {
+    const card = pinCard([16]);
+    testMint().failAll = OFFLINE();
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(OFFLINE());
+    try {
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+      });
+      expect(result.changeSat).toBe(0);
+      // The only thing asked of the network is whether the mint is there.
+      expect(fetchSpy.mock.calls.map(c => c[0])).toEqual([
+        `${MINT_URL}/v1/keysets`,
+      ]);
+      expect((await listSettlements())[0].status).toBe('pending');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('shows the card the cached tip header before the payment', async () => {
+    const header = Array.from(Buffer.from(headerVectors()[11].header, 'hex'));
+    const {cachedTipHeader} = jest.requireMock(
+      '../../src/services/blockHeader',
+    );
+    cachedTipHeader.mockReturnValue(header);
+    const card = pinCard([16]);
+
+    await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+    });
+
+    expect(card.headers).toEqual([header]);
+    expect(card.insSent.indexOf(0x36)).toBeLessThan(card.insSent.indexOf(0x22));
+    cachedTipHeader.mockReturnValue(null);
+  });
+
+  it('recovers a payment the card burned with its signature lost, BEFORE the new one', async () => {
+    let lose = true;
+    const card = pinCard([8, 16], {
+      loseSignAnswer: () => lose,
+      loseAgain: () => lose,
+    });
+    // A first tap burned 8 and lost the signature: needs-card. Never a
+    // success (no signature, nothing at the mint), and never a re-charge.
+    const first = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 8,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+    expect(first).toBeInstanceOf(PhaseError);
+    expect(first.message.startsWith(`[${PHASE_SETTLING_NEEDS_CARD}]`)).toBe(
+      true,
+    );
+    expect(isPaidFailure(first)).toBe(true);
+    const [lost] = await listSettlements();
+    expect(lost.status).toBe('needs-card');
+    lose = false;
+
+    // The next charge recovers it from SPEND_ALL_AGAIN before its own SIGN.
+    await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 2000,
+    });
+
+    const lastSession = card.insSent.slice(card.insSent.lastIndexOf(0xa4));
+    expect(lastSession.indexOf(0x25)).toBeLessThan(lastSession.indexOf(0x22));
+    const entries = await listSettlements();
+    expect(entries.find(e => e.id === lost.id)?.status).toBe('pending');
+  });
+});
+
+describe('classifying a swap failure (ENG-674)', () => {
+  it('an exact bill on pieces with forged C and no DLEQ is unpaid when the mint rejects it, and nothing is recorded as settled (blocking 1)', async () => {
+    // A home-made card: C is just another key's pubkey, not this mint's
+    // signature on the secret, and no DLEQ comes with it — the attack
+    // readAndPlan cannot catch offline (no DLEQ ⇒ requiresOnline), that a
+    // reachable mint must refuse outright rather than silently defer.
+    const forgedC = new FakeCard2().pubkey;
+    const card = new FakeCard2({
+      pin: '1234',
+      pieces: [
+        {
+          amount: 16,
+          nonce: pieceNonce(900),
+          C: forgedC,
+          keysetId: KEYSET_ID.slice(0, 16),
+        },
+      ],
+    });
+
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+      mintUrl: MINT_URL,
+    });
+    expect(preRead.requiresOnline).toBe(true);
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message.startsWith(`[${PHASE_SETTLING_REFUSED}]`)).toBe(
+      true,
+    );
+    expect(isPaidFailure(failure)).toBe(false);
+    // The card burned for this bill: never offered a re-charge, never
+    // recorded as a paid sale (ENG-674 should-fix).
+    expect(isRefusedAfterBurn(failure)).toBe(true);
+    expect(tillProofs()).toEqual([]);
+    const entries = await listSettlements();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].status).toBe('failed');
+  });
+
+  it('an exact bill with requiresOnline and a network failure on the swap is paid but not confirmed settled, and has no retry (blocking 1)', async () => {
+    const card = pinCard([16], {withDleq: false});
+    testMint().failAll = OFFLINE();
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(failure).toBeInstanceOf(PhaseError);
+    expect(failure.message.startsWith(`[${PHASE_SETTLING_UNCONFIRMED}]`)).toBe(
+      true,
+    );
+    // The card already signed and burned: a retry would burn it again for
+    // the same bill, so this reuses the existing paid/no-retry machinery
+    // (ENG-642) rather than a parallel one — but it must not read as a
+    // confirmed "Paid" success either, since the mint never answered.
+    expect(isPaidFailure(failure)).toBe(true);
+    expect(tillProofs()).toEqual([]);
+    const entries = await listSettlements();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].status).toBe('pending');
+  });
+
+  it('offline with change due: the card is never asked to sign, the charge is refused before anything burns (blocking 2a)', async () => {
+    const card = pinCard([16]);
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(OFFLINE());
+    try {
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(failure.message).toBe(
+        `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+      );
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      await expect(listSettlements()).resolves.toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("a rotated keyset is refreshed before signing: a stale 'inactive' cache does not wrongly refuse the card's change (should-fix)", async () => {
+    const card = pinCard([16]);
+    // The cache says this keyset is inactive — stale. The mint (live, via
+    // the test's keyChain double) still has it active; unrefreshed, the
+    // charge would wrongly refuse to make change in a keyset the mint is
+    // still issuing.
+    await saveKeysets(MINT_URL, [
+      {...testMint().cachedKeyset(), active: false},
+    ]);
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 10,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.changeSat).toBe(6);
+    expect(result.changeLoaded).toBe(2);
+    const kept = await cachedKeysets(MINT_URL);
+    expect(kept.find(k => k.id === KEYSET_ID)?.active).toBe(true);
+  });
+});
+
 describe('slot pre-flight (ENG-630)', () => {
+  /** Pieces that are not the test mint's (any amount): for planning only. */
+  const planningCard = (amounts: number[], opts: FakeCardOptions = {}) =>
+    new FakeCard2({
+      ...opts,
+      pieces: amounts.map((amount, i) => ({
+        amount,
+        nonce: pieceNonce(100 + i),
+        C: new FakeCard2().pubkey,
+      })),
+    });
+
   it('a full card is refused BEFORE anything burns', async () => {
     // One slot, holding 16; a 10-sat bill needs 6 sat of change = 2 slots.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 1,
-    });
+    const card = pinCard([16], {slotCount: 1});
 
     await expect(
       readAndPlan({transceive: card.transceive, amountSat: 10}),
@@ -737,23 +1074,17 @@ describe('slot pre-flight (ENG-630)', () => {
       /this card is full: 6 sat of change needs 2 free slots and the card has 0/,
     );
 
-    // Same assertion as "a wrong PIN burns nothing": no SPEND_PROOF went out.
-    expect(card.sent.find(a => insOf(a) === 0x20)).toBeUndefined();
-    expect(card.sent.find(a => insOf(a) === 0x30)).toBeUndefined();
+    // Same assertion as "a wrong PIN burns nothing": no payment command went out.
+    expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+    expect(card.insSent).not.toContain(0x30);
     await expect(listSettlements()).resolves.toEqual([]);
-    expect(mockMintChargeChange).not.toHaveBeenCalled();
+    expect(testMint().swaps).toHaveLength(0);
   });
 
   it('picks the cheapest plan whose change fits the free slots', async () => {
     // 13 → change 3 (2 pieces), 18 → change 8 (1 piece). One free slot:
     // the cheaper change does not fit, the next does.
-    const card = fakeCard({
-      slots: [
-        {amount: 13, status: 0x01},
-        {amount: 18, status: 0x01},
-      ],
-      maxSlots: 3,
-    });
+    const card = planningCard([13, 18], {slotCount: 3});
 
     const preRead = await readAndPlan({
       transceive: card.transceive,
@@ -765,49 +1096,55 @@ describe('slot pre-flight (ENG-630)', () => {
   });
 
   it('an exact bill goes through on a full card', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 1,
-    });
-
+    const card = pinCard([16], {slotCount: 1});
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-
     expect(preRead.plan.changeSat).toBe(0);
   });
 
+  it('a card with too few change openings free is refused before anything burns', async () => {
+    // Seven of the card's eight openings hold change another till made and
+    // never handed back: a bill whose change is two pieces cannot be paid.
+    const card = pinCard([16]);
+    for (let i = 0; i < 7; i++) {
+      card.addPendingChange({
+        amount: 1,
+        nonce: pieceNonce(200 + i),
+        r: pieceNonce(300 + i),
+      });
+    }
+    await expect(
+      readAndPlan({transceive: card.transceive, amountSat: 10}),
+    ).rejects.toThrow(/needs 2 change openings and the card has 1 free/);
+    // A bill whose change is one piece still fits.
+    await expect(
+      readAndPlan({transceive: card.transceive, amountSat: 12}),
+    ).resolves.toMatchObject({plan: {changeSat: 4}});
+  });
+
   it('change owed from an earlier charge takes its slots off the top', async () => {
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
+    const billFirstCard = pinCard([16], {slotCount: 3});
+    const roomy = pinCard([16], {slotCount: 4});
+    const tight = pinCard([16], {slotCount: 2});
+    const full = pinCard([16], {slotCount: 1});
+    await owedFromEarlierCharge([4, 2], [billFirstCard, roomy, tight, full]);
+
     // Two slots free, two owed pieces, and a 10-sat bill wanting 6 sat of
     // change (two more): the bill wins — it takes both empties, no owed
     // piece is written this tap, and both stay owed on disk.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 3,
-    });
-
     const billFirst = await readAndPlan({
-      transceive: card.transceive,
+      transceive: billFirstCard.transceive,
       amountSat: 10,
     });
     expect(billFirst.plan).toEqual({slots: [0], burnedSat: 16, changeSat: 6});
     expect(billFirst.owedChange).toEqual([]);
-    await expect(
-      outstandingChangeForCard(CARD_PUBKEY_HEX),
-    ).resolves.toHaveLength(2);
+    await expect(outstandingChangeForCard(roomy.pubkey)).resolves.toHaveLength(
+      2,
+    );
 
     // Three slots free: the bill's two pieces, then one owed piece fits.
-    const roomy = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 4,
-    });
     const shared = await readAndPlan({
       transceive: roomy.transceive,
       amountSat: 10,
@@ -819,26 +1156,18 @@ describe('slot pre-flight (ENG-630)', () => {
     // no slot, so it goes through; the one piece that fits is written and
     // the other stays owed on disk for a later tap. (The card ENG-630 came
     // from is full with change owed — it must be able to pay again.)
-    const tight = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 2,
-    });
     const preRead = await readAndPlan({
       transceive: tight.transceive,
       amountSat: 16,
     });
     expect(preRead.plan.changeSat).toBe(0);
     expect(preRead.owedChange.map(e => e.amount)).toEqual([4]);
-    await expect(
-      outstandingChangeForCard(CARD_PUBKEY_HEX),
-    ).resolves.toHaveLength(2);
+    await expect(outstandingChangeForCard(tight.pubkey)).resolves.toHaveLength(
+      2,
+    );
 
     // No slot free at all, exact bill: nothing owed is written, the charge
     // still goes through, the change stays owed.
-    const full = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 1,
-    });
     const onFull = await readAndPlan({
       transceive: full.transceive,
       amountSat: 16,
@@ -848,24 +1177,10 @@ describe('slot pre-flight (ENG-630)', () => {
   });
 
   it('a payable bill is never refused for owed change: the bill takes the slot, the owed piece waits', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    // One empty slot, one owed piece, a 16-sat proof and a 12-sat bill: the
+    // One empty slot, one owed piece, a 16-sat piece and a 12-sat bill: the
     // 4 sat of change is one piece and the card can physically take it.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 2,
-    });
-    const nonce = '77'.repeat(32);
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, nonce)],
-      till: [],
-    });
+    const card = pinCard([16], {slotCount: 2});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
 
     const preRead = await readAndPlan({
       transceive: card.transceive,
@@ -886,25 +1201,17 @@ describe('slot pre-flight (ENG-630)', () => {
     expect(result.changeSat).toBe(4);
     expect(result.changeLoaded).toBe(1);
     // The bill's change is what went on; the owed piece is still owed.
-    expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    expect(card.loads).toHaveLength(1);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
     ]);
   });
 
   it('the refusal names the slots the card reported, not the count after owed change', async () => {
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
     // One empty slot, one owed piece, and a 10-sat bill from a 16: the 6 sat
     // of change is two pieces — no plan fits the one raw empty either.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      maxSlots: 2,
-    });
+    const card = pinCard([16], {slotCount: 2});
+    await owedFromEarlierCharge([4], [card]);
 
     await expect(
       readAndPlan({transceive: card.transceive, amountSat: 10}),
@@ -914,18 +1221,8 @@ describe('slot pre-flight (ENG-630)', () => {
   });
 
   it('an exact bill on a full card owed change: the charge completes and the change is still owed after', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 1,
-    });
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+    const card = pinCard([16], {slotCount: 1});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -937,39 +1234,16 @@ describe('slot pre-flight (ENG-630)', () => {
 
     expect(result.changeSat).toBe(0);
     expect(card.burnCount).toBe(1);
-    expect(card.sent.find(a => insOf(a) === 0x30)).toBeUndefined();
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    expect(card.insSent).not.toContain(0x30);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
     ]);
   });
 });
 
 describe('owed change (ENG-630)', () => {
-  beforeEach(() => {
-    // `clearAllMocks` leaves a queued `mockResolvedValueOnce` in place; a
-    // test that fails before consuming it would hand it to the next one.
-    mockMintChargeChange.mockReset();
-  });
-
-  const owedStore = () =>
-    JSON.parse(mockStore[OWED_CHANGE_KEY] ?? '{"v":1,"entries":[]}')
-      .entries as {
-      id: string;
-      amount: number;
-      nonce: string;
-      status: string;
-      slot?: number;
-      attempts: number;
-      lastError?: string;
-    }[];
-
   it('records the minted change durably BEFORE the first LOAD_PROOF', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    const nonces = ['77'.repeat(32), '88'.repeat(32)];
-    mockMintChargeChange.mockResolvedValue({
-      change: [changeProof(4, nonces[0]), changeProof(2, nonces[1])],
-      till: [],
-    });
+    const card = pinCard([16]);
     // What the owed-change store held the instant the first LOAD went out.
     let storeAtFirstLoad: string | undefined | null = null;
     const transceive: Transceiver = async apdu => {
@@ -988,34 +1262,26 @@ describe('owed change (ENG-630)', () => {
     });
 
     expect(storeAtFirstLoad).toEqual(expect.any(String));
-    const recorded = JSON.parse(storeAtFirstLoad as unknown as string).entries;
-    expect(recorded.map((e: {nonce: string}) => e.nonce)).toEqual(nonces);
-    expect(recorded.every((e: {status: string}) => e.status === 'owed')).toBe(
-      true,
-    );
+    const recorded = JSON.parse(storeAtFirstLoad as unknown as string)
+      .entries as OwedChangeEntry[];
+    expect(recorded.map(e => e.amount)).toEqual([4, 2]);
+    // The mint's half (B_, C_) is what exists before the card's openings are read.
+    expect(recorded.every(e => e.B_ && e.C_)).toBe(true);
+    expect(recorded.every(e => e.status === 'owed')).toBe(true);
     // Both loads answered: both pieces are written, with their slots.
     expect(owedStore().map(e => [e.status, e.slot])).toEqual([
       ['written', 1],
       ['written', 2],
     ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
-  it('a 6A84 on the second piece leaves the piece owed on disk, the burn settled, and the next tap writes it first', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
+  it('a 6A84 on the second piece leaves the piece owed on disk, the payment settled, and the next tap writes it first', async () => {
+    const card = pinCard([16], {
       // The card reported room at read time; the second LOAD is refused
       // anyway (the pre-flight cannot see a slot the card loses between the
       // read tap and the PIN tap).
-      refuseLoad: i => i === 1,
-    });
-    const nonces = ['77'.repeat(32), '88'.repeat(32)];
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, nonces[0]), changeProof(2, nonces[1])],
-      till: [],
+      refuseLoad: refuseLoadFull(n => n === 1),
     });
 
     const failure = await chargeCard({
@@ -1047,21 +1313,21 @@ describe('owed change (ENG-630)', () => {
     ).toBe(
       '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats are saved on this terminal and will be added once the card has a free slot.',
     );
-    // The burn settled at the mint: the merchant's money is accounted for.
+    // The payment settled at the mint: the merchant's money is accounted for.
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
-    // One piece on the card, one still owed — with the refusal recorded.
+    // One piece on the card, one still owed — and opened: a whole piece.
     expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
       [4, 'written', 1],
       [2, 'owed', undefined],
     ]);
-    const owed = await outstandingChangeForCard(CARD_PUBKEY_HEX);
+    const owed = await outstandingChangeForCard(card.pubkey);
     expect(owed.map(e => e.amount)).toEqual([2]);
+    expect(owed[0].nonce).toEqual(expect.any(String));
 
     // The next tap, same card: it now holds the 4-sat piece (unspent) and
     // the burned slot. A 4-sat bill is exact; the owed 2 sat goes on first.
     const before = card.sent.length;
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
     const result = await chargeCard({
       transceive: card.transceive,
       amountSat: 4,
@@ -1072,33 +1338,22 @@ describe('owed change (ENG-630)', () => {
 
     expect(result.changeSat).toBe(0);
     const session = card.sent.slice(before).map(insOf);
-    const verifyIdx = session.indexOf(0x40);
-    const loadIdx = session.indexOf(0x30);
-    const burnIdx = session.indexOf(0x20);
+    const verifyIdx = session.lastIndexOf(0x40);
+    const loadIdx = session.lastIndexOf(0x30);
+    const signIdx = session.lastIndexOf(0x24);
     expect(verifyIdx).toBeGreaterThanOrEqual(0);
     expect(loadIdx).toBeGreaterThan(verifyIdx);
-    expect(burnIdx).toBeGreaterThan(loadIdx);
-    expect(card.loads.map(l => l.nonce)).toEqual(nonces);
+    expect(signIdx).toBeGreaterThan(loadIdx);
+    expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
     expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
       [4, 'written', 1],
       [2, 'written', 2],
     ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
-  it('a lost LOAD answer is reconciled from the card: the piece is found in its slot and never re-sent', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      loseAnswerOnLoad: i => i === 0,
-    });
-    const nonce = '99'.repeat(32);
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, nonce)],
-      till: [],
-    });
+  it('a lost LOAD answer is reconciled from the card: the opening is gone, the piece is marked and never re-sent', async () => {
+    const card = pinCard([16], {loseLoadAnswer: n => n === 0});
 
     await expect(
       chargeCard({
@@ -1110,13 +1365,12 @@ describe('owed change (ENG-630)', () => {
       }),
     ).rejects.toThrow(/^\[writing change to card\] Tag was lost/);
     expect(owedStore()).toEqual([
-      expect.objectContaining({amount: 4, status: 'owed', nonce}),
+      expect.objectContaining({amount: 4, status: 'owed'}),
     ]);
 
-    // Next tap: the card holds the piece (the LOAD landed). The read finds
-    // the nonce in slot 1, marks it written, and sends no LOAD.
+    // Next tap: the card holds the piece (the LOAD landed) and let its
+    // opening go. The read marks it written and sends no LOAD.
     const loadsBefore = card.sent.filter(a => insOf(a) === 0x30).length;
-    const sentBefore = card.sent.length;
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 4,
@@ -1125,139 +1379,125 @@ describe('owed change (ENG-630)', () => {
 
     expect(preRead.owedChange).toEqual([]);
     expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(loadsBefore);
-    // The unspent slot was read once for the plan and seeded into the
-    // reconcile from memory; only the spent slot cost a second GET_PROOF.
-    expect(
-      card.sent
-        .slice(sentBefore)
-        .filter(a => insOf(a) === 0x13)
-        .map(a => a[2])
-        .sort(),
-    ).toEqual([0, 1]);
-    expect(owedStore()).toEqual([
-      expect.objectContaining({status: 'written', slot: 1}),
-    ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    expect(owedStore()).toEqual([expect.objectContaining({status: 'written'})]);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
   it('reconcileOwedChange reads nothing when the card is owed nothing', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}]});
+    const card = pinCard([16]);
 
     await expect(
       reconcileOwedChange({
         transceive: card.transceive,
-        cardPubkey: CARD_PUBKEY_HEX,
-        statuses: ['unspent', 'empty'],
+        cardPubkey: card.pubkey,
         now: 1000,
       }),
     ).resolves.toEqual([]);
     expect(card.sent).toEqual([]);
   });
 
-  it("reconcileOwedChange reads spent slots too, and leaves another card's change alone", async () => {
-    const other = '03' + 'cd'.repeat(32);
-    await recordOwedChange(
-      other,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(2, seededNonce(0))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    // Slot 0 is SPENT and carries the owed nonce: still readable, still a
-    // match (a lost LOAD answer followed by a spend).
-    const card = fakeCard({
-      slots: [
-        {amount: 2, status: 0x02},
-        {amount: 16, status: 0x01},
-      ],
-    });
+  it("reconcileOwedChange reads the card's openings once, and leaves another card's change alone", async () => {
+    const other = new FakeCard2({privateKey: '44'.repeat(32)});
+    await owedFromEarlierCharge([4], [other]);
+    const card = pinCard([16]);
+    const [owed] = await owedFromEarlierCharge([2], [card]);
 
     const remaining = await reconcileOwedChange({
       transceive: card.transceive,
-      cardPubkey: CARD_PUBKEY_HEX,
-      statuses: card.statuses,
+      cardPubkey: card.pubkey,
       now: 2000,
     });
 
-    expect(remaining).toEqual([]);
-    expect(card.sent.filter(a => insOf(a) === 0x13).map(a => a[2])).toEqual([
-      0, 1,
-    ]);
-    await expect(outstandingChangeForCard(other)).resolves.toHaveLength(1);
+    expect(remaining.map(e => e.id)).toEqual([owed.id]);
+    // Opened from the card's opening: a whole piece the mint signed.
+    const [opened] = remaining;
+    expect(
+      testMint().verifyProof(
+        buildCardSigAllSecret(opened.nonce!, card.pubkey),
+        opened.C!,
+        2,
+      ),
+    ).toBe(true);
+    expect(card.insSent).toEqual([0x19]);
+    await expect(outstandingChangeForCard(other.pubkey)).resolves.toHaveLength(
+      1,
+    );
   });
 
-  it('reconcileOwedChange seeds known slots from memory and reads only the rest', async () => {
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, seededNonce(1)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [
-        {amount: 2, status: 0x02},
-        {amount: 4, status: 0x01},
-        {amount: 16, status: 0x01},
-      ],
-    });
-    const known = [1, 2].map(slot => ({
-      slot,
-      status: 'unspent' as const,
-      keysetId: KEYSET_ID,
-      amount: slot === 1 ? 4 : 16,
-      nonce: seededNonce(slot),
-      C: '02' + 'ab'.repeat(32),
+  it('reconcileOwedChange uses the openings the caller already read: no APDU', async () => {
+    const card = pinCard([16]);
+    const [owed] = await owedFromEarlierCharge([2], [card]);
+    const openings = card.openings.map(o => ({
+      amount: o.amount,
+      keysetId: o.keysetId,
+      date: o.date,
+      nonce: o.nonce,
+      r: o.r,
     }));
 
     const remaining = await reconcileOwedChange({
       transceive: card.transceive,
-      cardPubkey: CARD_PUBKEY_HEX,
-      statuses: card.statuses,
-      known,
+      cardPubkey: card.pubkey,
+      openings,
       now: 2000,
     });
 
-    // The 4-sat piece was found in the known slot 1 without an APDU; only
-    // the spent slot 0 was read.
-    expect(card.sent.filter(a => insOf(a) === 0x13).map(a => a[2])).toEqual([
-      0,
-    ]);
-    expect(remaining.map(e => e.amount)).toEqual([2]);
-    expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
-      [4, 'written', 1],
-      [2, 'owed', undefined],
-    ]);
+    expect(remaining.map(e => e.id)).toEqual([owed.id]);
+    expect(card.sent).toEqual([]);
+  });
+
+  it('reconcileOwedChange leaves a piece it cannot finish (no keys kept) owed, unwritten', async () => {
+    const card = pinCard([16]);
+    const [owed] = await owedFromEarlierCharge([2], [card]);
+    await saveKeysets(MINT_URL, []);
+
+    const remaining = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 2000,
+    });
+
+    expect(remaining.map(e => e.id)).toEqual([owed.id]);
+    expect(remaining[0].nonce).toBeUndefined();
+    await expect(
+      writeOwedChange({
+        transceive: card.transceive,
+        owed: remaining,
+        now: 3000,
+      }),
+    ).resolves.toEqual([]);
+    expect(card.loads).toEqual([]);
   });
 
   it('reconcileOwedChange tolerates the store refusing a written mark: the piece on the card stays out of the remainder and the charge proceeds', async () => {
-    // Two pieces owed: the 4-sat one is already in slot 1 (its LOAD answer
-    // was lost), the 2-sat one is nowhere. The keychain then refuses the
-    // `written` mark — the same refusal `writeOwedChange` and
-    // `executeCharge` already tolerate. The read must not turn into a
+    // Two pieces owed: the 4-sat one is already on the card (its LOAD answer
+    // was lost: its opening is gone), the 2-sat one is not. The keychain
+    // then refuses the `written` mark. The read must not turn into a
     // refused charge with a raw store error for a title: the piece IS on
     // the card, so it is not owed, and the stale record is harmless (the
     // next reconcile finds it again).
-    const [onCard, missing] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, seededNonce(1)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [
-        {amount: 16, status: 0x01},
-        {amount: 4, status: 0x01},
-      ],
-      pin: '1234',
-      maxSlots: 4,
+    const card = pinCard([16], {slotCount: 4});
+    const [onCard, missing] = await owedFromEarlierCharge([4, 2], [card]);
+    // Land the 4 on the card (as a lost-answer LOAD would have).
+    const landing = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 1500,
     });
+    card.pinVerified = true;
+    await writeOwedChange({
+      transceive: card.transceive,
+      owed: landing.filter(e => e.id === onCard.id),
+      now: 1600,
+    });
+    card.pinVerified = false;
+    // …with the store still saying owed for it.
+    const env = JSON.parse(mockStore[OWED_CHANGE_KEY]);
+    env.entries = env.entries.map((e: OwedChangeEntry) =>
+      e.id === onCard.id ? {...e, status: 'owed', attempts: 1} : e,
+    );
+    mockStore[OWED_CHANGE_KEY] = JSON.stringify(env);
+
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -1272,19 +1512,18 @@ describe('owed change (ENG-630)', () => {
     try {
       const remaining = await reconcileOwedChange({
         transceive: card.transceive,
-        cardPubkey: CARD_PUBKEY_HEX,
-        statuses: card.statuses,
+        cardPubkey: card.pubkey,
         now: 2000,
       });
 
-      expect(remaining).toEqual([missing]);
+      expect(remaining.map(e => e.id)).toEqual([missing.id]);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(
         expect.stringMatching(/written mark was refused/),
         'keychain write denied',
       );
       // The store still says 'owed' for the piece on the card — stale, and
-      // harmless: the next reconcile finds the nonce in its slot again.
+      // harmless: the next reconcile finds its opening gone again.
       expect(owedStore().map(e => [e.amount, e.status])).toEqual([
         [4, 'owed'],
         [2, 'owed'],
@@ -1297,11 +1536,7 @@ describe('owed change (ENG-630)', () => {
         transceive: card.transceive,
         amountSat: 16,
       });
-      expect(preRead.owedChange).toEqual([missing]);
-      expect(preRead.owedChange).not.toContainEqual(
-        expect.objectContaining({id: onCard.id}),
-      );
-      mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+      expect(preRead.owedChange.map(e => e.id)).toEqual([missing.id]);
       const result = await executeCharge({
         ...preRead,
         transceive: card.transceive,
@@ -1312,8 +1547,8 @@ describe('owed change (ENG-630)', () => {
       });
       expect(result.changeSat).toBe(0);
       expect(card.burnCount).toBe(1);
-      // The piece already on the card was never LOADed a second time.
-      expect(card.loads.map(l => l.nonce)).not.toContain(seededNonce(1));
+      // The piece already on the card was never loaded a second time.
+      expect(card.loads.filter(l => l.amount === 4)).toHaveLength(1);
     } finally {
       storage.setSecure.mockImplementation(realSet);
       warn.mockRestore();
@@ -1321,18 +1556,18 @@ describe('owed change (ENG-630)', () => {
   });
 
   it('writeOwedChange marks each piece as the card answers and records a refusal', async () => {
-    const [a, b] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({slots: [], maxSlots: 1});
+    const card = new FakeCard2({slotCount: 1});
+    await owedFromEarlierCharge([4, 2], [card]);
+    const owed = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 1500,
+    });
     const phases: string[] = [];
 
     const failure = await writeOwedChange({
       transceive: card.transceive,
-      owed: [a, b],
+      owed,
       now: 2000,
       onPhase: p => phases.push(p),
     }).catch(e => e);
@@ -1356,23 +1591,63 @@ describe('owed change (ENG-630)', () => {
     ]);
   });
 
-  it('executeCharge writes the owed change after the PIN and before any burn, and a refusal there burns nothing', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      refuseLoad: () => true,
+  it("writeOwedChange reads the card's 6A94 as landed, never as a failure", async () => {
+    const card = new FakeCard2({
+      refuseLoad: n => (n === 0 ? 0x6a94 : undefined),
     });
+    const [owed] = await owedFromEarlierCharge([4], [card]);
+    const opened = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 1500,
+    });
+
+    const written = await writeOwedChange({
+      transceive: card.transceive,
+      owed: opened,
+      now: 2000,
+    });
+
+    expect(written.map(e => e.id)).toEqual([owed.id]);
+    expect(owedStore()[0]).toMatchObject({status: 'written'});
+  });
+
+  it('writeOwedChange never sends 0.x change or a piece it has not opened', async () => {
+    const card = new FakeCard2();
+    const legacy = {
+      id: `${card.pubkey}:${'71'.repeat(32)}`,
+      cardPubkey: card.pubkey,
+      mintUrl: MINT_URL,
+      unit: 'sat',
+      keysetId: KEYSET_ID,
+      amount: 4,
+      secret: 'legacy',
+      C: card.pubkey,
+      nonce: '71'.repeat(32),
+      status: 'owed' as const,
+      createdAt: 0,
+      updatedAt: 0,
+      attempts: 0,
+    };
+    const [unopened] = await owedFromEarlierCharge([2], [card]);
+    await expect(
+      writeOwedChange({
+        transceive: card.transceive,
+        owed: [legacy, unopened],
+        now: 1,
+      }),
+    ).resolves.toEqual([]);
+    expect(card.sent).toEqual([]);
+  });
+
+  it('executeCharge writes the owed change after the PIN and before any burn, and a refusal there burns nothing', async () => {
+    const card = pinCard([16], {refuseLoad: () => 0x6a84});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-    expect(preRead.owedChange).toEqual([owed]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
 
     const failure = await executeCharge({
       ...preRead,
@@ -1384,27 +1659,17 @@ describe('owed change (ENG-630)', () => {
     }).catch(e => e);
 
     expectCardFull(failure);
-    expect(card.sent.find(a => insOf(a) === 0x20)).toBeUndefined();
+    expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
     await expect(listSettlements()).resolves.toEqual([]);
-    expect(mockMintChargeChange).not.toHaveBeenCalled();
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    expect(testMint().swaps).toHaveLength(0);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 1}),
     ]);
   });
 
   it('a PIN-flow retry with the same args never re-sends an owed piece the first attempt landed', async () => {
-    const nonces = ['71'.repeat(32), '72'.repeat(32)];
-    const [first, second] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, nonces[0]), changeProof(2, nonces[1])],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-    });
+    const card = pinCard([16], {slotCount: 4});
+    const [first, second] = await owedFromEarlierCharge([4, 2], [card]);
     // The tag drops under the second LOAD before the card sees it: the 4 is
     // on the card (marked written as it answered), the 2 is still owed.
     let loads = 0;
@@ -1417,7 +1682,7 @@ describe('owed change (ENG-630)', () => {
       return card.transceive(apdu);
     };
     const preRead = await readAndPlan({transceive, amountSat: 16});
-    expect(preRead.owedChange).toEqual([first, second]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([first.id, second.id]);
     const args = {
       ...preRead,
       transceive,
@@ -1426,14 +1691,13 @@ describe('owed change (ENG-630)', () => {
       mintUrl: MINT_URL,
       now: 2000,
     };
-    mockMintChargeChange.mockResolvedValue({change: [], till: []});
 
     await expect(executeCharge(args)).rejects.toThrow(
       /^\[adding 2 sat of change owed from an earlier charge\] Tag was lost/,
     );
-    expect(card.loads.map(l => l.nonce)).toEqual([nonces[0]]);
+    expect(card.loads.map(l => l.amount)).toEqual([4]);
     expect(card.burnCount).toBe(0);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: second.id, status: 'owed', attempts: 1}),
     ]);
 
@@ -1444,7 +1708,7 @@ describe('owed change (ENG-630)', () => {
 
     expect(result.changeSat).toBe(0);
     expect(card.burnCount).toBe(1);
-    expect(card.loads.map(l => l.nonce)).toEqual(nonces);
+    expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
     // What reached the card: the 4 once, the 2 once (the dropped LOAD never
     // got there) — never a second 4 for the nonce the first attempt landed.
     expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(2);
@@ -1453,33 +1717,20 @@ describe('owed change (ENG-630)', () => {
       [4, 'written', 1],
       [2, 'written', 2],
     ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
   it('a PIN-flow retry reconciles against the card when the first LOAD landed but its answer was lost', async () => {
-    const nonce = '71'.repeat(32);
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, nonce)],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
     // The card writes the slot and the tag drops before the 9000 reaches
     // the host: the 4 is ON the card, the store still calls it owed with
     // one attempt counted.
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-      loseAnswerOnLoad: i => i === 0,
-    });
+    const card = pinCard([16], {slotCount: 4, loseLoadAnswer: n => n === 0});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-    expect(preRead.owedChange).toEqual([owed]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
     const args = {
       ...preRead,
       transceive: card.transceive,
@@ -1488,139 +1739,104 @@ describe('owed change (ENG-630)', () => {
       mintUrl: MINT_URL,
       now: 2000,
     };
-    mockMintChargeChange.mockResolvedValue({change: [], till: []});
 
     await expect(executeCharge(args)).rejects.toThrow(
       /^\[adding 4 sat of change owed from an earlier charge\] Tag was lost/,
     );
-    expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
-    expect(card.statuses).toEqual(['unspent', 'unspent', 'empty', 'empty']);
+    expect(card.loads.map(l => l.amount)).toEqual([4]);
     expect(card.burnCount).toBe(0);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 1}),
     ]);
 
     // The customer re-enters the PIN: same plan, same owedChange snapshot.
-    // The store still says owed, so the card is read before anything is
-    // sent — the nonce is found in slot 1 and the piece is marked written,
-    // never LOADed a second time.
+    // The store still says owed with an attempt counted, so the card's
+    // openings are read before anything is sent — the opening is gone, the
+    // piece is marked written, never loaded a second time.
     const result = await executeCharge({...args, now: 3000});
 
     expect(result.changeSat).toBe(0);
     expect(card.burnCount).toBe(1);
     expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(1);
-    expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
-    expect(card.statuses).toEqual(['spent', 'unspent', 'empty', 'empty']);
-    expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
-      [4, 'written', 1],
+    expect(card.loads.map(l => l.amount)).toEqual([4]);
+    expect(owedStore().map(e => [e.amount, e.status])).toEqual([
+      [4, 'written'],
     ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
   it('a PIN-flow retry never re-sends an owed piece whose LOAD landed but whose written mark the store refused', async () => {
-    const nonce = '71'.repeat(32);
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, nonce)],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-    });
+    const card = pinCard([16], {slotCount: 4, dropBeforeSign: n => n === 0});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     // The card takes the LOAD and answers its slot; the keychain then
-    // refuses the `written` mark — the same failure the bill's own change
-    // already tolerates. The piece is ON the card and `owed` on disk.
+    // refuses the `written` mark. The piece is ON the card and `owed` on
+    // disk. Then the tag drops under the SIGN before the card commits: the
+    // charge dies before any money moves, and the PIN pad retries.
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
     const realSet = storage.setSecure.getMockImplementation()!;
     let owedWrites = 0;
-    storage.setSecure.mockImplementation(async (k: string, v: string) => {
-      // 1st owed-store write of the session = the write-ahead attempt mark
-      // (lands); 2nd = the `written` mark after the card answered (refused).
-      if (k === OWED_CHANGE_KEY && ++owedWrites === 2) {
-        throw new Error('keychain write denied');
-      }
-      return realSet(k, v);
-    });
-    // Then the tag drops under the burn before the card sees it: the charge
-    // dies before any money moves, and the PIN pad retries with the same
-    // args.
-    let dropNextBurn = true;
-    const transceive: Transceiver = async apdu => {
-      if (insOf(apdu) === 0x20 && dropNextBurn) {
-        dropNextBurn = false;
-        throw new Error('Tag was lost.');
-      }
-      return card.transceive(apdu);
-    };
     try {
-      const preRead = await readAndPlan({transceive, amountSat: 16});
-      expect(preRead.owedChange).toEqual([owed]);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 16,
+      });
+      expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
+      storage.setSecure.mockImplementation(async (k: string, v: string) => {
+        // 1st owed-store write of the session = the write-ahead attempt mark
+        // (lands); 2nd = the `written` mark after the card answered (refused).
+        if (k === OWED_CHANGE_KEY && ++owedWrites === 2) {
+          throw new Error('keychain write denied');
+        }
+        return realSet(k, v);
+      });
       const args = {
         ...preRead,
-        transceive,
+        transceive: card.transceive,
         amountSat: 16,
         pin: '1234',
         mintUrl: MINT_URL,
         now: 2000,
       };
-      mockMintChargeChange.mockResolvedValue({change: [], till: []});
 
       await expect(executeCharge(args)).rejects.toThrow(
         /^\[burning 16 sat \(proof 1\/1\)\] Tag was lost/,
       );
-      expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
-      expect(card.statuses).toEqual(['unspent', 'unspent', 'empty', 'empty']);
+      expect(card.loads.map(l => l.amount)).toEqual([4]);
+      expect(card.burnCount).toBe(0);
       // The attempt was counted BEFORE the LOAD went out, so the refused
       // `written` mark leaves a record that still says "this was sent".
-      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+      await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
         expect.objectContaining({id: owed.id, status: 'owed', attempts: 1}),
       ]);
 
       // The customer re-enters the PIN: same plan, same owedChange snapshot.
-      // `attempts > 0` sends the retry to the card first; the nonce is found
-      // in slot 1, marked written, and never LOADed a second time.
+      // `attempts > 0` sends the retry to the card first; the opening is
+      // gone, the piece is marked written, and never loaded a second time.
       const result = await executeCharge({...args, now: 3000});
 
       expect(result.changeSat).toBe(0);
       expect(card.burnCount).toBe(1);
       expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(1);
-      expect(card.loads.map(l => l.nonce)).toEqual([nonce]);
-      expect(card.statuses).toEqual(['spent', 'unspent', 'empty', 'empty']);
-      expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
-        [4, 'written', 1],
+      expect(card.loads.map(l => l.amount)).toEqual([4]);
+      expect(owedStore().map(e => [e.amount, e.status])).toEqual([
+        [4, 'written'],
       ]);
-      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-        [],
-      );
+      await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
     } finally {
       storage.setSecure.mockImplementation(realSet);
     }
   });
 
   it('an owed piece whose attempt mark the store refuses is never sent: nothing owed goes on, the charge completes', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-    });
+    const card = pinCard([16], {slotCount: 4});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-    expect(preRead.owedChange).toEqual([owed]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -1632,7 +1848,6 @@ describe('owed change (ENG-630)', () => {
       return realSet(k, v);
     });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
     try {
       const result = await executeCharge({
         ...preRead,
@@ -1647,12 +1862,12 @@ describe('owed change (ENG-630)', () => {
       expect(card.burnCount).toBe(1);
       // A LOAD the store could not count ahead would be invisible to the
       // next retry — so it is not sent. The piece waits for a later tap.
-      expect(card.sent.find(a => insOf(a) === 0x30)).toBeUndefined();
+      expect(card.insSent).not.toContain(0x30);
       expect(warn).toHaveBeenCalledWith(
         expect.stringMatching(/owed-change attempt could not be recorded/),
         'keychain write denied',
       );
-      await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+      await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
         expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
       ]);
     } finally {
@@ -1662,31 +1877,32 @@ describe('owed change (ENG-630)', () => {
   });
 
   it('writeOwedChange resolves with exactly the pieces it put on the card', async () => {
-    const [a, b] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({slots: [], maxSlots: 4});
+    const card = new FakeCard2({slotCount: 4});
+    const [a, b] = await owedFromEarlierCharge([4, 2], [card]);
+    const opened = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 1500,
+    });
 
     const written = await writeOwedChange({
       transceive: card.transceive,
-      owed: [a, b],
+      owed: opened,
       now: 2000,
     });
 
     expect(written.map(e => e.id)).toEqual([a.id, b.id]);
-    expect(card.loads.map(l => l.nonce)).toEqual([a.nonce, b.nonce]);
+    expect(card.loads.map(l => l.nonce)).toEqual(opened.map(e => e.nonce));
   });
 
   it('writeOwedChange cut short by the store resolves with only what went out, so a caller cannot claim the rest', async () => {
-    const [a, b] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32)), changeProof(2, '72'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
+    const card = new FakeCard2({slotCount: 4});
+    const [a, b] = await owedFromEarlierCharge([4, 2], [card]);
+    const opened = await reconcileOwedChange({
+      transceive: card.transceive,
+      cardPubkey: card.pubkey,
+      now: 1500,
+    });
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -1695,7 +1911,6 @@ describe('owed change (ENG-630)', () => {
     try {
       // The very first write-ahead mark is refused: nothing is sent, and the
       // result says so — an empty list, not the two pieces it was handed.
-      const card = fakeCard({slots: [], maxSlots: 4});
       storage.setSecure.mockImplementation(async (k: string, v: string) => {
         if (k === OWED_CHANGE_KEY) {
           throw new Error('keychain write denied');
@@ -1703,7 +1918,7 @@ describe('owed change (ENG-630)', () => {
         return realSet(k, v);
       });
       await expect(
-        writeOwedChange({transceive: card.transceive, owed: [a, b], now: 2000}),
+        writeOwedChange({transceive: card.transceive, owed: opened, now: 2000}),
       ).resolves.toEqual([]);
       expect(card.loads).toEqual([]);
       expect(owedStore().map(e => [e.amount, e.status, e.attempts])).toEqual([
@@ -1713,8 +1928,6 @@ describe('owed change (ENG-630)', () => {
 
       // The mark for the second piece is refused after the first landed:
       // the result names the first piece alone.
-      storage.setSecure.mockImplementation(realSet);
-      const card2 = fakeCard({slots: [], maxSlots: 4});
       let owedWrites = 0;
       storage.setSecure.mockImplementation(async (k: string, v: string) => {
         // 1st = a's write-ahead mark, 2nd = a's `written` mark, 3rd = b's
@@ -1725,16 +1938,16 @@ describe('owed change (ENG-630)', () => {
         return realSet(k, v);
       });
       const written = await writeOwedChange({
-        transceive: card2.transceive,
-        owed: [a, b],
+        transceive: card.transceive,
+        owed: opened,
         now: 3000,
       });
 
       expect(written.map(e => e.id)).toEqual([a.id]);
-      expect(card2.loads.map(l => l.nonce)).toEqual([a.nonce]);
-      expect(owedStore().map(e => [e.amount, e.status, e.attempts])).toEqual([
-        [4, 'written', 1],
-        [2, 'owed', 0],
+      expect(card.loads).toHaveLength(1);
+      expect(owedStore().map(e => [e.id, e.status, e.attempts])).toEqual([
+        [a.id, 'written', 1],
+        [b.id, 'owed', 0],
       ]);
     } finally {
       storage.setSecure.mockImplementation(realSet);
@@ -1743,24 +1956,14 @@ describe('owed change (ENG-630)', () => {
   });
 
   it('a first owed write does not re-read the card', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-    });
+    const card = pinCard([16], {slotCount: 4});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-    expect(preRead.owedChange).toEqual([owed]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
     const apdusAfterRead = card.sent.length;
-    mockMintChargeChange.mockResolvedValue({change: [], till: []});
 
     await executeCharge({
       ...preRead,
@@ -1771,38 +1974,30 @@ describe('owed change (ENG-630)', () => {
       now: 2000,
     });
 
-    // Session 2 never asks GET_INFO (0x01), slot statuses (0x14) or
-    // GET_PROOF (0x13) before the LOAD: the attempt count was 0.
+    // Session 2 never asks GET_INFO (0x01), GET_PIECES (0x17) or the
+    // openings (0x19) before the LOAD: the attempt count was 0 and the read
+    // had already opened the piece. Only SELECT, AUTH (the same card as the
+    // read, ENG-674) and the PIN go first.
     const session2 = card.sent.slice(apdusAfterRead);
     const firstLoad = session2.findIndex(a => insOf(a) === 0x30);
     expect(firstLoad).toBeGreaterThan(-1);
-    expect(session2.slice(0, firstLoad).map(insOf)).toEqual([0xa4, 0x40]);
+    expect(session2.slice(0, firstLoad).map(insOf)).toEqual([0xa4, 0x15, 0x40]);
   });
 
   it('an unreadable owed-change store skips the owed write and the charge still completes', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-    });
+    const card = pinCard([16], {slotCount: 4});
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
     });
-    expect(preRead.owedChange).toEqual([owed]);
+    expect(preRead.owedChange.map(e => e.id)).toEqual([owed.id]);
     // The store goes unreadable between the read tap and the PIN tap.
     const {getSecureStrict} = jest.requireMock(
       '../../src/services/secureStorage',
     );
     getSecureStrict.mockRejectedValueOnce(new Error('keychain locked'));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
 
     const result = await executeCharge({
       ...preRead,
@@ -1818,21 +2013,14 @@ describe('owed change (ENG-630)', () => {
     expect(card.burnCount).toBe(1);
     // Nothing owed was written — a duplicate is the one outcome worse than
     // a wait — and the piece is still owed for a later tap.
-    expect(card.sent.find(a => insOf(a) === 0x30)).toBeUndefined();
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual([
+    expect(card.insSent).not.toContain(0x30);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
     ]);
   });
 
   it('a record that will not land is logged and the change still goes onto the card', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    mockMintChargeChange.mockResolvedValue({
-      change: [
-        changeProof(4, '77'.repeat(32)),
-        changeProof(2, '88'.repeat(32)),
-      ],
-      till: [],
-    });
+    const card = pinCard([16]);
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -1867,18 +2055,7 @@ describe('owed change (ENG-630)', () => {
   });
 
   it('a change write that fails with NO record landed is reported under the unrecorded phase, naming the piece that landed', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      refuseLoad: i => i === 1,
-    });
-    mockMintChargeChange.mockResolvedValue({
-      change: [
-        changeProof(4, '77'.repeat(32)),
-        changeProof(2, '88'.repeat(32)),
-      ],
-      till: [],
-    });
+    const card = pinCard([16], {refuseLoad: refuseLoadFull(n => n === 1)});
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -1921,18 +2098,12 @@ describe('owed change (ENG-630)', () => {
   });
 
   it('one unparseable element in the owed store does not refuse the charge: the good piece is still written', async () => {
-    const [owed] = await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
+    const card = pinCard([16]);
+    const [owed] = await owedFromEarlierCharge([4], [card]);
     // A downgraded build meeting a status it does not know, say.
     const envelope = JSON.parse(mockStore[OWED_CHANGE_KEY]);
     envelope.entries.push({...owed, id: 'future', status: 'future-status'});
     mockStore[OWED_CHANGE_KEY] = JSON.stringify(envelope);
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -1943,22 +2114,15 @@ describe('owed change (ENG-630)', () => {
     });
 
     expect(result.changeSat).toBe(0);
-    expect(card.loads.map(l => l.nonce)).toEqual([owed.nonce]);
+    expect(card.loads.map(l => l.amount)).toEqual([4]);
     expect(owedStore().map(e => [e.id, e.status, e.slot])).toEqual([
       [owed.id, 'written', 1],
     ]);
-    await expect(outstandingChangeForCard(CARD_PUBKEY_HEX)).resolves.toEqual(
-      [],
-    );
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
   it('listOwedChange enumerates the store', async () => {
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
+    await owedFromEarlierCharge([4], [new FakeCard2()]);
     await expect(listOwedChange()).resolves.toHaveLength(1);
   });
 });
@@ -1985,15 +2149,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     failedAfterSwap(parseFailure(describeCardFailure(failure)));
 
   it('a change write the card refuses (recorded): flagged paid, and the copy classifier agrees', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      refuseLoad: () => true,
-    });
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, '77'.repeat(32))],
-      till: [],
-    });
+    const card = pinCard([16], {refuseLoad: () => 0x6a84});
 
     const failure = await chargeCard({
       transceive: card.transceive,
@@ -2013,15 +2169,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
   });
 
   it('a change write that fails unrecorded: flagged paid, and the copy classifier agrees', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      refuseLoad: () => true,
-    });
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, '77'.repeat(32))],
-      till: [],
-    });
+    const card = pinCard([16], {refuseLoad: () => 0x6a84});
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
@@ -2056,13 +2204,26 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     }
   });
 
-  it('an exact bill whose card leaves the field on the final balance read: the charge completes', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
+  it('a change LOAD the card answers 6982 (no PIN in the tap): flagged paid, the change saved', async () => {
+    const card = pinCard([16], {refuseLoad: () => 0x6982});
+
+    const failure = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 12,
       pin: '1234',
-      loseTagOnBalanceAfterBurn: true,
-    });
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
+      mintUrl: MINT_URL,
+      now: 1000,
+    }).catch(e => e);
+
+    expect(isPaidFailure(failure)).toBe(true);
+    expect(classified(failure)).toBe(true);
+    await expect(outstandingChangeForCard(card.pubkey)).resolves.toHaveLength(
+      1,
+    );
+  });
+
+  it('an exact bill whose card leaves the field on the final balance read: the charge completes', async () => {
+    const card = pinCard([16], {loseTagOnBalanceAfterSign: true});
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -2081,12 +2242,8 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
   });
 
   it('an exact bill whose swap is deferred, then the card leaves on the final read: still completes', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      loseTagOnBalanceAfterBurn: true,
-    });
-    mockMintChargeChange.mockRejectedValueOnce(new Error('offline'));
+    const card = pinCard([16], {loseTagOnBalanceAfterSign: true});
+    testMint().failAll = OFFLINE();
 
     const result = await chargeCard({
       transceive: card.transceive,
@@ -2101,21 +2258,13 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
   });
 
   it('the settlement store refusing markEntriesSettled after the swap: flagged paid under its own phase, the till still written', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    let swapped = false;
-    // The merchant's take: it exists only in this process until the till
-    // write lands, so the settlement queue refusing must not drop it.
-    const till = [changeProof(16, '66'.repeat(32))];
-    mockMintChargeChange.mockImplementationOnce(async () => {
-      swapped = true;
-      return {change: [], till};
-    });
+    const card = pinCard([16]);
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
     const realSet = storage.setSecure.getMockImplementation()!;
     storage.setSecure.mockImplementation(async (k: string, v: string) => {
-      if (swapped && k === '@cashu_settlement_queue') {
+      if (testMint().swaps.length > 0 && k === '@cashu_settlement_queue') {
         throw new Error('keychain write denied');
       }
       return realSet(k, v);
@@ -2129,7 +2278,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
         now: 1000,
       }).catch(e => e);
 
-      expect(swapped).toBe(true);
+      expect(testMint().swaps).toHaveLength(1);
       expect(failure).toBeInstanceOf(PhaseError);
       expect(failure.message).toBe(
         `[${PHASE_RECORDING_PAYMENT}] keychain write denied`,
@@ -2139,25 +2288,22 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       // still ends it as paid on the flag.
       expect(classified(failure)).toBe(false);
       expect(card.burnCount).toBe(1);
-      expect(await listSettledProofs()).toEqual(till);
+      // The merchant's take: it exists only in this process until the till
+      // write lands, so the settlement queue refusing must not drop it.
+      expect((await listSettledProofs()).map(p => p.amount)).toEqual([16]);
     } finally {
       storage.setSecure.mockImplementation(realSet);
     }
   });
 
-  it('the till store refusing after the swap: the entries are still marked settled, and the charge is flagged paid', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    let swapped = false;
-    mockMintChargeChange.mockImplementationOnce(async () => {
-      swapped = true;
-      return {change: [], till: [changeProof(16, '65'.repeat(32))]};
-    });
+  it('the till store refusing after the swap: the payment is still marked settled, and the charge is flagged paid', async () => {
+    const card = pinCard([16]);
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
     const realSet = storage.setSecure.getMockImplementation()!;
     storage.setSecure.mockImplementation(async (k: string, v: string) => {
-      if (swapped && k === '@cashu_settled_proofs') {
+      if (testMint().swaps.length > 0 && k === '@cashu_settled_proofs') {
         throw new Error('till write denied');
       }
       return realSet(k, v);
@@ -2176,7 +2322,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
         `[${PHASE_RECORDING_PAYMENT}] till write denied`,
       );
       expect(isPaidFailure(failure)).toBe(true);
-      // The swap spent the burned proofs: a queue left 'pending' would have
+      // The swap spent the burned pieces: a queue left 'pending' would have
       // the drain swap them again. The settle write ran despite the till.
       const entries = await listSettlements();
       expect(entries).toHaveLength(1);
@@ -2194,26 +2340,15 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
    * process, and the card in the field is its only home left.
    */
   const refuseEveryWriteAfterSwap = () => {
-    let swapped = false;
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       setSecure: jest.Mock;
     };
     const realSet = storage.setSecure.getMockImplementation()!;
     storage.setSecure.mockImplementation(async (k: string, v: string) => {
-      if (swapped) {
+      if (testMint().swaps.length > 0) {
         throw new Error('keychain write denied');
       }
       return realSet(k, v);
-    });
-    mockMintChargeChange.mockImplementationOnce(async () => {
-      swapped = true;
-      return {
-        change: [
-          changeProof(4, '77'.repeat(32)),
-          changeProof(2, '78'.repeat(32)),
-        ],
-        till: [changeProof(10, '66'.repeat(32))],
-      };
     });
     return () => storage.setSecure.mockImplementation(realSet);
   };
@@ -2228,7 +2363,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     });
 
   it('every write refused after the swap: the change still goes onto the card, the charge is paid, and the copy never calls the change missing', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const card = pinCard([16]);
     const restore = refuseEveryWriteAfterSwap();
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -2263,11 +2398,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
   });
 
   it('bookkeeping refused AND a change LOAD refused: the load failure is the one thrown, still paid', async () => {
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      refuseLoad: n => n === 1,
-    });
+    const card = pinCard([16], {refuseLoad: refuseLoadFull(n => n === 1)});
     const restore = refuseEveryWriteAfterSwap();
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -2311,27 +2442,24 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     }
   });
 
-  it('a settlement queue that will not read after the change is on the card: the charge completes', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    let loaded = false;
-    mockMintChargeChange.mockResolvedValueOnce({
-      change: [changeProof(4, '77'.repeat(32))],
-      till: [],
-    });
+  it('a settlement queue that will not read for the needs-card recovery: the charge completes', async () => {
+    const card = pinCard([16]);
     const storage = jest.requireMock('../../src/services/secureStorage') as {
       getSecureStrict: jest.Mock;
     };
     const realGet = storage.getSecureStrict.getMockImplementation()!;
-    const realTransceive = card.transceive;
+    // Unreadable once: the recovery's read, between the PIN and the payment.
+    let verified = false;
     const transceive: Transceiver = async apdu => {
-      const answer = await realTransceive(apdu);
-      if (apdu[1] === 0x30) {
-        loaded = true;
+      if (insOf(apdu) === 0x40) {
+        verified = true;
       }
-      return answer;
+      return card.transceive(apdu);
     };
+    let refused = false;
     storage.getSecureStrict.mockImplementation(async (k: string) => {
-      if (loaded && k === '@cashu_settlement_queue') {
+      if (verified && !refused && k === '@cashu_settlement_queue') {
+        refused = true;
         throw new Error('keychain read denied');
       }
       return realGet(k);
@@ -2347,7 +2475,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       });
       expect(result.changeLoaded).toBe(1);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringMatching(/witness recovery skipped/),
+        expect.stringMatching(/needs-card recovery skipped/),
         expect.stringContaining('keychain read denied'),
       );
     } finally {
@@ -2356,17 +2484,11 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     }
   });
 
-  it('a failure BEFORE the swap is not paid: a burn that loses the tag', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    const transceive: Transceiver = async apdu => {
-      if (apdu[1] === 0x20) {
-        throw new Error('Tag was lost.');
-      }
-      return card.transceive(apdu);
-    };
+  it('a failure BEFORE the swap is not paid: a SIGN that loses the tag before the card commits', async () => {
+    const card = pinCard([16], {dropBeforeSign: () => true});
 
     const failure = await chargeCard({
-      transceive,
+      transceive: card.transceive,
       amountSat: 16,
       pin: '1234',
       mintUrl: MINT_URL,
@@ -2376,12 +2498,13 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
     expect(failure).toBeInstanceOf(PhaseError);
     expect(failure.message).toMatch(/^\[burning 16 sat/);
     expect(isPaidFailure(failure)).toBe(false);
-    expect(mockMintChargeChange).not.toHaveBeenCalled();
+    expect(card.burnCount).toBe(0);
+    expect(testMint().swaps).toHaveLength(0);
   });
 
-  it('a swap that fails with change owed is not paid: nothing reached the till', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
-    mockMintChargeChange.mockRejectedValueOnce(new Error('offline'));
+  it('a signed swap that fails ambiguously with change owed is PAID (ENG-674 blocking 2): nothing reached the till, the change is queued', async () => {
+    const card = pinCard([16]);
+    testMint().failAll = OFFLINE();
 
     const failure = await chargeCard({
       transceive: card.transceive,
@@ -2391,27 +2514,31 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       now: 1000,
     }).catch(e => e);
 
+    // The card already signed and burned for this bill and its own change:
+    // a transport failure on the swap must never be reported unpaid, or the
+    // screen offers "Tap card again" and burns the card a second time for
+    // the same bill (the exact bug ENG-674 blocking 2 fixes).
     expect(failure).toBeInstanceOf(PhaseError);
-    expect(failure.message).toMatch(/^\[settling payment/);
-    expect(isPaidFailure(failure)).toBe(false);
+    expect(failure.message).toMatch(
+      /^\[settling payment and minting change \(change owed, next tap\)/,
+    );
+    expect(isPaidFailure(failure)).toBe(true);
+    expect(tillProofs()).toEqual([]);
+    // Nothing settled or failed: the entry stays queued, witness and exact
+    // outputs intact, for the drain's next online run.
+    const entries = await listSettlements();
+    expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
   });
 });
 
 describe('the burn point: onBurnStart (ENG-645)', () => {
-  it('fires once, after the PIN verify and before the first burn APDU', async () => {
-    const card = fakeCard({
-      slots: [
-        {amount: 8, status: 0x01},
-        {amount: 4, status: 0x01},
-      ],
-      pin: '1234',
-    });
+  it('fires once, after the PIN verify and before SPEND_ALL_SIGN', async () => {
+    const card = pinCard([8, 4]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 12,
     });
     expect(preRead.plan.slots).toHaveLength(2);
-    mockMintChargeChange.mockResolvedValueOnce({change: [], till: []});
     const before = card.sent.length;
     const sentAtBurnStart: number[][] = [];
     const phases: string[] = [];
@@ -2430,22 +2557,28 @@ describe('the burn point: onBurnStart (ENG-645)', () => {
       onBurnStart,
     });
 
-    // Once, for both burns.
+    // Once, for the one payment of both pieces.
     expect(onBurnStart).toHaveBeenCalledTimes(1);
-    // The PIN was verified (0x40) and no SPEND_PROOF (0x20) had gone out.
+    // The PIN was verified (0x40) and no SPEND_ALL_SIGN (0x24) had gone out.
     expect(sentAtBurnStart[0]).toContain(0x40);
-    expect(sentAtBurnStart[0]).not.toContain(0x20);
-    // Every burn went out after it.
+    expect(sentAtBurnStart[0]).not.toContain(0x24);
+    // The one signature went out after it, burning both.
     const session = card.sent.slice(before).map(insOf);
-    expect(session.filter(i => i === 0x20)).toHaveLength(2);
-    expect(session.slice(0, sentAtBurnStart[0].length)).not.toContain(0x20);
-    // On the stage, it lands between the verify and the first burn.
+    expect(session.filter(i => i === 0x24)).toHaveLength(1);
+    expect(card.burnCount).toBe(2);
+    // On the stage, the burn phases (one per piece) land after the verify.
     expect(phases).toContain('verifying PIN');
-    expect(phases.some(p => p.startsWith('burning'))).toBe(true);
+    expect(phases.filter(p => p.startsWith('burning'))).toEqual([
+      'burning 8 sat (proof 1/2)',
+      'burning 4 sat (proof 2/2)',
+    ]);
+    expect(phases.indexOf('verifying PIN')).toBeLessThan(
+      phases.indexOf('burning 8 sat (proof 1/2)'),
+    );
   });
 
   it('is not called when the charge fails before the burn: a wrong PIN', async () => {
-    const card = fakeCard({slots: [{amount: 16, status: 0x01}], pin: '1234'});
+    const card = pinCard([16]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
@@ -2469,18 +2602,8 @@ describe('the burn point: onBurnStart (ENG-645)', () => {
   });
 
   it('is not called when owed change from an earlier charge is refused before the burn', async () => {
-    await recordOwedChange(
-      CARD_PUBKEY_HEX,
-      [changeProof(4, '71'.repeat(32))],
-      {mintUrl: MINT_URL, unit: 'sat'},
-      1000,
-    );
-    const card = fakeCard({
-      slots: [{amount: 16, status: 0x01}],
-      pin: '1234',
-      maxSlots: 4,
-      refuseLoad: () => true,
-    });
+    const card = pinCard([16], {slotCount: 4, refuseLoad: () => 0x6a84});
+    await owedFromEarlierCharge([4], [card]);
     const preRead = await readAndPlan({
       transceive: card.transceive,
       amountSat: 16,
@@ -2503,5 +2626,668 @@ describe('the burn point: onBurnStart (ENG-645)', () => {
     expect(isPaidFailure(failure)).toBe(false);
     expect(onBurnStart).not.toHaveBeenCalled();
     expect(card.burnCount).toBe(0);
+  });
+
+  it('is not called when the card refuses to begin the payment', async () => {
+    const card = pinCard([16]);
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+    card.slots[0]!.status = 2;
+    const onBurnStart = jest.fn();
+
+    const failure = await executeCharge({
+      ...preRead,
+      transceive: card.transceive,
+      amountSat: 16,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      onBurnStart,
+    }).catch(e => e);
+
+    expect(failure.message).toMatch(
+      /^\[preparing the payment\] SPEND_ALL_BEGIN failed/,
+    );
+    expect(onBurnStart).not.toHaveBeenCalled();
+    expect(isPaidFailure(failure)).toBe(false);
+  });
+});
+
+describe('ENG-674 review round 2', () => {
+  const GET_PIECES = 0x17;
+  /** P2 of every GET_PIECES the card was sent. */
+  const piecesForms = (card: FakeCard2) =>
+    card.sent.filter(a => a[1] === GET_PIECES).map(a => a[3]);
+
+  describe('no verified signature is never a success (blocking)', () => {
+    it.each([
+      ['with DLEQ (offline-verified)', true],
+      ['without DLEQ (requiresOnline)', false],
+    ])(
+      'a card whose SIGN and AGAIN answers do not verify, on an exact bill %s: refused (not paid, no re-charge), nothing in the till',
+      async (_, withDleq) => {
+        const card = pinCard([8], {badSignature: true, withDleq});
+        const failure = await chargeCard({
+          transceive: card.transceive,
+          amountSat: 8,
+          pin: '1234',
+          mintUrl: MINT_URL,
+          now: 1000,
+        }).catch(e => e);
+
+        expect(failure).toBeInstanceOf(PhaseError);
+        expect(
+          failure.message.startsWith(`[${PHASE_CARD_SIGNATURE_INVALID}]`),
+        ).toBe(true);
+        // Nothing will ever settle a `failed` payment: it is NOT paid (so
+        // never recorded as a sale) and, the card having burned, it is
+        // never charged again either.
+        expect(isPaidFailure(failure)).toBe(false);
+        expect(isRefusedAfterBurn(failure)).toBe(true);
+        const parsed = parseFailure(failure.message);
+        expect(
+          failureBody(parsed, {
+            burnsDone: 1,
+            paidSat: 8,
+            changeSat: 0,
+            paid: true,
+            fmt: n => `${n} sats`,
+          }),
+        ).toBe(SIGNATURE_INVALID_BODY);
+        // No promise of a settlement that cannot come.
+        expect(SIGNATURE_INVALID_BODY).not.toMatch(/keeps trying|next tap/i);
+        // Nothing reached the mint, nothing reached the till.
+        expect(testMint().swaps).toHaveLength(0);
+        expect(tillProofs()).toEqual([]);
+        const [entry] = await listSettlements();
+        expect(entry.status).toBe('failed');
+        expect(entry.witness).toBeUndefined();
+      },
+    );
+
+    it('a refused signature whose failed mark the store will not take is still refused, never "lost"', async () => {
+      const card = pinCard([8], {badSignature: true});
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 8,
+      });
+      // Every queue write after the payment is recorded fails: the entry
+      // stays `needs-card` on disk, but the card DID answer.
+      const storage = jest.requireMock('../../src/services/secureStorage');
+      const realSet = storage.setSecure.getMockImplementation();
+      let writes = 0;
+      storage.setSecure.mockImplementation(async (k: string, v: string) => {
+        if (k.includes('settlement') && ++writes > 1) {
+          throw new Error('keychain refused');
+        }
+        return realSet(k, v);
+      });
+      const failure = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 8,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+      storage.setSecure.mockImplementation(realSet);
+
+      expect(
+        failure.message.startsWith(`[${PHASE_CARD_SIGNATURE_INVALID}]`),
+      ).toBe(true);
+      expect(isRefusedAfterBurn(failure)).toBe(true);
+      expect(isPaidFailure(failure)).toBe(false);
+    });
+
+    it('a lost SIGN answer on a bill with change is unconfirmed too, never "change owed" as if settled, and promises only the next tap', async () => {
+      const card = pinCard([16], {
+        loseSignAnswer: () => true,
+        loseAgain: () => true,
+      });
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+      expect(failure.message.startsWith(`[${PHASE_SETTLING_NEEDS_CARD}]`)).toBe(
+        true,
+      );
+      expect(isPaidFailure(failure)).toBe(true);
+      expect(testMint().swaps).toHaveLength(0);
+      expect((await listSettlements())[0].status).toBe('needs-card');
+      const parsed = parseFailure(failure.message);
+      // Titled "Not confirmed yet" (the unconfirmed phase), never "Paid".
+      expect(settleUnconfirmed(parsed)).toBe(true);
+      // Its own body: the terminal is NOT retrying on its own.
+      expect(
+        failureBody(parsed, {
+          burnsDone: 1,
+          paidSat: 10,
+          changeSat: 6,
+          paid: true,
+          fmt: n => `${n} sats`,
+        }),
+      ).toBe(NEEDS_CARD_BODY);
+      expect(NEEDS_CARD_BODY).not.toMatch(/keeps trying/i);
+      expect(NEEDS_CARD_BODY).not.toBe(UNCONFIRMED_BODY);
+      // It promises only what holds (SPEND_ALL_AGAIN gives the card's LAST
+      // signature: a payment made anywhere else first replaces it). Not
+      // confirmed; recoverable only if the card's next payment is on this
+      // terminal; hold the goods. Never that it WILL be recovered.
+      expect(NEEDS_CARD_BODY).toMatch(/this payment is not confirmed/);
+      expect(NEEDS_CARD_BODY).toMatch(
+        /recovered only if the card's next payment is made on this terminal/,
+      );
+      expect(NEEDS_CARD_BODY).toMatch(/Hold the goods/);
+      expect(NEEDS_CARD_BODY).not.toMatch(/is recovered|will be recovered/i);
+      expect(NEEDS_CARD_BODY).not.toMatch(/until then/i);
+      expect(NEEDS_CARD_BODY).not.toMatch(/\u2014|crypto/i);
+    });
+  });
+
+  describe('session 2 is the card session 1 read (AUTH, spec/APDU.md Payment Flow)', () => {
+    it('another card with the same PIN and layout is refused at AUTH: no PIN, no owed change, no AGAIN, no burn, and card A keeps its entries', async () => {
+      // Card A: read in session 1, owed change from an earlier charge, and
+      // a needs-card payment whose signature was lost.
+      const cardA = pinCard([8, 16], {
+        slotCount: 8,
+        loseSignAnswer: () => true,
+        loseAgain: () => true,
+      });
+      await chargeCard({
+        transceive: cardA.transceive,
+        amountSat: 8,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 500,
+      }).catch(e => e);
+      const [lostA] = await listSettlements();
+      expect(lostA.status).toBe('needs-card');
+      await owedFromEarlierCharge([4], [cardA]);
+
+      const preRead = await readAndPlan({
+        transceive: cardA.transceive,
+        amountSat: 16,
+      });
+      expect(preRead.owedChange).toHaveLength(1);
+      // As session 1 left it (the read opened the piece from card A).
+      const owedBefore = owedStore();
+      expect(owedBefore).toHaveLength(1);
+      expect(owedBefore[0].status).toBe('owed');
+
+      // Card B: same PIN, same denominations in the same slots, another key.
+      const cardB = cardWithPieces([8, 16], {
+        pin: '1234',
+        slotCount: 8,
+        privateKey: '22'.repeat(32),
+      });
+      expect(cardB.pubkey).not.toBe(cardA.pubkey);
+      const onBurnStart = jest.fn();
+      const failure = await executeCharge({
+        ...preRead,
+        transceive: cardB.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 2000,
+        onBurnStart,
+      }).catch(e => e);
+
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toBe(`[reading card] ${NOT_THE_CARD_READ}`);
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(isRefusedAfterBurn(failure)).toBe(false);
+      expect(onBurnStart).not.toHaveBeenCalled();
+      // Only SELECT and AUTH reached card B: no VERIFY_PIN (0x40), no
+      // LOAD_PROOF (0x30), no AGAIN (0x25), no SPEND_ALL_BEGIN (0x22).
+      expect(cardB.insSent).toEqual([0xa4, 0x15]);
+      expect(cardB.burnCount).toBe(0);
+      // Card A's needs-card payment and owed change are untouched.
+      const after = await listSettlements();
+      expect(after).toHaveLength(1);
+      expect(after[0].status).toBe('needs-card');
+      expect(owedStore()).toEqual(owedBefore);
+      expect(testMint().swaps).toHaveLength(0);
+    });
+  });
+
+  describe('a keyset refresh that fails is not fresh (fails closed)', () => {
+    /** Keysets listed (the ping is 200), but the keys fetch fails. */
+    const refreshFails = () => {
+      setMintOffline(new Error('GET /v1/keys: 502'));
+      return {mockRestore: () => setMintOffline(null)};
+    };
+    afterEach(() => {
+      setMintOffline(null);
+      setMintHangs(false);
+    });
+
+    it('a change bill with a stale cached fee is refused before SPEND_ALL_BEGIN', async () => {
+      const card = pinCard([16]);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 10,
+      });
+      expect(preRead.plan.changeSat).toBeGreaterThan(0);
+      // The cache is stale: a fee the mint no longer charges.
+      const [kept] = await cachedKeysets(MINT_URL);
+      await saveKeysets(MINT_URL, [{...kept, inputFeePpk: 900}]);
+      const spy = refreshFails();
+      const sentBefore = card.sent.length;
+
+      const failure = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+      spy.mockRestore();
+
+      expect(failure.message).toBe(
+        `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+      );
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(card.sent.slice(sentBefore).map(insOf)).not.toContain(0x22);
+      expect(card.burnCount).toBe(0);
+      await expect(listSettlements()).resolves.toEqual([]);
+    });
+
+    it('a requiresOnline bill is refused before SPEND_ALL_BEGIN', async () => {
+      const card = pinCard([8], {withDleq: false});
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 8,
+      });
+      expect(preRead.requiresOnline).toBe(true);
+      const spy = refreshFails();
+      const sentBefore = card.sent.length;
+
+      const failure = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 8,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+      spy.mockRestore();
+
+      expect(failure.message).toBe(`[preparing the payment] ${ONLINE_ONLY}`);
+      expect(card.sent.slice(sentBefore).map(insOf)).not.toContain(0x22);
+      expect(card.burnCount).toBe(0);
+    });
+
+    it('an exact bill verified offline still goes ahead on the cache', async () => {
+      const card = pinCard([8]);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 8,
+      });
+      expect(preRead.requiresOnline).toBe(false);
+      const spy = refreshFails();
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 8,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+        // The mint comes back for the swap itself.
+        onBurnStart: () => spy.mockRestore(),
+      }).catch(e => e);
+      spy.mockRestore();
+      expect(result).not.toBeInstanceOf(Error);
+      expect(card.burnCount).toBe(1);
+      expect(testMint().swaps).toHaveLength(1);
+    });
+
+    it('a slow keys fetch is bounded: refused within the budget, never signed on the cache', async () => {
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+      });
+      try {
+        const card = pinCard([16]);
+        const preRead = await readAndPlan({
+          transceive: card.transceive,
+          amountSat: 10,
+        });
+        setMintHangs(true);
+        const pending = executeCharge({
+          ...preRead,
+          transceive: card.transceive,
+          amountSat: 10,
+          pin: '1234',
+          mintUrl: MINT_URL,
+          now: 1000,
+        }).catch(e => e);
+        await jest.advanceTimersByTimeAsync(MINT_BUDGET_MS + 1);
+        const failure = await pending;
+        expect(failure.message).toBe(
+          `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+        );
+        expect(card.burnCount).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  describe("the owner's lock (GET_INFO byte 10)", () => {
+    it('a locked card is refused before anything is planned or burned', async () => {
+      const card = pinCard([16], {locked: true});
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+      }).catch(e => e);
+
+      expect(failure.message).toBe(CARD_LOCKED);
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(
+        card.insSent.filter(i => (i >= 0x22 && i <= 0x26) || i === 0x30),
+      ).toEqual([]);
+      expect(card.insSent).not.toContain(GET_PIECES);
+      await expect(listSettlements()).resolves.toEqual([]);
+      expect(
+        failureBody(parseFailure(failure.message), {
+          burnsDone: 0,
+          paidSat: 16,
+          changeSat: 0,
+          fmt: n => `${n} sats`,
+        }),
+      ).toBe(CARD_LOCKED_BODY);
+      expect(CARD_LOCKED_BODY).toMatch(/^Nothing was taken from the card\./);
+    });
+
+    it('a blocked PIN is not the lock: it keeps its own refusal', async () => {
+      const card = pinCard([16], {pinBlocked: true});
+      await expect(
+        readAndPlan({transceive: card.transceive, amountSat: 16}),
+      ).rejects.toThrow(/PIN is blocked/);
+    });
+  });
+
+  describe('the piece format and the unit, before signing (NUT-XX)', () => {
+    it.each([3, 5])(
+      'pieces of format %i: needs an update, nothing burned',
+      async format => {
+        const card = pinCard([16], {format});
+        const failure = await readAndPlan({
+          transceive: card.transceive,
+          amountSat: 16,
+        }).catch(e => e);
+        expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+        expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      },
+    );
+
+    it('a card whose unit is not sat (GET_CARD unit 1) is refused before anything burns', async () => {
+      const card = pinCard([16], {unit: 1});
+      await expect(
+        chargeCard({
+          transceive: card.transceive,
+          amountSat: 16,
+          pin: '1234',
+          mintUrl: MINT_URL,
+        }),
+      ).rejects.toThrow(CARD_NOT_SATS);
+      expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      await expect(listSettlements()).resolves.toEqual([]);
+    });
+  });
+
+  describe('the payment flow reads the short listing (spec/APDU.md "Payment Flow")', () => {
+    it('plans from GET_PIECES P2 = 3 and reads only the chosen slots by name (P2 = 2); never the whole form', async () => {
+      const amounts = Array.from({length: 40}, (_, i) => 2 ** (i % 6));
+      const card = pinCard(amounts);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 33,
+      });
+
+      const forms = piecesForms(card);
+      expect(forms).not.toContain(0x00);
+      expect(forms.filter(f => f === 0x03)).toHaveLength(1);
+      const named = card.sent
+        .filter(a => a[1] === GET_PIECES && a[3] === 0x02)
+        .flatMap(a => a.slice(5, 5 + a[4]));
+      expect(named.sort((a, b) => a - b)).toEqual(
+        [...preRead.plan.slots].sort((a, b) => a - b),
+      );
+      expect(preRead.unspent).toHaveLength(40);
+      expect(preRead.pieces.map(p => p.slot)).toEqual(preRead.plan.slots);
+      expect(preRead.pieces.every(p => p.nonce && p.C)).toBe(true);
+
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 33,
+        pin: '1234',
+        mintUrl: MINT_URL,
+      });
+      expect(result.changeSat).toBe(0);
+    });
+
+    it('a chosen slot that does not hold what the listing said is refused before anything burns', async () => {
+      const card = pinCard([16], {
+        // The listing says 16; read by name, the slot answers 8.
+        namedOverride: slot => {
+          const s = card.slots[slot]!;
+          return [
+            1,
+            ...Array.from(Buffer.from(s.keysetId, 'hex')),
+            0,
+            0,
+            0,
+            8,
+            ...Array.from(Buffer.from(s.nonce, 'hex')),
+            ...Array.from(Buffer.from(s.C, 'hex')),
+            0,
+            0,
+            0,
+            0,
+          ];
+        },
+      });
+      const failure = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 16,
+      }).catch(e => e);
+      expect(failure).toBeInstanceOf(PhaseError);
+      expect(failure.message).toMatch(
+        /does not hold the piece the card listed/,
+      );
+      expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+    });
+
+    it('executeCharge refuses a plan whose pieces were never read whole, before any APDU', async () => {
+      const card = pinCard([16]);
+      const failure = await executeCharge({
+        transceive: card.transceive,
+        amountSat: 16,
+        plan: {slots: [0], burnedSat: 16, changeSat: 0},
+        unspent: [
+          {slot: 0, keysetId: KEYSET_ID.slice(0, 16), amount: 16, date: 0},
+        ],
+        cardPubkey: card.pubkey,
+        pin: '1234',
+        pinRequired: true,
+        mintUrl: MINT_URL,
+      }).catch(e => e);
+      expect(failure.message).toMatch(/has not read/);
+      expect(card.sent).toEqual([]);
+    });
+  });
+
+  describe('a needs-card payment signed with the PIN is not lost to a no-PIN bill', () => {
+    it('asks for the PIN, so SPEND_ALL_AGAIN runs after VERIFY_PIN and recovers the entry', async () => {
+      let lose = true;
+      const card = pinCard([8, 4, 2], {
+        allowance: 100,
+        loseSignAnswer: () => lose,
+        loseAgain: () => lose,
+      });
+      // Payment 1: over the allowance? No — signed WITH the PIN (the bill
+      // asked for it), its answer lost: needs-card.
+      const preRead1 = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 8,
+      });
+      await executeCharge({
+        ...preRead1,
+        pinRequired: true,
+        pinSet: true,
+        transceive: card.transceive,
+        amountSat: 8,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(() => {});
+      const [lost] = await listSettlements();
+      expect(lost.status).toBe('needs-card');
+      expect(card.lastSig?.noPin).toBe(false);
+      lose = false;
+
+      // Payment 2 fits the no-PIN allowance — but the PIN is asked for.
+      const preRead2 = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 4,
+      });
+      expect(preRead2.pinRequired).toBe(true);
+      await executeCharge({
+        ...preRead2,
+        transceive: card.transceive,
+        amountSat: 4,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 2000,
+      });
+
+      const lastSession = card.sent.slice(
+        card.sent.map(a => a[1]).lastIndexOf(0xa4),
+      );
+      const ins = lastSession.map(a => a[1]);
+      expect(ins.indexOf(0x40)).toBeLessThan(ins.indexOf(0x25));
+      expect(ins.indexOf(0x25)).toBeLessThan(ins.indexOf(0x22));
+      const entries = await listSettlements();
+      expect(entries.find(e => e.id === lost.id)?.status).toBe('pending');
+    });
+
+    it('with nothing to recover, an allowance bill still skips the PIN', async () => {
+      const card = pinCard([8], {allowance: 100});
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 8,
+      });
+      expect(preRead.pinRequired).toBe(false);
+    });
+  });
+
+  describe('an exact bill refreshes the cached keysets when the mint is there', () => {
+    it('a stale cached fee is refreshed before SPEND_ALL_BEGIN: the swap is not refused after the burn', async () => {
+      // The mint now charges 1,000 ppk an input; this terminal's cache
+      // still says 0. Signed on the cache, the outputs would be worth 16
+      // for 16 in, and the mint would refuse the swap after the burn.
+      resetTestMint({inputFeePpk: 1000});
+      __resetWalletCache();
+      await saveKeysets(MINT_URL, [
+        {...testMint().cachedKeyset(), inputFeePpk: 0},
+      ]);
+      const card = pinCard([16]);
+
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+
+      expect(result.changeSat).toBe(0);
+      expect(testMint().swaps).toHaveLength(1);
+      expect(tillProofs().reduce((t, p) => t + p.amount, 0)).toBe(15);
+      const kept = await cachedKeysets(MINT_URL);
+      expect(kept.find(k => k.id === KEYSET_ID)?.inputFeePpk).toBe(1000);
+    });
+
+    it("a stale 'inactive' cache on an exact bill is refreshed rather than refused", async () => {
+      await saveKeysets(MINT_URL, [
+        {...testMint().cachedKeyset(), active: false},
+      ]);
+      const card = pinCard([16]);
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      expect(result.changeSat).toBe(0);
+      expect(testMint().swaps).toHaveLength(1);
+    });
+
+    it('offline, the exact bill is taken on the cache as before', async () => {
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(OFFLINE());
+      testMint().failAll = OFFLINE();
+      try {
+        const card = pinCard([16]);
+        await chargeCard({
+          transceive: card.transceive,
+          amountSat: 16,
+          pin: '1234',
+          mintUrl: MINT_URL,
+        });
+        expect((await listSettlements())[0].status).toBe('pending');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('a mint refusal after the burn ends on Done, not "Tap card again"', () => {
+    it('is not paid, is refused-after-burn, and its copy says so', async () => {
+      const forgedC = new FakeCard2().pubkey;
+      const card = new FakeCard2({
+        pin: '1234',
+        pieces: [
+          {
+            amount: 16,
+            nonce: pieceNonce(901),
+            C: forgedC,
+            keysetId: KEYSET_ID.slice(0, 16),
+          },
+        ],
+      });
+      const failure = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 16,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      }).catch(e => e);
+
+      expect(isPaidFailure(failure)).toBe(false);
+      expect(isRefusedAfterBurn(failure)).toBe(true);
+      const parsed = parseFailure(failure.message);
+      expect(settleRefused(parsed)).toBe(true);
+      expect(
+        failureBody(parsed, {
+          burnsDone: 1,
+          paidSat: 16,
+          changeSat: 0,
+          paid: true,
+          fmt: n => `${n} sats`,
+        }),
+      ).toBe(REFUSED_BODY);
+      expect(REFUSED_BODY).not.toMatch(/\bis paid\b|\bare paid\b/);
+    });
   });
 });

@@ -1,8 +1,9 @@
 # The first change LOAD reaches the card but its answer is lost (deep link
 # dropLoad=1: the bridge forwards the APDU, then reports the tag lost).
-# The 4-sat piece is ON the card and still "owed" on disk; the balance read
-# must count it once and show only the 1 sat still waiting, and nothing
-# may load it a second time.
+# The 4-sat piece is ON the card and still "owed" on disk. The balance tap
+# after the charge is the tap after a payment: the card's change grant lets
+# the 1 sat still owed go on with no PIN. The 4 is reconciled from the
+# card's openings (its opening is gone: it landed) and never loaded twice.
 appId: com.flash.pos
 name: 'eCash card: a lost LOAD answer is reconciled, never duplicated'
 tags:
@@ -41,11 +42,14 @@ tags:
 - runFlow:
     file: common/balance.yaml
     env:
-      SATS: '4'
+      SATS: '5'
 - assertVisible:
+    id: 'balance-added'
+    text: 'Change added · 1 sat'
+- assertNotVisible:
     id: 'balance-owed'
-    text: 'Change waiting · 1 sat — added on the next charge'
+# The 4 once and the 1 once: assert-state fails on any nonce in two slots.
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'
+      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'

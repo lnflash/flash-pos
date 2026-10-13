@@ -34,10 +34,18 @@ type RootStackType = {
     preRead?: {
       plan: {slots: number[]; burnedSat: number; changeSat: number};
       unspent: unknown[];
+      /** Protocol 2.0: the planned pieces whole (CardProofSlot[]). */
+      pieces?: unknown[];
       cardPubkey: string;
       pinRequired: boolean;
       /** Change from an earlier charge the card is still owed (OwedChangeEntry[]). */
       owedChange: unknown[];
+      /** Protocol 2.0: the card has a PIN (the bill may still be under its no-PIN allowance). */
+      pinSet?: boolean;
+      /** Protocol 2.0: the card's refund key, for a dated piece's secret. */
+      refundKey?: string | null;
+      /** Protocol 2.0: a planned piece could not be checked offline. */
+      requiresOnline?: boolean;
     };
   };
   // A Flashcard v2 tapped on the keypad (hooks/useKeypadCardReader.ts): the

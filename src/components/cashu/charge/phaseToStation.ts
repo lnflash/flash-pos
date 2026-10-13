@@ -71,6 +71,8 @@ export const PHASE_READING = 'reading card';
 export const PHASE_PIN = 'verifying PIN';
 export const PHASE_SETTLING = 'settling payment and minting change';
 export const PHASE_CHANGE = 'writing change to card';
+/** Protocol 2.0: the commands before the card signs (`executeCharge`). */
+export const PHASE_PREPARING = 'preparing the payment';
 const BURN_RE = /^burning (\d+) sat \(proof (\d+)\/(\d+)\)$/;
 const RESIGN_RE = /^re-signing recovered (\d+) sat$/;
 /** `writeOwedChange`: change from an earlier charge, written before the burn. */
@@ -115,7 +117,11 @@ export function mapPhase(prev: StageState, ev: PhaseEvent): StageState {
       station: max(prev.station, 3),
       event: 'burn',
       pinSkipped: prev.pinSkipped || prev.station < 2,
-      burn: {amount: Number(amount), index: Number(index), total: Number(total)},
+      burn: {
+        amount: Number(amount),
+        index: Number(index),
+        total: Number(total),
+      },
       burnsDone: prev.burnsDone + 1,
     };
   }
@@ -178,6 +184,9 @@ export function friendlyLabel(
   }
   if (phase === PHASE_PIN) {
     return {title: 'Checking the PIN'};
+  }
+  if (phase === PHASE_PREPARING) {
+    return {title: 'Getting the payment ready'};
   }
   if (state.event === 'burn' && state.burn) {
     const {amount, index} = state.burn;
