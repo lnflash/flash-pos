@@ -9,7 +9,12 @@ import {AMOUNT_H, FINALE_BADGE, type ChargeLayout} from './geometry';
 import HoldPill, {type HoldVariant} from './HoldPill';
 import Ledger from './Ledger';
 import MoneyPool from './MoneyPool';
-import {changeOnCard, failureBody, parseFailure} from './money';
+import {
+  changeOnCard,
+  failureBody,
+  parseFailure,
+  settleUnconfirmed,
+} from './money';
 import {friendlyLabel, type StageState} from './phaseToStation';
 import StatusBlock, {type StatusShown, type StatusTexts} from './StatusBlock';
 import Stepper from './Stepper';
@@ -76,6 +81,11 @@ export const PAID_CHANGE_NOT_ON_CARD_TITLE = 'Paid — change not on card';
  * change is on the card (only the payment bookkeeping failed).
  */
 export const PAID_FAILURE_TITLE = 'Paid';
+/**
+ * ENG-674: the card signed, but the mint never confirmed a payment whose
+ * pieces could not be checked offline. Not "Paid": they may be forged.
+ */
+export const UNCONFIRMED_TITLE = 'Not confirmed yet';
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -151,7 +161,9 @@ function ChargeStage(props: ChargeStageProps) {
       // A bookkeeping failure whose change all landed is plain "Paid": the
       // change is on the card (`changeOnCard`).
       errorTitle: paid
-        ? changeSat > 0 && !changeOnCard(failure)
+        ? settleUnconfirmed(failure)
+          ? UNCONFIRMED_TITLE
+          : changeSat > 0 && !changeOnCard(failure)
           ? PAID_CHANGE_NOT_ON_CARD_TITLE
           : PAID_FAILURE_TITLE
         : failure.cardFull

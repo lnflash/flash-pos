@@ -154,6 +154,23 @@ const SETTLING_CHANGE_OWED = /\(change owed, next tap\)$/i;
  * write (the payment bookkeeping, say), and the screen must end it as paid
  * all the same (ENG-642).
  */
+/**
+ * ENG-674: the card signed and burned, but the bill's pieces could not all
+ * be checked offline (`requiresOnline`) and the swap, their only check,
+ * failed in a way that may not have reached the mint —
+ * `PHASE_SETTLING_UNCONFIRMED` in `cashuCharge.ts`. `PhaseError.paid` is set
+ * so the screen never offers a re-charge, but the payment is NOT confirmed:
+ * the pieces may be forged. The screen must not say "Paid".
+ */
+const SETTLING_UNCONFIRMED = /mint has not confirmed it/i;
+
+export function settleUnconfirmed(failure: Failure): boolean {
+  return SETTLING_UNCONFIRMED.test(failure.phase ?? '');
+}
+
+export const UNCONFIRMED_BODY =
+  "The card has paid, but the mint hasn't confirmed this payment yet. Hold the goods until it settles: the terminal keeps trying while it is online. Don't charge the card again.";
+
 export function failedAfterSwap(failure: Failure): boolean {
   const phase = failure.phase ?? '';
   return CHANGE_WRITE.test(phase) || SETTLING_CHANGE_OWED.test(phase);
@@ -236,6 +253,10 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     return failure.cardFull
       ? `${saved} and will be added once the card has a free slot.`
       : `${saved} and will be added the next time this card is charged.`;
+  }
+  if (settleUnconfirmed(failure)) {
+    // Never "paid": the mint has not confirmed it (ENG-674).
+    return UNCONFIRMED_BODY;
   }
   if (ctx.paid) {
     // Paid, but not on a change write: the payment bookkeeping or a later

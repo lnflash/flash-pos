@@ -13,6 +13,7 @@ import userSlice from '../../src/store/slices/userSlice';
 import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import {PhaseError} from '../../src/services/phaseError';
+import {UNCONFIRMED_BODY} from '../../src/components/cashu/charge/money';
 import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
 
 const mockWithCardSession = jest.fn();
@@ -948,6 +949,37 @@ describe('CashuCardCharge', () => {
       // card on its own (this is the exact bug ENG-674 blocking 2 fixes:
       // before it, this failure was thrown unpaid and the screen offered a
       // retry here).
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('pieces that could not be checked offline, whose swap fails ambiguously: "Not confirmed yet", never "Paid", and no re-charge (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          onPhase('settling payment');
+          throw paidFailure(
+            '[settling payment — the mint has not confirmed it] the request never reached the network (TypeError: Network request failed)',
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: PLAN});
+      await act(async () => {});
+      await expectPaidNoRetry(utils, UNCONFIRMED_BODY, 'Not confirmed yet');
+      for (const paidTitle of ['Paid', 'Paid — change not on card']) {
+        expect(utils.queryByText(paidTitle, all)).toBeNull();
+      }
       await act(async () => {
         jest.advanceTimersByTime(5000);
       });

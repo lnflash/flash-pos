@@ -8,8 +8,10 @@ import {
   parseFailure,
   pinFailureText,
   runningTotals,
+  settleUnconfirmed,
   DAILY_LIMIT_BODY,
   PIN_NEEDED_TEXT,
+  UNCONFIRMED_BODY,
 } from '../../../src/components/cashu/charge/money';
 import {splitPow2} from '../../../src/utils/denominations';
 
@@ -569,5 +571,37 @@ describe('protocol 2.0 copy (decision 2, Flash voice)', () => {
     expect(failureBody(parseFailure('This card needs an update'), ctx)).toBe(
       'This card needs an update',
     );
+  });
+});
+
+describe('settleUnconfirmed (ENG-674)', () => {
+  const unconfirmed = parseFailure(
+    '[settling payment — the mint has not confirmed it] the request never reached the network',
+  );
+
+  it('matches only the unconfirmed settling phase', () => {
+    expect(settleUnconfirmed(unconfirmed)).toBe(true);
+    expect(
+      settleUnconfirmed(parseFailure('[settling payment] mint unreachable')),
+    ).toBe(false);
+    expect(
+      settleUnconfirmed(
+        parseFailure(
+          '[settling payment and minting change (change owed, next tap)] x',
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it('never says paid, even when the charge is flagged paid to block a re-charge', () => {
+    const body = failureBody(unconfirmed, {
+      burnsDone: 1,
+      paidSat: 16,
+      changeSat: 0,
+      paid: true,
+      fmt: (n: number) => `${n} sats`,
+    });
+    expect(body).toBe(UNCONFIRMED_BODY);
+    expect(body).not.toMatch(/\bis paid\b|\bare paid\b|nothing more to do/);
   });
 });
