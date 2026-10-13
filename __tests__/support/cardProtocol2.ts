@@ -326,7 +326,11 @@ export function resetTestMint(
 export class MockWallet {
   constructor(readonly mintUrl: string) {}
   loadMint = async () => {
-    const g = globalThis as {__mintOffline?: unknown};
+    const g = globalThis as {__mintOffline?: unknown; __mintHangs?: boolean};
+    if (g.__mintHangs) {
+      // A mint that lists its keysets but never finishes the keys fetch.
+      await new Promise(() => {});
+    }
     if (g.__mintOffline) {
       throw g.__mintOffline;
     }
@@ -343,6 +347,11 @@ export class MockWallet {
 /** Make the mock wallet's `loadMint` fail (offline), or clear it with null. */
 export function setMintOffline(error: unknown) {
   (globalThis as {__mintOffline?: unknown}).__mintOffline = error;
+}
+
+/** Make the mock wallet's `loadMint` never settle (a slow mint), or clear it. */
+export function setMintHangs(hangs: boolean) {
+  (globalThis as {__mintHangs?: boolean}).__mintHangs = hangs;
 }
 
 // ── the card ─────────────────────────────────────────────────────────────────

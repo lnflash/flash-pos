@@ -14,7 +14,9 @@ import invoiceSlice from '../../src/store/slices/invoiceSlice';
 import transactionHistorySlice from '../../src/store/slices/transactionHistorySlice';
 import {PhaseError} from '../../src/services/phaseError';
 import {
+  NEEDS_CARD_BODY,
   REFUSED_BODY,
+  SIGNATURE_INVALID_BODY,
   UNCONFIRMED_BODY,
 } from '../../src/components/cashu/charge/money';
 import {CardError, CardNeedsUpdateError} from '../../src/services/cashuCard';
@@ -1025,6 +1027,90 @@ describe('CashuCardCharge', () => {
       expect(
         utils.store.getState().transactionHistory.transactions,
       ).toHaveLength(0);
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+    });
+
+    it('the card answers with a signature that does not verify: "Not paid", Done only, not recorded as a sale, no promise of a settlement (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          throw new PhaseError(
+            "settling payment — the card's signature is not valid",
+            new Error(
+              "the card's signature does not verify against the payment",
+            ),
+            {refused: true},
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: EXACT});
+      await act(async () => {});
+      const {getByTestId, getByText, queryByText} = utils;
+      expect(getByTestId('error-title').props.children).toBe(
+        "Not paid — the card's signature is not valid",
+      );
+      expect(getByTestId('error-body').props.children).toBe(
+        SIGNATURE_INVALID_BODY,
+      );
+      for (const wrong of [
+        'Paid',
+        'Not confirmed yet',
+        'Paid — change not on card',
+      ]) {
+        expect(queryByText(wrong, all)).toBeNull();
+      }
+      expect(queryByText(/keeps trying/, all)).toBeNull();
+      // The card has burned: Done is the one way out, never a re-charge.
+      expect(queryByText('Tap card again', all)).toBeNull();
+      expect(queryByText('Cancel', visible)).toBeNull();
+      expect(getByText('Done', visible)).toBeTruthy();
+      // Not a sale: nothing goes into the history, the invoice is kept.
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(1);
+      expect(
+        utils.store.getState().transactionHistory.transactions,
+      ).toHaveLength(0);
+    });
+
+    it('the card burned and its answer was lost: "Not confirmed yet", recovered only at the next tap, no re-charge (ENG-674)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      mockExecuteCharge.mockImplementation(
+        async ({
+          onPhase,
+          onBurnStart,
+        }: {
+          onPhase: (p: string) => void;
+          onBurnStart?: () => void;
+        }) => {
+          onPhase('reading card');
+          onBurnStart?.();
+          onPhase('burning 16 sat (proof 1/1)');
+          throw paidFailure(
+            '[settling payment — the mint has not confirmed it (signature lost, next tap)] the card burned the payment and its signature was lost',
+          );
+        },
+      );
+      const utils = await renderScreen({preRead: EXACT});
+      await act(async () => {});
+      await expectPaidNoRetry(utils, NEEDS_CARD_BODY, 'Not confirmed yet');
+      expect(utils.queryByText(UNCONFIRMED_BODY, all)).toBeNull();
       await act(async () => {
         jest.advanceTimersByTime(5000);
       });

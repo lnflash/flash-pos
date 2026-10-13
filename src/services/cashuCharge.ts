@@ -28,8 +28,11 @@ import {utf8ToBytes} from '@noble/hashes/utils';
 
 import {cachedTipHeader} from './blockHeader';
 import {
+  auth,
+  CardAuthError,
   CardNeedsUpdateError,
   CardProtocolError,
+  fromHex,
   getBalance,
   getCard,
   getChange,
@@ -122,7 +125,16 @@ export const CARD_NOT_SATS =
 /** The piece format this terminal signs for: format-4 SIG_ALL pieces (GET_INFO byte 8, GET_CARD byte 0). */
 export const CARD_PIECE_FORMAT = 4;
 
-/** The copy for a card whose pieces cannot be checked offline, with the mint out of reach. */
+/**
+ * How long the charge waits on the mint inside the tap, for the ping and
+ * then for the keyset refresh: the card is held on the reader meanwhile.
+ */
+export const MINT_BUDGET_MS = 3000;
+
+/**
+ * The copy for a card whose pieces cannot be checked offline, with the mint
+ * out of reach or answering without its keysets.
+ */
 export const ONLINE_ONLY =
   'This card can only be charged while this terminal is online.';
 
@@ -134,6 +146,16 @@ export const ONLINE_ONLY =
  */
 export const CHANGE_NEEDS_MINT =
   "This bill needs change, and this terminal needs to reach the mint first. Try again once it's back online.";
+
+/**
+ * The copy for a second tap by a card that is not the one the first tap
+ * read (ENG-674): AUTH against the key read in session 1 failed, before the
+ * PIN, any owed-change write, any SPEND_ALL_AGAIN or any burn. The plan,
+ * the owed change and the needs-card payments all belong to the first card,
+ * so nothing is sent to this one.
+ */
+export const NOT_THE_CARD_READ =
+  "This isn't the card that was read. Nothing was taken.";
 
 /**
  * Rank the ways to cover `amountSat` from the card's unspent slots, cheapest
@@ -441,6 +463,28 @@ export const PHASE_SETTLING_UNCONFIRMED =
  * "Tap card again", since the card has already burned.
  */
 export const PHASE_SETTLING_REFUSED = 'settling payment — the mint refused it';
+
+/**
+ * ENG-674: the card ANSWERED SPEND_ALL_SIGN, and neither that answer nor
+ * SPEND_ALL_AGAIN's verifies against the payment (`failed` in the queue: a
+ * broken card, or one that is not the card holding the key). Nothing reached
+ * the mint and nothing ever will: the payment has no witness, the drain
+ * skips it, and AGAIN is never asked for it again. Not paid — thrown with
+ * `PhaseError.refused`, so the screen ends on Done, records no sale and
+ * never charges the card again (it has burned).
+ */
+export const PHASE_CARD_SIGNATURE_INVALID =
+  "settling payment — the card's signature is not valid";
+
+/**
+ * ENG-674: the card burned the payment and its answer was lost, SIGN's and
+ * AGAIN's both (`needs-card`). Not confirmed, and not paid yet: the only way
+ * back is SPEND_ALL_AGAIN when this card next pays on this terminal (the
+ * till's `recoverNeedsCard`, before the next SPEND_ALL_BEGIN). Thrown with
+ * `PhaseError.paid` (the card has burned: never charge it again for this
+ * bill) under a phase that reads "Not confirmed yet", with its own body.
+ */
+export const PHASE_SETTLING_NEEDS_CARD = `${PHASE_SETTLING_UNCONFIRMED} (signature lost, next tap)`;
 
 /**
  * ENG-674 (blocking 2b): the swap failed in a way that may or may not have
@@ -1080,17 +1124,24 @@ export interface ExecuteChargeArgs {
   onBurnStart?: () => void;
 }
 
-/** The keysets of the planned pieces, from what is kept or, failing that, the mint. */
+/**
+ * The keysets of the planned pieces, from what is kept or, failing that and
+ * only when the mint has just answered in full (`fresh`), the mint.
+ */
 async function plannedKeysets(
   mintUrl: string,
   pieces: CardProofSlot[],
+  fresh: boolean,
 ): Promise<CachedKeyset[]> {
   const out: CachedKeyset[] = [];
   for (const piece of pieces) {
     let keyset: CachedKeyset;
     try {
       keyset = await keysetFor(mintUrl, piece.keysetId, {online: false});
-    } catch {
+    } catch (error) {
+      if (!fresh) {
+        throw error;
+      }
       keyset = await keysetFor(mintUrl, piece.keysetId, {online: true});
     }
     out.push(keyset);
@@ -1147,6 +1198,23 @@ export async function executeCharge({
   // command — without it Android answers 0x6E00 (CLA not supported) for
   // every verify/burn. Idempotent for the one-session wrapper.
   await step('reading card', () => selectApplet(transceive));
+
+  // AUTH against the key the FIRST tap read (spec/APDU.md, Payment Flow:
+  // AUTH before SPEND_ALL_BEGIN). Session 2 is a fresh tap: whatever is on
+  // the antenna now must prove it is that card before anything of that
+  // card's is sent to it — its PIN, the change it is owed (locked to its
+  // key), a SPEND_ALL_AGAIN whose answer would mark its needs-card payments
+  // failed, and the burn itself. The SIG_ALL signature proves the key too,
+  // but only after the card has burned (ENG-674).
+  await step('reading card', async () => {
+    try {
+      await auth(transceive, fromHex(cardPubkey, 'card key'));
+    } catch (error) {
+      throw error instanceof CardAuthError
+        ? new CardAuthError(NOT_THE_CARD_READ)
+        : error;
+    }
+  });
 
   if (pinRequired) {
     if (!pin) {
@@ -1212,20 +1280,26 @@ export async function executeCharge({
     // must never decide them while the mint can be asked (ENG-674). Out of
     // reach, an exact bill whose pieces all verified offline is still taken
     // on the cache; anything else is refused below, before anything burns.
-    const online = await mintReachable(mintUrl);
-    if (requiresOnline && !online) {
+    //
+    // "Online" means the keysets came back FRESH, not just that the mint
+    // answered a ping: a mint that lists its keysets but will not hand over
+    // the rest (a failed or slow keys fetch) leaves the cache as stale as
+    // having no mint at all, and is treated exactly so (ENG-674). The
+    // refresh runs inside the tap with the card held, so it is bounded by
+    // the same budget as the ping.
+    const fresh =
+      (await mintReachable(mintUrl, MINT_BUDGET_MS)) &&
+      (await refreshKeysets(mintUrl, MINT_BUDGET_MS));
+    if (requiresOnline && !fresh) {
       throw new Error(ONLINE_ONLY);
     }
-    if (changeSat > 0 && !online) {
+    if (changeSat > 0 && !fresh) {
       // The card is about to sign for change the mint has not been asked
       // about since whatever this terminal last cached — never (ENG-674
       // blocking 2a). Refused here, before SPEND_ALL_BEGIN: nothing burns.
       throw new Error(CHANGE_NEEDS_MINT);
     }
-    if (online) {
-      await refreshKeysets(mintUrl);
-    }
-    const keysets = await plannedKeysets(mintUrl, pieces);
+    const keysets = await plannedKeysets(mintUrl, pieces, fresh);
     const changeKeyset = keysets[0];
     if (changeSat > 0 && !changeKeyset.active) {
       throw new Error(
@@ -1300,7 +1374,7 @@ export async function executeCharge({
   } catch (error) {
     throw new PhaseError(phase, error);
   }
-  const {entry, signed} = spent;
+  const {entry, signed, signatureInvalid} = spent;
 
   let changeLoaded = 0;
   /** Sats of change the card has answered for this session. */
@@ -1316,23 +1390,34 @@ export async function executeCharge({
   let swapped: SwapSignedResult | null = null;
   if (!signed) {
     // No signature that verifies against this payment's message: the card
-    // burned (or says it did) but gave nothing the mint will take. Either
-    // its answer was lost (`needs-card`: SPEND_ALL_AGAIN at its next tap may
-    // still recover it) or it answered with a signature that does not verify
-    // (`failed`: a broken card, or one replaying pieces read off a real
-    // card). Neither is paid — nothing has reached the mint — and nothing
-    // may say so, on an exact bill as on one with change (NUT-XX: the till
-    // swaps, "and only then says paid"). But the card has burned, so a
-    // retry would burn it again for the same bill: `paid` stays set
-    // (ENG-642's no-re-charge rule) under the phase that reads "Not
-    // confirmed yet", never "Paid" (architect's ruling).
+    // burned (or says it did) but gave nothing the mint will take. Neither
+    // case is paid — nothing has reached the mint — and nothing may say so
+    // (NUT-XX: the till swaps, "and only then says paid"). The card has
+    // burned either way, so neither offers a re-charge.
+    if (signatureInvalid || entry.status === 'failed') {
+      // The card ANSWERED, and its answer does not verify (`failed`: a
+      // broken card, or one that is not the card holding the key). Nothing
+      // will ever settle it — no witness, never drained, never asked of
+      // SPEND_ALL_AGAIN again — so it is NOT paid and is not recorded as a
+      // sale: refused, Done only, kept on the terminal for a human.
+      throw new PhaseError(
+        PHASE_CARD_SIGNATURE_INVALID,
+        new Error(
+          entry.lastError ??
+            "the card's signature does not verify against the payment",
+        ),
+        {refused: true},
+      );
+    }
+    // The card's answer was lost (`needs-card`): SPEND_ALL_AGAIN when this
+    // card next pays on this terminal may still recover it. `paid` stays
+    // set (ENG-642's no-re-charge rule) under a phase that reads "Not
+    // confirmed yet", never "Paid" (architect's ruling), with its own body:
+    // nothing retries it until the card is tapped again.
     throw new PhaseError(
-      PHASE_SETTLING_UNCONFIRMED,
+      PHASE_SETTLING_NEEDS_CARD,
       new Error(
-        entry.status === 'failed'
-          ? entry.lastError ??
-            "the card's signature does not verify against the payment"
-          : "the card burned the payment and its signature was lost; it is recovered at the card's next tap",
+        'the card burned the payment and its signature was lost; it is recovered when this card next pays on this terminal',
       ),
       {paid: true},
     );

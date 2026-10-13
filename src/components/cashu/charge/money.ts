@@ -190,6 +190,37 @@ export function settleRefused(failure: Failure): boolean {
   return SETTLING_REFUSED.test(failure.phase ?? '');
 }
 
+/**
+ * ENG-674: the card answered with a signature that does not verify against
+ * the payment — `PHASE_CARD_SIGNATURE_INVALID` in `cashuCharge.ts`, thrown
+ * with `PhaseError.refused`. Not paid, nothing reached the mint, nothing
+ * will retry it; the card must not be charged again (it has burned).
+ */
+const SIGNATURE_INVALID = /card's signature is not valid/i;
+
+export function signatureInvalid(failure: Failure): boolean {
+  return SIGNATURE_INVALID.test(failure.phase ?? '');
+}
+
+/**
+ * ENG-674: the card burned and its answer was lost —
+ * `PHASE_SETTLING_NEEDS_CARD` in `cashuCharge.ts`. Unconfirmed (it also
+ * matches `settleUnconfirmed`, for the title), but only the card's next
+ * payment on this terminal can recover it: the body must not promise the
+ * terminal is retrying on its own.
+ */
+const SETTLING_NEEDS_CARD = /\(signature lost, next tap\)$/i;
+
+export function settleNeedsCard(failure: Failure): boolean {
+  return SETTLING_NEEDS_CARD.test(failure.phase ?? '');
+}
+
+export const SIGNATURE_INVALID_BODY =
+  "The card's signature for this payment is not valid, so this bill is not paid and nothing reached the mint. Don't charge the card again. The payment is saved on this terminal for review.";
+
+export const NEEDS_CARD_BODY =
+  "The card has paid, but its answer was lost, so the mint hasn't confirmed this payment. It is recovered from the card the next time the card pays on this terminal. Hold the goods until then, and don't charge the card again for this bill.";
+
 export const REFUSED_BODY =
   "The mint refused this payment after the card paid it, so this bill is not paid. Don't charge the card again. The payment is saved on this terminal for review.";
 
@@ -283,9 +314,18 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
       ? `${saved} and will be added once the card has a free slot.`
       : `${saved} and will be added the next time this card is charged.`;
   }
+  if (settleNeedsCard(failure)) {
+    // Never "paid", and no "the terminal keeps trying": only the card's
+    // next payment here can give the lost signature back (ENG-674).
+    return NEEDS_CARD_BODY;
+  }
   if (settleUnconfirmed(failure)) {
     // Never "paid": the mint has not confirmed it (ENG-674).
     return UNCONFIRMED_BODY;
+  }
+  if (signatureInvalid(failure)) {
+    // Never "paid", never "try again": the card's answer did not verify.
+    return SIGNATURE_INVALID_BODY;
   }
   if (settleRefused(failure)) {
     // Never "paid", never "try again": the mint said no after the burn.

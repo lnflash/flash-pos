@@ -126,6 +126,14 @@ export interface SpendAllResult {
   entry: SettlementEntry;
   /** What the swap submits, exactly as the card signed it. */
   signed: SignedSwap | null;
+  /**
+   * The card ANSWERED SPEND_ALL_SIGN with a signature that does not verify
+   * against this payment, and SPEND_ALL_AGAIN gave none that does: nothing
+   * is left to recover. Set whether or not the store took the `failed`
+   * mark, so the caller never reads a refused signature as a lost answer
+   * (which SPEND_ALL_AGAIN at a later tap might still recover).
+   */
+  signatureInvalid: boolean;
 }
 
 /** Record the payment the card has burned; `witness` absent = `needs-card`. */
@@ -270,7 +278,11 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
       );
     }
   }
-  return {entry, signed: signature ? signedSwap(signature) : null};
+  return {
+    entry,
+    signed: signature ? signedSwap(signature) : null,
+    signatureInvalid: !signature && refusedSignature,
+  };
 }
 
 /**

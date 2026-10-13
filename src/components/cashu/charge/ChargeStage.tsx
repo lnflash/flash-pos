@@ -15,6 +15,7 @@ import {
   parseFailure,
   settleRefused,
   settleUnconfirmed,
+  signatureInvalid,
 } from './money';
 import {friendlyLabel, type StageState} from './phaseToStation';
 import StatusBlock, {type StatusShown, type StatusTexts} from './StatusBlock';
@@ -96,6 +97,12 @@ export const UNCONFIRMED_TITLE = 'Not confirmed yet';
  * paid, and the card must not be charged again for this bill.
  */
 export const REFUSED_TITLE = 'Not paid — the mint refused it';
+/**
+ * ENG-674: the card answered with a signature that does not verify. Not
+ * paid, nothing reached the mint, and the card must not be charged again.
+ */
+export const SIGNATURE_INVALID_TITLE =
+  "Not paid — the card's signature is not valid";
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -171,7 +178,9 @@ function ChargeStage(props: ChargeStageProps) {
       // A bookkeeping failure whose change all landed is plain "Paid": the
       // change is on the card (`changeOnCard`).
       errorTitle: paid
-        ? settleRefused(failure)
+        ? signatureInvalid(failure)
+          ? SIGNATURE_INVALID_TITLE
+          : settleRefused(failure)
           ? REFUSED_TITLE
           : settleUnconfirmed(failure)
           ? UNCONFIRMED_TITLE

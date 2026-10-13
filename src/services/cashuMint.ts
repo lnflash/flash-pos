@@ -435,17 +435,38 @@ export async function keysetFor(
  * whether the mint has since rotated it — and SIG_ALL binds the change
  * keyset's `active` flag and its fee into the swap's outputs for good, so a
  * charge about to build them must not trust a cache that might be stale.
- * Best effort: resolves without writing anything when the mint will not
- * answer, leaving whatever is cached untouched.
+ * Resolves true only once the fresh listing is persisted. False when the
+ * mint will not answer in full within `timeoutMs` (a failed or slow keys
+ * fetch, a store write refused), leaving whatever is cached untouched: the
+ * caller must then treat the cache as stale, as it would with no mint at
+ * all — never sign on it as if it were fresh (ENG-674). A refresh that
+ * lands after the deadline may still update the cache; the caller has
+ * already been told "not fresh" and acts on that.
  */
-export async function refreshKeysets(mintUrl: string): Promise<boolean> {
+export async function refreshKeysets(
+  mintUrl: string,
+  timeoutMs = 3000,
+): Promise<boolean> {
+  const attempt = (async () => {
+    try {
+      const wallet = await getWallet(mintUrl);
+      await wallet.loadMint(true);
+      await persistKeysets(mintUrl, wallet);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
   try {
-    const wallet = await getWallet(mintUrl);
-    await wallet.loadMint(true);
-    await persistKeysets(mintUrl, wallet);
-    return true;
-  } catch {
-    return false;
+    return await Promise.race([attempt, deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 
