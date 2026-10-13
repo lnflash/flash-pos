@@ -320,6 +320,28 @@ describe('readAndPlan', () => {
     ).toEqual([]);
   });
 
+  // ENG-681: on a J3R180 provisioned as documented, the bare package AID
+  // reaches the opener (9000, no body). The full applet AID goes first, so
+  // the card reads as 2.0 instead of "This card needs an update".
+  it('reads a card whose package AID reaches the opener (ENG-681)', async () => {
+    const card = cardWithPieces([8, 16], {opener: true});
+
+    const preRead = await readAndPlan({
+      transceive: card.transceive,
+      amountSat: 16,
+    });
+
+    expect(preRead.plan.burnedSat).toBe(16);
+    expect(preRead.cardPubkey).toBe(card.pubkey);
+    // One SELECT, by the full applet AID: the opener was never reached.
+    expect(card.sent.filter(a => a[1] === 0xa4)).toEqual([
+      [
+        0x00, 0xa4, 0x04, 0x00, 0x0b, 0xf0, 0x43, 0x41, 0x53, 0x48, 0x55, 0x43,
+        0x41, 0x52, 0x44, 0x01, 0x00,
+      ],
+    ]);
+  });
+
   it('wraps a phase failure with the phase in the message and the CardError as cause', async () => {
     // A BoltCard (NTAG 424 DNA) answers every SELECT with 0x6A82: the router
     // must be able to tell that apart from a Cashu card that failed, by
@@ -629,6 +651,25 @@ describe('chargeCard', () => {
     for (const p of tillProofs()) {
       expect(testMint().verifyProof(p.secret, p.C, p.amount)).toBe(true);
     }
+  });
+
+  it('charges a card whose package AID reaches the opener (ENG-681)', async () => {
+    const card = pinCard([16, 4, 1], {opener: true});
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 5,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.amountSat).toBe(5);
+    expect(card.burnCount).toBe(2);
+    // Every SELECT was by the full applet AID (11 bytes).
+    const selects = card.sent.filter(a => a[1] === 0xa4);
+    expect(selects.length).toBeGreaterThan(0);
+    expect(selects.every(a => a[4] === 0x0b)).toBe(true);
   });
 
   it('exact bill with a failed swap defers to the drain instead of failing', async () => {

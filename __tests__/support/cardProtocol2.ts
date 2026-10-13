@@ -416,6 +416,14 @@ export interface FakeCardOptions {
   namedOverride?: (slot: number) => number[] | undefined;
   /** Not an eCash card: refuses every AID. */
   notCashu?: boolean;
+  /**
+   * A J3R180 provisioned as cashu-javacard 2.0.0-rc.1 documents it (ENG-681):
+   * the opener `F0 CASHUCARD 4D` is installed before the applet, so a SELECT
+   * by the bare package AID reaches the opener (9000, no body) and every
+   * command after it answers 6D00. The full applet AID still selects the
+   * applet.
+   */
+  opener?: boolean;
   /** The SELECT version (default 2.0). */
   version?: [number, number];
   /** GET_INFO's major (default the SELECT one). */
@@ -487,6 +495,8 @@ export class FakeCard2 {
   headers: number[][] = [];
   private changeCounter = 0;
   private counts = new Map<number, number>();
+  /** The opener (not the applet) is selected: see `opener`. */
+  private openerSelected = false;
 
   constructor(readonly opts: FakeCardOptions = {}) {
     this.priv = opts.privateKey ?? TEST_CARD_PRIVATE;
@@ -599,6 +609,9 @@ export class FakeCard2 {
     if (cla === 0x00 && ins === 0xa4) {
       return this.select(apdu.slice(5, 5 + apdu[4]));
     }
+    if (this.openerSelected) {
+      return sw(0x6d00);
+    }
     // Any command but the payment's own gives a begun payment up.
     if (this.payment && ![0x23, 0x24, 0x26].includes(ins)) {
       this.dropPayment();
@@ -683,6 +696,13 @@ export class FakeCard2 {
   private select(aid: number[]): number[] {
     const is = (a: number[]) =>
       aid.length >= a.length && a.every((b, i) => aid[i] === b);
+    this.openerSelected =
+      this.opts.opener === true &&
+      aid.length === PACKAGE_AID.length &&
+      is(PACKAGE_AID);
+    if (this.openerSelected) {
+      return ok();
+    }
     if (is(PACKAGE_AID)) {
       if (this.opts.legacy || this.opts.foxy || this.opts.notCashu) {
         return sw(0x6a82);
