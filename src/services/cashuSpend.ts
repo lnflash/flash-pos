@@ -30,9 +30,11 @@
 import {bytesToHex} from '@noble/hashes/utils';
 
 import {
+  CardAuthError,
   CardError,
   CardProtocolError,
   getSlotStatuses,
+  isProvenOver,
   setHeader,
   spendAllAgain,
   spendAllBegin,
@@ -41,6 +43,7 @@ import {
   spendAllSign,
   tellTime,
   toHex,
+  type ProvenCardKey,
   type Transceiver,
 } from './cashuCard';
 import {
@@ -297,17 +300,29 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
  * Best effort: a card that will not answer (the PIN not given for a
  * PIN-signed payment, the tag lost) leaves every entry as it was.
  *
+ * Destructive on an answer that does not verify, so the key must be PROVEN:
+ * `cardKey` comes from `proveCardKey` (AUTH) over this same `transceive`.
+ * GET_PUBKEY alone is a claim any card can make, and an impostor's AGAIN
+ * would mark the real card's payments failed. Anything else throws
+ * `CardAuthError` before the queue is read or the card is asked anything.
+ *
  * Resolves with the entries recovered.
  */
 export async function recoverNeedsCard({
   transceive,
-  cardPubkey,
+  cardKey,
   now = Date.now(),
 }: {
   transceive: Transceiver;
-  cardPubkey: string;
+  cardKey: ProvenCardKey;
   now?: number;
 }): Promise<SettlementEntry[]> {
+  if (!isProvenOver(cardKey, transceive)) {
+    throw new CardAuthError(
+      'needs-card recovery needs the card key proven by AUTH in this tap',
+    );
+  }
+  const cardPubkey = cardKey.pubkey;
   let orphaned: SettlementEntry[];
   try {
     orphaned = (await recoverableForCard(cardPubkey)).filter(

@@ -12,7 +12,13 @@
 import {schnorrSignDigest} from '@cashu/cashu-ts';
 import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
 
-import {CardError, type Transceiver} from '../../src/services/cashuCard';
+import {
+  CardAuthError,
+  CardError,
+  proveCardKey,
+  type ProvenCardKey,
+  type Transceiver,
+} from '../../src/services/cashuCard';
 import {
   prepareChargeOutputs,
   sigAllMessage,
@@ -71,6 +77,9 @@ beforeEach(async () => {
   mint = resetTestMint();
   await clearQueue();
 });
+
+/** The card's own key, proven by AUTH over its transceiver. */
+const proven = (card: FakeCard2) => proveCardKey(card.transceive, card.pubkey);
 
 /** The inputs a charge builds for `slots` of `card` (as executeCharge does). */
 function inputsOf(card: FakeCard2, slots: number[]): SettlementInput[] {
@@ -325,7 +334,7 @@ describe('spendAll', () => {
       await expect(
         recoverNeedsCard({
           transceive: card.transceive,
-          cardPubkey: card.pubkey,
+          cardKey: await proven(card),
         }),
       ).resolves.toEqual([]);
       expect(card.insSent.filter(i => i === 0x25)).toHaveLength(1);
@@ -384,7 +393,7 @@ describe('recoverNeedsCard', () => {
 
     const recovered = await recoverNeedsCard({
       transceive: card.transceive,
-      cardPubkey: card.pubkey,
+      cardKey: await proven(card),
       now: 5000,
     });
 
@@ -409,7 +418,7 @@ describe('recoverNeedsCard', () => {
 
     const recovered = await recoverNeedsCard({
       transceive: card.transceive,
-      cardPubkey: card.pubkey,
+      cardKey: await proven(card),
       now: 5000,
     });
 
@@ -426,7 +435,10 @@ describe('recoverNeedsCard', () => {
     });
     const entry = await needsCardPayment(card);
     await expect(
-      recoverNeedsCard({transceive: card.transceive, cardPubkey: card.pubkey}),
+      recoverNeedsCard({
+        transceive: card.transceive,
+        cardKey: await proven(card),
+      }),
     ).resolves.toEqual([]);
     expect((await listSettlements())[0]).toMatchObject({
       id: entry.id,
@@ -434,13 +446,64 @@ describe('recoverNeedsCard', () => {
     });
   });
 
-  it('asks the card nothing when this card owes nothing', async () => {
+  it('asks the card nothing past AUTH when this card owes nothing', async () => {
     const card = cardWithPieces([8]);
-    await recoverNeedsCard({
-      transceive: card.transceive,
-      cardPubkey: card.pubkey,
+    const cardKey = await proven(card);
+    const before = card.sent.length;
+    await recoverNeedsCard({transceive: card.transceive, cardKey});
+    expect(card.sent).toHaveLength(before);
+  });
+
+  describe('only for a key AUTH proved in this tap (ENG-674)', () => {
+    /** card A's needs-card payment, and the APDUs card A has seen since. */
+    async function aOwes() {
+      const a = cardWithPieces([8], {
+        loseSignAnswer: () => true,
+        loseAgain: () => true,
+      });
+      const entry = await needsCardPayment(a);
+      return {a, entry, sentBefore: a.sent.length};
+    }
+
+    async function untouched(entryId: string) {
+      const stored = await listSettlements();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({id: entryId, status: 'needs-card'});
+      expect(stored[0].witness).toBeUndefined();
+      expect(stored[0].lastError).toBeUndefined();
+    }
+
+    it('a card that fails AUTH for the key it claims gets no proof, and the needs-card entries stay as they were', async () => {
+      const {a, entry} = await aOwes();
+      // Card A's key, claimed by a card whose AUTH signs under another key.
+      const impostor = cardWithPieces([4], {
+        privateKey: '33'.repeat(32),
+        forgeAuth: true,
+      });
+      await expect(proveCardKey(impostor.transceive, a.pubkey)).rejects.toThrow(
+        CardAuthError,
+      );
+      expect(impostor.insSent).not.toContain(0x25);
+      await untouched(entry.id);
     });
-    expect(card.sent).toEqual([]);
+
+    it('a key that is not a proof, or was proven over another tap, is refused before the card is asked anything', async () => {
+      const {a, entry, sentBefore} = await aOwes();
+      const forged = {pubkey: a.pubkey} as ProvenCardKey;
+      await expect(
+        recoverNeedsCard({transceive: a.transceive, cardKey: forged}),
+      ).rejects.toThrow(CardAuthError);
+      // Proven by card A on one tap, offered with whatever is on the next.
+      const earlier = await proven(a);
+      const sentAfterAuth = a.sent.length;
+      const nextTap: Transceiver = apdu => a.transceive(apdu);
+      await expect(
+        recoverNeedsCard({transceive: nextTap, cardKey: earlier}),
+      ).rejects.toThrow(CardAuthError);
+      expect(a.sent.length).toBe(sentAfterAuth);
+      expect(sentAfterAuth).toBe(sentBefore + 1);
+      await untouched(entry.id);
+    });
   });
 });
 

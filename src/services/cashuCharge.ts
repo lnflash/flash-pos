@@ -28,11 +28,9 @@ import {utf8ToBytes} from '@noble/hashes/utils';
 
 import {cachedTipHeader} from './blockHeader';
 import {
-  auth,
   CardAuthError,
   CardNeedsUpdateError,
   CardProtocolError,
-  fromHex,
   getBalance,
   getCard,
   getChange,
@@ -43,6 +41,7 @@ import {
   getPubkey,
   isAlreadyOnCard,
   loadProof,
+  proveCardKey,
   selectApplet,
   verifyCardPin,
   toHex,
@@ -1206,9 +1205,9 @@ export async function executeCharge({
   // key), a SPEND_ALL_AGAIN whose answer would mark its needs-card payments
   // failed, and the burn itself. The SIG_ALL signature proves the key too,
   // but only after the card has burned (ENG-674).
-  await step('reading card', async () => {
+  const cardKey = await step('reading card', async () => {
     try {
-      await auth(transceive, fromHex(cardPubkey, 'card key'));
+      return await proveCardKey(transceive, cardPubkey);
     } catch (error) {
       throw error instanceof CardAuthError
         ? new CardAuthError(NOT_THE_CARD_READ)
@@ -1267,7 +1266,7 @@ export async function executeCharge({
   // A payment this card burned in an earlier tap whose signature was lost:
   // the card's LAST signature is the only way back, and this payment is
   // about to replace it. Best effort — never fails the charge.
-  await recoverNeedsCard({transceive, cardPubkey, now}).catch(() => []);
+  await recoverNeedsCard({transceive, cardKey, now}).catch(() => []);
 
   // Everything the swap will produce, made BEFORE the card signs (SIG_ALL
   // binds the outputs): the inputs' secrets, the merchant's outputs. No APDU.

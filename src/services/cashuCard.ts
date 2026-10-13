@@ -1306,6 +1306,42 @@ export async function auth(
   }
 }
 
+/**
+ * A card key the card on the antenna has proven with AUTH, in one tap. Only
+ * `proveCardKey` makes one, and it is good only with the transceiver it was
+ * proven over: GET_PUBKEY is a claim any card (or an emulator) can make, so
+ * anything that acts on a key's stored state (`recoverNeedsCard`) takes this,
+ * never a bare pubkey.
+ */
+export interface ProvenCardKey {
+  /** The card key, hex, as it was proven. */
+  readonly pubkey: string;
+}
+
+const PROVEN_OVER = new WeakMap<ProvenCardKey, Transceiver>();
+
+/**
+ * AUTH the card on the antenna against `pubkey` (hex). Throws as `auth` does
+ * (`CardAuthError` on a signature that does not verify).
+ */
+export async function proveCardKey(
+  transceive: Transceiver,
+  pubkey: string,
+): Promise<ProvenCardKey> {
+  await auth(transceive, fromHex(pubkey, 'card key'));
+  const key: ProvenCardKey = Object.freeze({pubkey});
+  PROVEN_OVER.set(key, transceive);
+  return key;
+}
+
+/** True when `key` came from `proveCardKey` over this same transceiver. */
+export function isProvenOver(
+  key: ProvenCardKey,
+  transceive: Transceiver,
+): boolean {
+  return PROVEN_OVER.get(key) === transceive;
+}
+
 // ── the clock ───────────────────────────────────────────────────────────────
 
 /**

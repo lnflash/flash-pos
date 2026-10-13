@@ -17,7 +17,12 @@ import {
   withCardSession,
 } from '../services/cashuCardNfc';
 import {useAppSelector} from '../store/hooks';
-import {getPubkey, selectApplet, toHex} from '../services/cashuCard';
+import {
+  getPubkey,
+  proveCardKey,
+  selectApplet,
+  toHex,
+} from '../services/cashuCard';
 import {runAutoSettlement} from '../services/cashuAutoSettle';
 import {recoverNeedsCard, settlePending} from '../services/cashuSpend';
 import {recoverableForCard} from '../services/cashuSettlement';
@@ -198,23 +203,27 @@ const CashuCardSpend = () => {
   // signature was lost on the air. SPEND_ALL_AGAIN gives the card's LAST
   // signature again; it is accepted only for the entry whose stored message
   // it verifies against, and an entry the card has signed past is marked
-  // failed for a human.
+  // failed for a human. Only for a card that has proven its key with AUTH.
   const onRecover = useCallback(async () => {
     setRecovering(true);
     setError(null);
     try {
       await withCardSession(async transceive => {
         await selectApplet(transceive);
-        const pubkey = toHex(await getPubkey(transceive));
-        const recoverable = await recoverableForCard(pubkey);
+        // GET_PUBKEY is only a claim: AUTH proves it before anything of that
+        // key's is touched. An AGAIN answer that does not verify marks the
+        // key's needs-card payments failed, so an impostor claiming a real
+        // card's key must be refused here (CardAuthError), not recovered.
+        const cardKey = await proveCardKey(
+          transceive,
+          toHex(await getPubkey(transceive)),
+        );
+        const recoverable = await recoverableForCard(cardKey.pubkey);
         if (recoverable.length === 0) {
           toastShow({message: 'eCash: nothing to recover', type: 'success'});
           return;
         }
-        const recovered = await recoverNeedsCard({
-          transceive,
-          cardPubkey: pubkey,
-        });
+        const recovered = await recoverNeedsCard({transceive, cardKey});
         toastShow({
           message: `eCash: recovered ${recovered.length} of ${recoverable.length} settlement(s)`,
           type: recovered.length > 0 ? 'success' : 'error',
