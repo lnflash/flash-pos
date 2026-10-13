@@ -13,6 +13,11 @@ import {
 } from '../../src/services/cardBridge';
 import {describeCardFailure} from '../../src/services/cashuCardNfc';
 import {
+  DEFAULT_HEADER_APIS,
+  __resetTipHeader,
+  headerApis,
+} from '../../src/services/blockHeader';
+import {
   hasLnurlwRecord,
   isIsoDepTag,
   mayCarryNdef,
@@ -377,6 +382,62 @@ describe('parseCardBridgeLink', () => {
     'flashpos://dev/card-bridge?url=%E0%A4%A',
   ])('ignores %s', link => {
     expect(parseCardBridgeLink(link)).toBeNull();
+  });
+});
+
+describe("headers: the e2e run's block-header stub", () => {
+  afterEach(() => __resetTipHeader());
+
+  it('parses headers= from the deep link beside the bridge', () => {
+    expect(
+      parseCardBridgeLink(
+        'flashpos://dev/card-bridge?url=http://127.0.0.1:9876&headers=http%3A%2F%2F127.0.0.1%3A9877%2Fapi%2F',
+      ),
+    ).toEqual({
+      action: 'set',
+      config: {url: URL_, headerApi: 'http://127.0.0.1:9877/api'},
+    });
+  });
+
+  it('refuses a headers= that is not an http(s) URL', () => {
+    expect(
+      parseCardBridgeLink(
+        'flashpos://dev/card-bridge?url=http://127.0.0.1:9876&headers=file:///etc',
+      ),
+    ).toBeNull();
+    expect(() => setCardBridge({url: URL_, headerApi: 'ftp://x'})).toThrow(
+      /header API must start with http/,
+    );
+  });
+
+  it('a link with headers= points the tip header there; off=1 puts it back', async () => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(LogBox, 'ignoreAllLogs').mockImplementation(() => {});
+    let handler: ((event: {url: string}) => void) | undefined;
+    jest.spyOn(Linking, 'getInitialURL').mockResolvedValue(null);
+    jest.spyOn(Linking, 'addEventListener').mockImplementation(((
+      _type: string,
+      h: typeof handler,
+    ) => {
+      handler = h;
+      return {remove: jest.fn()};
+    }) as never);
+    const cleanup = installCardBridgeDeepLinks();
+
+    handler!({
+      url: 'flashpos://dev/card-bridge?url=http://127.0.0.1:9876&headers=http://127.0.0.1:9877/api',
+    });
+    expect(headerApis()).toEqual(['http://127.0.0.1:9877/api']);
+
+    handler!({url: 'flashpos://dev/card-bridge?url=http://127.0.0.1:9876'});
+    expect(headerApis()).toEqual(DEFAULT_HEADER_APIS);
+
+    handler!({
+      url: 'flashpos://dev/card-bridge?url=http://127.0.0.1:9876&headers=http://127.0.0.1:9877/api',
+    });
+    handler!({url: 'flashpos://dev/card-bridge?off=1'});
+    expect(headerApis()).toEqual(DEFAULT_HEADER_APIS);
+    cleanup();
   });
 });
 

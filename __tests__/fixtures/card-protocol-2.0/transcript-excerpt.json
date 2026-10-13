@@ -1,0 +1,336 @@
+{
+ "about": "Steps of cashu-javacard's own applet transcript (spec/vectors/transcript.json) that this terminal's APDU codec is held to: the command bytes it must build and the answers it must parse. 'index' is the step's position in the full transcript.",
+ "source": "lnflash/cashu-javacard spec/vectors/transcript.json at c62c2fb48dfdd41b2a50993b9d69bd09acbcc24e (ENG-673, protocol 2.0)",
+ "steps": [
+  {
+   "name": "select",
+   "kind": "exact",
+   "apdu": "00a404000af0434153485543415244",
+   "sw": "9000",
+   "data": "0200",
+   "index": 0
+  },
+  {
+   "name": "a new card says what it is",
+   "kind": "exact",
+   "apdu": "b001000000",
+   "sw": "9000",
+   "data": "020080000080ff0004030000000000000000000000000000000000000000",
+   "index": 1
+  },
+  {
+   "name": "its record, not yet written",
+   "kind": "exact",
+   "apdu": "b016000000",
+   "sw": "9000",
+   "data": "04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "index": 3
+  },
+  {
+   "name": "nothing loads onto a card with no owner (a card with no PIN is loaded by whoever holds it, once it has one)",
+   "kind": "exact",
+   "apdu": "b0300000510059534ce0bfa19a000000100102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200202020202020202020202020202020202020202020202020202020202020202020000000001",
+   "sw": "6a90",
+   "data": "",
+   "index": 4
+  },
+  {
+   "name": "a piece loads before the card has seen a block header: nothing answers 'never told the time' any more",
+   "kind": "exact",
+   "apdu": "b0300000510059534ce0bfa19a000000100102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200202020202020202020202020202020202020202020202020202020202020202020000000001",
+   "sw": "9000",
+   "data": "00",
+   "index": 90
+  },
+  {
+   "name": "spend the 16 on trust: the limit exactly: the places named",
+   "kind": "exact",
+   "apdu": "b0220000010004",
+   "sw": "9000",
+   "data": "00000010",
+   "index": 96
+  },
+  {
+   "name": "spend the 16 on trust: the limit exactly",
+   "kind": "sigall",
+   "apdu": "b024000040",
+   "sw": "9000",
+   "data": "dc1c15620c219e9db37f4c46d25206174a042491aee0e24c08140cc971d2887697b5ba61c2914cdb783d53b394d953fbc4b3b56a97d2516508fcbc258418ddf2",
+   "index": 97
+  },
+  {
+   "name": "one sat more is past the limit with no clock: 6A8F",
+   "kind": "exact",
+   "apdu": "b024000040",
+   "sw": "6a8f",
+   "data": "",
+   "index": 101
+  },
+  {
+   "name": "and the piece goes: wait 1: not yet",
+   "kind": "exact",
+   "apdu": "b024000040",
+   "sw": "9000",
+   "data": "0001",
+   "index": 110
+  },
+  {
+   "name": "a piece that is on the card already is not written twice",
+   "kind": "exact",
+   "apdu": "b0300000510059534ce0bfa19a000002580102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20020202020202020202020202020202020202020202020202020202020202020202713fb30001",
+   "sw": "6a94",
+   "data": "",
+   "index": 141
+  },
+  {
+   "name": "every slot's state",
+   "kind": "exact",
+   "apdu": "b014000000",
+   "sw": "9000",
+   "data": "0101010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "index": 147
+  },
+  {
+   "name": "every piece and every slot's state: the first page",
+   "kind": "exact",
+   "apdu": "b017000000",
+   "sw": "9000",
+   "data": "03000059534ce0bfa19a000002580102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20020202020202020202020202020202020202020202020202020202020202020202713fb300010059534ce0bfa19a0000019002030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202102030303030303030303030303030303030303030303030303030303030303030300000000020059534ce0bfa19a00000001030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122020404040404040404040404040404040404040404040404040404040404040404713fb300",
+   "index": 148
+  },
+  {
+   "name": "and the second, from where the first stopped",
+   "kind": "exact",
+   "apdu": "b017030000",
+   "sw": "9000",
+   "data": "80030059534ce0bfa19a000007d00405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222302050505050505050505050505050505050505050505050505050505050505050500000000",
+   "index": 149
+  },
+  {
+   "name": "slot 0",
+   "kind": "exact",
+   "apdu": "b013000000",
+   "sw": "9000",
+   "data": "010059534ce0bfa19a000002580102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20020202020202020202020202020202020202020202020202020202020202020202713fb300",
+   "index": 151
+  },
+  {
+   "name": "an empty slot",
+   "kind": "exact",
+   "apdu": "b013090000",
+   "sw": "6a88",
+   "data": "",
+   "index": 153
+  },
+  {
+   "name": "slot 0 a second time",
+   "kind": "exact",
+   "apdu": "b0220000010004",
+   "sw": "6985",
+   "data": "",
+   "index": 186
+  },
+  {
+   "name": "spent places are listed by their tags alone",
+   "kind": "exact",
+   "apdu": "b017000000",
+   "sw": "9000",
+   "data": "8080818283",
+   "index": 234
+  },
+  {
+   "name": "and nothing is left to list",
+   "kind": "exact",
+   "apdu": "b017000000",
+   "sw": "9000",
+   "data": "80",
+   "index": 237
+  },
+  {
+   "name": "but not a spend",
+   "kind": "exact",
+   "apdu": "b024000040",
+   "sw": "6a94",
+   "data": "",
+   "index": 251
+  },
+  {
+   "name": "and loads nothing with no PIN",
+   "kind": "exact",
+   "apdu": "b0300000510059534ce0bfa19a000000040d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c020e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0000000001",
+   "sw": "6982",
+   "data": "",
+   "index": 255
+  },
+  {
+   "name": "AUTH",
+   "kind": "auth",
+   "apdu": "b015000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf50",
+   "sw": "9000",
+   "data": "3264e22bb8341617b50a5ebe6451c6aff58c42e4c935e96bc04e6e9a1b0c9e871b374fd2f627f34429fce07540b0374b828b22389dcf855eb92146d21ff141b052e6d754ba504d4ed8db64456575ee9f",
+   "index": 294
+  },
+  {
+   "name": "the info asked for the limit on one payment as well: twelve bytes more, and no limit",
+   "kind": "exact",
+   "apdu": "b001010000",
+   "sw": "9000",
+   "data": "020080000080ff010403000100000000016ac9dc756ac9dc750000000001000000000000000000000000",
+   "index": 406
+  },
+  {
+   "name": "no change with no payment begun",
+   "kind": "exact",
+   "apdu": "b0260000040000000a21",
+   "sw": "6985",
+   "data": "",
+   "index": 472
+  },
+  {
+   "name": "the terminal's output: 90",
+   "kind": "exact",
+   "apdu": "b0230000250000005a03202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+   "sw": "9000",
+   "data": "",
+   "index": 474
+  },
+  {
+   "name": "the card's own change: 40",
+   "kind": "point",
+   "apdu": "b0260000040000002821",
+   "sw": "9000",
+   "data": "03ea83ab1fe47c8535f1d11c5e633dd9c99d48eacfd2fc70509893e4168f05e442",
+   "index": 475
+  },
+  {
+   "name": "no output of the terminal's after the card's change: the payment is given up",
+   "kind": "exact",
+   "apdu": "b02300002500000001022728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40414243444546",
+   "sw": "6985",
+   "data": "",
+   "index": 477
+  },
+  {
+   "name": "the card's own change: 40, a fresh output",
+   "nonce": "b5b4b3b84acb6a8f5737f3b046b65995cdf80cb8e8e9fcdecf6ed1b05b0c9b24",
+   "r": "b5f4d4c0797a91bf25661c4bca4fe8615d292c474ee04f08191eee9654129172",
+   "kind": "exact",
+   "apdu": "b0260000040000002821",
+   "sw": "9000",
+   "data": "021a94544e7d87bbe263fc8e932a25470c80d7224139b774fdd30e9c21723ff258",
+   "index": 481
+  },
+  {
+   "name": "the info: the day counted nothing, having no limit; the log says 90",
+   "kind": "exact",
+   "apdu": "b001010000",
+   "sw": "9000",
+   "data": "020080000b75ff010403000100000000016ac9dc756ac9dc750000000001000000000000000000000000",
+   "index": 484
+  },
+  {
+   "name": "the openings of the change: two, pending",
+   "kind": "exact",
+   "apdu": "b019000000",
+   "sw": "9000",
+   "data": "02000000280059534ce0bfa19a00000000b5b4b3b84acb6a8f5737f3b046b65995cdf80cb8e8e9fcdecf6ed1b05b0c9b24b5f4d4c0797a91bf25661c4bca4fe8615d292c474ee04f08191eee9654129172000000140059534ce0bfa19a0000000091ac911debe44a985765b3129bec119cfca3cd1378b68249b034b942ff3880c68c75c6cf7a92d1e611aa27ca0acf70d6e06773bc1b4a3d2f70ba9183f106c6cf",
+   "index": 485
+  },
+  {
+   "name": "the next page: none",
+   "kind": "exact",
+   "apdu": "b019010000",
+   "sw": "9000",
+   "data": "00",
+   "index": 486
+  },
+  {
+   "name": "its opening is gone; the other is left",
+   "kind": "exact",
+   "apdu": "b019000000",
+   "sw": "9000",
+   "data": "01000000140059534ce0bfa19a0000000091ac911debe44a985765b3129bec119cfca3cd1378b68249b034b942ff3880c68c75c6cf7a92d1e611aa27ca0acf70d6e06773bc1b4a3d2f70ba9183f106c6cf",
+   "index": 491
+  },
+  {
+   "name": "the last signature this card gave, asked for again",
+   "kind": "again",
+   "apdu": "b025000040",
+   "sw": "9000",
+   "data": "ad02d13468282a9e4ca901bd77202ab63173ce69a15daa4e257950aac930a2db814ffc16f19b075812b92c9799ef7fbf286c6ca2be3fbe6fbd349c6b34173d30",
+   "index": 557
+  },
+  {
+   "name": "a place named twice",
+   "kind": "exact",
+   "apdu": "b022000002030304",
+   "sw": "6a80",
+   "data": "",
+   "index": 567
+  },
+  {
+   "name": "the last signature was given with the PIN: asked for again it is the PIN's",
+   "kind": "exact",
+   "apdu": "b025000040",
+   "sw": "6982",
+   "data": "",
+   "index": 770
+  },
+  {
+   "name": "GET_DLEQ for a place with nothing in it: the single byte 00",
+   "kind": "exact",
+   "apdu": "b01a00ff00",
+   "sw": "9000",
+   "data": "00",
+   "index": 814
+  },
+  {
+   "name": "a piece with its mint's proof: LOAD_PROOF with P1 = 1 answers its place and 01, the proof kept",
+   "kind": "exact",
+   "apdu": "b0300100b10059534ce0bfa19a000000106f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e027070707070707070707070707070707070707070707070707070707070707070000000000405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626300",
+   "sw": "9000",
+   "data": "0001",
+   "index": 815
+  },
+  {
+   "name": "GET_DLEQ for it: 01 and the 96 bytes, e, s and r",
+   "kind": "exact",
+   "apdu": "b01a00ff00",
+   "sw": "9000",
+   "data": "010405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+   "index": 816
+  },
+  {
+   "name": "GET_DLEQ for two places: the first's proof, then the single byte 00 for the plain piece",
+   "kind": "exact",
+   "apdu": "b01a000100",
+   "sw": "9000",
+   "data": "010405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626300",
+   "index": 818
+  },
+  {
+   "name": "the same place twice is answered twice",
+   "kind": "exact",
+   "apdu": "b01a000000",
+   "sw": "9000",
+   "data": "010405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263010405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+   "index": 819
+  },
+  {
+   "name": "a piece that is on the card already is not written again, with a proof of its own or none",
+   "kind": "exact",
+   "apdu": "b0300100b10059534ce0bfa19a000000106f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e027070707070707070707070707070707070707070707070707070707070707070000000000708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626364656600",
+   "sw": "6a94",
+   "data": "",
+   "index": 828
+  },
+  {
+   "name": "and its proof is the one it came with",
+   "kind": "exact",
+   "apdu": "b01a00ff00",
+   "sw": "9000",
+   "data": "010405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+   "index": 829
+  }
+ ]
+}
