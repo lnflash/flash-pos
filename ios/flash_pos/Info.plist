@@ -82,12 +82,14 @@
 	</array>
 	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
 	<array>
-		<!-- cashu-javacard protocol 2.0, FIRST: the package AID ("CASHUCARD"
-		     after F0), then the applet AID. iOS will only SELECT identifiers
-		     listed here, so both forms are declared to match the
-		     prefix-then-full fallback in src/services/cashuCard.ts. -->
-		<string>F0434153485543415244</string>
+		<!-- cashu-javacard protocol 2.0, FIRST: the applet AID ("CASHUCARD"
+		     after F0, then 01), then the package AID. iOS will only SELECT
+		     identifiers listed here, so both forms are declared to match the
+		     full-then-prefix fallback in src/services/cashuCard.ts. The
+		     package AID alone reaches the card's opener, not the applet
+		     (ENG-681), so it is never what a reader selects first. -->
 		<string>F043415348554341524401</string>
+		<string>F0434153485543415244</string>
 		<string>D2760000850100</string>
 		<string>D2760000850101</string>
 		<!-- cashu-javacard 0.x: package AID, then the applet AID. KEPT so a 0.x

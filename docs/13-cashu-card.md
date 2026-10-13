@@ -165,8 +165,8 @@ the exact platform where the operator has no other way to cancel.
 ```xml
 <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
 <array>
-    <string>F0434153485543415244</string>    <!-- 2.0 package AID ("CASHUCARD") -->
-    <string>F043415348554341524401</string>  <!-- 2.0 applet AID -->
+    <string>F043415348554341524401</string>  <!-- 2.0 applet AID: selected first -->
+    <string>F0434153485543415244</string>    <!-- 2.0 package AID ("CASHUCARD"): fallback -->
     <!-- … the BoltCard NDEF AIDs … -->
     <string>D2760000850102</string>          <!-- 0.x package AID: detection only -->
     <string>D276000085010201</string>        <!-- 0.x applet AID: detection only -->
@@ -178,16 +178,23 @@ Already added to `ios/flash_pos/Info.plist`. iOS will only `SELECT` identifiers
 on this list — an unlisted AID fails at `requestTechnology`, not at SELECT, so
 the error will not look like a card problem.
 
-Both forms of each AID are declared because `selectApplet()` tries the package
-AID first (prefix match, matching `cardctl`) and falls back to the full applet
-AID for cards that do not support partial selection.
+Both forms of each AID are declared because `selectApplet()` tries the full
+applet AID first (`F0 CASHUCARD 01`, the one Foxy's wallet selects) and falls
+back to the package AID only when the full AID answers `6A82`. The package AID
+is a prefix, and on a real J3R180 provisioned as documented (the opener
+`F0 CASHUCARD 4D` installed first, then the applet, then the tag) a SELECT by
+it reaches the opener, which answers `9000` with no version and `6D00` to the
+next command (ENG-681). So a `9000` from the package AID counts only when it
+carries a `02 xx` version; anything else falls through to the old-AID probe
+instead of reading as "This card needs an update".
 
 **Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
-protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 AID is tried first.
-Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"), any
-answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
-`6E00` or `6999` — is **"This card needs an update"**. A card that refuses
-both 2.0 AIDs with `6A82` is asked for the old AIDs (0.x, and Foxy's 1.x
+protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 applet AID is tried
+first. Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"),
+any answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
+`6E00` or `6999` — is **"This card needs an update"**. A card where neither
+2.0 AID reaches the applet (the full AID answers `6A82`, the package AID
+`6A82` or a `9000` without a `02 xx` version) is asked for the old AIDs (0.x, and Foxy's 1.x
 `F0 46 4F 58 59 43 41 52 44`, which `spec/APDU.md` also names); one that
 answers is an old card, and the terminal says **"This card needs an update"**
 and sends nothing else — no PIN pad, no write, no spend
