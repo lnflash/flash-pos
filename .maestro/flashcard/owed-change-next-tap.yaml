@@ -1,9 +1,11 @@
 # ENG-630 end to end. The read plans on a card with room; by the time the
 # PIN is entered the card is full (FIXTURE_FULL: same P8, every other slot
-# spent). The burn and the swap succeed, the first change LOAD answers
-# 6A84, and the 5 sats of change are kept on the terminal. On the next
-# charge (a fresh card state holding P4, FIXTURE_AFTER) the owed 4 + 1 go
-# on first, then P4 pays the 4-sat bill exactly.
+# spent). The payment and the swap succeed, the first change LOAD answers
+# 6A84, and the mint's half of the 5 sats of change is kept on the terminal
+# (the card keeps its own half: the change openings). On the next charge
+# (the same card, its spent slots freed and P4 loaded on top: FIXTURE_AFTER)
+# the owed 4 + 1 are finished from the card's openings and go on first, then
+# P4 pays the 4-sat bill exactly.
 appId: com.flash.pos
 name: 'eCash card: owed change is written on the next tap'
 tags:
@@ -49,6 +51,10 @@ tags:
     file: scripts/post-fixture.js
     env:
       FIXTURE: ${FIXTURE_AFTER}
+      # Not a new card: its change openings hold the other half of the
+      # change it is owed.
+      RESET: 'false'
+      CLEAR_SPENT: 'true'
 # Done is the one way out: back to a fresh keypad.
 - tapOn:
     id: 'charge-done'

@@ -1,0 +1,26 @@
+# The owner's daily limit (2 sats) is under the 3-sat bill. The read sees
+# it in GET_INFO (the card's clock is the tip header it was anchored at, and
+# the stub serves the app the same tip) and refuses BEFORE the PIN pad:
+# nothing is signed, nothing burns.
+appId: com.flash.pos
+name: "eCash card: a bill over the card's daily limit is refused"
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/charge.yaml
+    env:
+      D1: '3'
+      D2: ''
+- extendedWaitUntil:
+    visible:
+      id: 'error-body'
+      text: "This card has reached today's spending limit."
+    timeout: 30000
+- assertNotVisible:
+    id: 'pin-sheet'
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8],"unspentLabels":["P8"]}'

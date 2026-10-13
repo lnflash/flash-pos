@@ -1,5 +1,6 @@
-# Keypad "Card balance" on a PIN card holding one 8-sat proof: the read is
-# SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE, nothing written.
+# Keypad "Card balance" on a PIN card holding one 8-sat piece: the read is
+# SELECT → GET_INFO → GET_PUBKEY → AUTH (the card proves its key) →
+# GET_BALANCE, nothing written.
 appId: com.flash.pos
 name: 'eCash card: balance read'
 tags:

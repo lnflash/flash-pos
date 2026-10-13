@@ -1,9 +1,10 @@
 'use strict';
 /**
  * Pure helpers for the simulator e2e runner (scripts/e2e-flashcard.mjs):
- * the card's P2PK secret, hex, the fixture each Maestro flow starts from,
- * and where the cardsim client is. No network, no dependencies (fs and
- * require are passed in) — jest pins it (__tests__/scripts/e2eLib.test.ts).
+ * the 2.0 card's format-4 secret, hex, the fixture each Maestro flow starts
+ * from, the block-header stub's answers, and where the cardsim client is.
+ * No network, no dependencies (fs and require are passed in) — jest pins it
+ * (__tests__/scripts/e2eLib.test.ts).
  */
 
 /** The PIN every PIN-card flow sets and types. */
@@ -23,8 +24,11 @@ const CARD_SAT = 8;
 /** The proof the owed-change flow's second charge pays with, exactly. */
 const NEXT_SAT = 4;
 
-/** A cashu-javacard holds 32 proof slots. */
-const CARD_SLOTS = 32;
+/** A protocol 2.0 cashu-javacard holds 128 proof slots. */
+const CARD_SLOTS = 128;
+
+/** The daily limit the limit-refusal flow sets: under the 3-sat bill. */
+const DAY_LIMIT_SAT = 2;
 
 /**
  * How long `back-during-change-write` holds each change LOAD at the bridge
@@ -37,10 +41,11 @@ const CARD_SLOTS = 32;
 const HOLD_LOAD_MS = 10000;
 
 /**
- * The NUT-10 secret for a proof locked to the card, byte-identical to
- * `buildCardP2PKSecret` (src/services/cashuMint.ts). The app rebuilds this
- * string from the nonce and pubkey the card reports when it spends the slot;
- * a fixture minted with any other serialization is a proof the mint rejects
+ * The format-4 secret of an undated piece locked to the card (cashu-javacard
+ * spec/NUT-XX.md), byte-identical to `buildCardSigAllSecret`
+ * (src/services/cashuMint.ts). The card rebuilds this text from the nonce
+ * and its key when it signs a payment, and the app rebuilds it for the swap;
+ * a fixture minted with any other serialization is a piece the mint refuses
  * after the card has burned it.
  */
 function cardSecret(nonce, cardPubkey) {
@@ -49,7 +54,7 @@ function cardSecret(nonce, cardPubkey) {
     {
       nonce: nonce.toLowerCase(),
       data: cardPubkey.toLowerCase(),
-      tags: [['sigflag', 'SIG_INPUTS']],
+      tags: [['sigflag', 'SIG_ALL']],
     },
   ]);
 }
@@ -70,10 +75,15 @@ const FULL_FILLERS = fillerLabels(CARD_SLOTS - 1);
 
 /**
  * What each flow needs minted (label → sats) and the card states it posts to
- * cardsim, by stage name. Every stage is applied as `/reset` then
- * `/fixture`. `proofs` are labels into `mint`, loaded in order into slots
- * 0…n; `spentSlots` are indexes into `proofs`, spent on the card only.
- * `link` is extra query for the card-bridge deep link.
+ * cardsim, by stage name. A stage is a fresh card unless it says `onTop`:
+ * `/reset`, then `/fixture` with the record (the mint), the TEST owner and
+ * the tip header as its anchor (the card's clock), then its pieces. An
+ * `onTop` stage is applied to the card as the flow left it (no `/reset`:
+ * the card's change openings must survive), after a `CLEAR_SPENT` when it
+ * says `clearSpent`. `proofs` are labels into `mint`, loaded in order into
+ * the free slots, each with the mint's DLEQ; `spentSlots` are indexes into
+ * `proofs`, spent on the card only. `limits` are the owner's. `link` is
+ * extra query for the card-bridge deep link.
  *
  * The flow YAML posts each stage from the env var `FIXTURE_<STAGE>`.
  */
@@ -116,17 +126,28 @@ const FLOWS = {
         proofs: ['P8', ...FULL_FILLERS],
         spentSlots: FULL_FILLERS.map((_, i) => i + 1),
       },
-      // P8 is spent at the mint now and must not come back; P4 pays the
-      // second bill exactly, after the owed 4 + 1 go on.
-      AFTER: {pin: PIN, proofs: ['P4']},
+      // The same card, on top: its spent slots freed (the change openings
+      // of the 4 + 1 it is owed stay on it), then P4. P8 is spent at the
+      // mint now and must not come back; P4 pays the second bill exactly,
+      // after the owed 4 + 1 go on.
+      AFTER: {onTop: true, clearSpent: true, proofs: ['P4']},
     },
   },
   'lost-load-answer': {
     mint: {P8: CARD_SAT},
-    // A PIN card: the keypad read only reconciles it, so the balance shows
-    // what the card holds and what is still waiting, untouched.
+    // A PIN card. The keypad's balance tap after the charge is the tap
+    // after a payment: the card's change grant lets the 1 sat still owed go
+    // on with no PIN, and the 4 whose answer was lost is never sent again.
     stages: {INITIAL: {pin: PIN, proofs: ['P8']}},
     link: {dropLoad: 1},
+  },
+  'limit-refusal': {
+    mint: {P8: CARD_SAT},
+    // The owner's daily limit is under the bill: refused before the PIN
+    // pad, nothing burned.
+    stages: {
+      INITIAL: {pin: PIN, proofs: ['P8'], limits: {day: DAY_LIMIT_SAT}},
+    },
   },
   'back-during-change-write': {
     mint: {P8: CARD_SAT},
@@ -142,12 +163,21 @@ const FLOW_NAMES = Object.keys(FLOWS);
 
 /**
  * A cardsim `/fixture` body for one stage. `minted` maps each label to a
- * card proof `{keysetId, amount, nonce, C}`.
+ * card piece `{keysetId, amount, nonce, C, dleq}`. `card` is what a fresh
+ * card is set up with: `{mint}` (the record) and `{anchor}` (the tip header
+ * the TEST owner is set with). An `onTop` stage carries its pieces only.
  */
-function buildFixture(stage, minted) {
+function buildFixture(stage, minted, card = {}) {
   const body = {};
-  if (stage.pin) {
-    body.pin = stage.pin;
+  if (!stage.onTop) {
+    if (stage.pin) {
+      body.pin = stage.pin;
+    }
+    body.mint = card.mint || PLACEHOLDER_MINT;
+    body.owner = true;
+    if (card.anchor) {
+      body.anchor = card.anchor;
+    }
   }
   body.proofs = stage.proofs.map(label => {
     const proof = minted[label];
@@ -159,15 +189,22 @@ function buildFixture(stage, minted) {
       amount: proof.amount,
       nonce: proof.nonce,
       C: proof.C,
+      ...(proof.dleq ? {dleq: {...proof.dleq}} : {}),
     };
   });
   if (stage.spentSlots && stage.spentSlots.length > 0) {
     body.spentSlots = [...stage.spentSlots];
   }
+  if (stage.limits) {
+    body.limits = {...stage.limits};
+  }
   return body;
 }
 
-/** Placeholder proofs for --dry-run: well-formed, never minted. */
+/** The record's mint for --dry-run's fixtures. */
+const PLACEHOLDER_MINT = 'http://127.0.0.1:3338';
+
+/** Placeholder pieces for --dry-run: well-formed, never minted. */
 function placeholderProofs(flow) {
   const out = {};
   Object.entries(FLOWS[flow].mint).forEach(([label, amount], i) => {
@@ -176,13 +213,18 @@ function placeholderProofs(flow) {
       amount,
       nonce: (i + 1).toString(16).padStart(64, '0'),
       C: `02${'00'.repeat(32)}`,
+      dleq: {e: '11'.repeat(32), s: '22'.repeat(32), r: '33'.repeat(32)},
     };
   });
   return out;
 }
 
-/** The card-bridge deep link a flow opens. */
-function bridgeLink(bridgeUrl, flow) {
+/**
+ * The card-bridge deep link a flow opens. `headerApi` is the runner's
+ * block-header stub (an Esplora API base), which the app then takes the
+ * tip header from instead of mempool.space (`blockHeader.ts`).
+ */
+function bridgeLink(bridgeUrl, flow, headerApi) {
   const params = [`url=${encodeURIComponent(bridgeUrl)}`];
   const link = FLOWS[flow].link || {};
   if (link.dropLoad) {
@@ -191,7 +233,57 @@ function bridgeLink(bridgeUrl, flow) {
   if (link.holdLoad) {
     params.push(`holdLoad=${link.holdLoad}`);
   }
+  if (headerApi) {
+    params.push(`headers=${encodeURIComponent(headerApi)}`);
+  }
   return `flashpos://dev/card-bridge?${params.join('&')}`;
+}
+
+/**
+ * What the block-header stub answers (an Esplora API, the two routes the app
+ * asks): `GET <base>/blocks/tip/hash` and `GET <base>/block/<hash>/header`.
+ * `tip` is `{hash, header}` (hex). Anything else is a 404.
+ */
+function headerStubAnswer(path, tip) {
+  const route = path.replace(/^.*?(\/blocks?\/)/, '$1');
+  if (route === '/blocks/tip/hash') {
+    return {status: 200, body: tip.hash};
+  }
+  if (route === `/block/${tip.hash}/header`) {
+    return {status: 200, body: tip.header};
+  }
+  return {status: 404, body: 'not found'};
+}
+
+/**
+ * The newest header of cashu-javacard's `spec/vectors/headers.json`: real
+ * mainnet work, so a 2.0 card's floor takes it. Every fresh card is set up
+ * with it as its anchor, and the stub serves it as the tip, so a flow's
+ * clock is the run's to choose and does not move under it.
+ */
+function tipFromVectors(vectors) {
+  const headers = vectors && vectors.headers;
+  if (!Array.isArray(headers) || headers.length === 0) {
+    throw new Error('headers.json holds no headers');
+  }
+  const tip = headers.reduce((a, b) => (b.height > a.height ? b : a));
+  if (
+    !/^[0-9a-f]{160}$/i.test(tip.header) ||
+    !/^[0-9a-f]{64}$/i.test(tip.hash)
+  ) {
+    throw new Error(
+      `headers.json's tip is not a header: ${JSON.stringify(tip)}`,
+    );
+  }
+  return {hash: tip.hash.toLowerCase(), header: tip.header.toLowerCase()};
+}
+
+/** Where headers.json sits beside a cashu-javacard checkout's client.cjs. */
+function headerVectorsPath(clientPath) {
+  return clientPath.replace(
+    /tools\/cardsim\/client\.cjs$/,
+    'spec/vectors/headers.json',
+  );
 }
 
 /**
@@ -288,11 +380,11 @@ const WARM_TIMEOUT_MS = 60_000;
  * with WARM_TIMEOUT_MS), before any flow. A fresh cardsim JVM answers its
  * first APDUs slowly (class loading, the first secp256k1 operations), and
  * on a hosted runner that is past the app's 5 s bridge deadline: the
- * flow's first card read then fails as "no answer". SIGN_ARBITRARY runs the
- * signing code SPEND_PROOF uses without spending a slot; a card that
- * refuses it (a status word, e.g. a PIN first) is still warm. A transport
- * failure is not tolerated. Leaves no state a flow depends on: every flow
- * starts with /reset. Returns the elapsed milliseconds.
+ * flow's first card read then fails as "no answer". AUTH runs the BIP-340
+ * signing code a payment uses without spending anything; a card that
+ * refuses it (a status word) is still warm. A transport failure is not
+ * tolerated. Leaves no state a flow depends on: every flow starts with
+ * /reset. Returns the elapsed milliseconds.
  */
 async function warmCardSim(sim, client, now = Date.now) {
   const start = now();
@@ -302,7 +394,7 @@ async function warmCardSim(sim, client, now = Date.now) {
   await sim.getBalance();
   await sim.getSlotStatus();
   try {
-    await sim.sign(Buffer.alloc(32));
+    await sim.auth(Buffer.alloc(16, 0x5a));
   } catch (error) {
     if (!(error instanceof client.CardError)) {
       throw error;
@@ -354,6 +446,7 @@ module.exports = {
   BILL_SAT,
   CARD_SAT,
   CARD_SLOTS,
+  DAY_LIMIT_SAT,
   HOLD_LOAD_MS,
   NEXT_SAT,
   FLOWS,
@@ -362,10 +455,14 @@ module.exports = {
   bridgeLink,
   buildFixture,
   cardSecret,
+  headerStubAnswer,
+  headerVectorsPath,
   loadCardSim,
+  PLACEHOLDER_MINT,
   placeholderProofs,
   requireCardSimClient,
   resolveCardSimClient,
+  tipFromVectors,
   toHex,
   validateFlows,
   validateStages,

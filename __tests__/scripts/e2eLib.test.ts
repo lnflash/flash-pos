@@ -1,27 +1,35 @@
-import {buildCardP2PKSecret} from '../../src/services/cashuMint';
+import {buildCardSigAllSecret} from '../../src/services/cashuMint';
 
 // The e2e runner's pure half (scripts/e2e-flashcard/lib.cjs). Plain CommonJS
 // so Node runs it with no build step; jest loads it the same way.
 const lib = require('../../scripts/e2e-flashcard/lib.cjs');
 
 describe('cardSecret', () => {
-  // A fixture whose secret differs from the app's by one byte is a proof the
-  // mint rejects AFTER the card has burned its slot: the drift this pins.
+  // A fixture whose secret differs from the app's (and the card's) by one
+  // byte is a piece the mint refuses AFTER the card has burned it: the
+  // drift this pins.
   it.each([
     ['lower-case inputs', 'ab'.repeat(32), `02${'cd'.repeat(32)}`],
     ['upper-case inputs', 'AB'.repeat(32), `03${'CD'.repeat(32)}`],
     ['mixed-case inputs', 'aB'.repeat(32), `02${'Cd'.repeat(32)}`],
   ])(
-    'is byte-identical to buildCardP2PKSecret for %s',
+    'is byte-identical to buildCardSigAllSecret for %s',
     (_label, nonce, pubkey) => {
       expect(lib.cardSecret(nonce, pubkey)).toBe(
-        buildCardP2PKSecret(nonce, pubkey),
+        buildCardSigAllSecret(nonce, pubkey),
       );
     },
   );
 
-  it('keeps the sigflag tag cashu-ts would drop', () => {
-    expect(lib.cardSecret('00', '02aa')).toContain('["sigflag","SIG_INPUTS"]');
+  it('is the 2.0 format-4 piece: SIG_ALL, never the 0.x SIG_INPUTS', () => {
+    expect(lib.cardSecret('00', '02aa')).toContain('["sigflag","SIG_ALL"]');
+    expect(lib.cardSecret('00', '02aa')).not.toContain('SIG_INPUTS');
+  });
+
+  it("is the applet's own vector, byte for byte (spec/vectors/secret.json)", () => {
+    const vectors = require('../fixtures/card-protocol-2.0/secret.json');
+    const undated = vectors.pieces.find((p: {date: number}) => p.date === 0);
+    expect(lib.cardSecret(undated.nonce, vectors.cardKey)).toBe(undated.secret);
   });
 });
 
@@ -52,7 +60,7 @@ describe('FLOWS', () => {
     expect(lib.CARD_SAT - lib.BILL_SAT).toBe(5);
   });
 
-  it('the full-card fixture holds 32 proofs, 31 of them spent, the bill proof live in slot 0', () => {
+  it('the full-card fixture holds 128 pieces, 127 of them spent, the bill piece live in slot 0', () => {
     const body = lib.buildFixture(
       lib.FLOWS['full-card-refusal'].stages.INITIAL,
       minted('full-card-refusal'),
@@ -62,6 +70,35 @@ describe('FLOWS', () => {
     expect(body.spentSlots).not.toContain(0);
     expect(body.proofs[0].amount).toBe(lib.CARD_SAT);
     expect(body.pin).toBe(lib.PIN);
+    expect(lib.CARD_SLOTS).toBe(128);
+  });
+
+  it('a fresh stage is a set-up card: the record, the TEST owner anchored at the tip, pieces with their DLEQ', () => {
+    const body = lib.buildFixture(
+      lib.FLOWS['charge-with-change'].stages.INITIAL,
+      minted('charge-with-change'),
+      {mint: 'http://127.0.0.1:3338', anchor: 'ab'.repeat(80)},
+    );
+    expect(body).toMatchObject({
+      pin: lib.PIN,
+      mint: 'http://127.0.0.1:3338',
+      owner: true,
+      anchor: 'ab'.repeat(80),
+    });
+    expect(body.proofs[0].dleq).toEqual({
+      e: expect.stringMatching(/^[0-9a-f]{64}$/),
+      s: expect.stringMatching(/^[0-9a-f]{64}$/),
+      r: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  });
+
+  it("the limit-refusal card carries the owner's daily limit, under the bill", () => {
+    const body = lib.buildFixture(
+      lib.FLOWS['limit-refusal'].stages.INITIAL,
+      minted('limit-refusal'),
+    );
+    expect(body.limits).toEqual({day: lib.DAY_LIMIT_SAT});
+    expect(lib.DAY_LIMIT_SAT).toBeLessThan(lib.BILL_SAT);
   });
 
   it('owed-change: the FULL stage keeps the very proof the read planned, and AFTER never brings it back', () => {
@@ -79,11 +116,38 @@ describe('FLOWS', () => {
     expect(after.proofs[0].amount).toBe(lib.NEXT_SAT);
   });
 
+  it('owed-change: AFTER is applied on top of the same card (its change openings survive), after CLEAR_SPENT', () => {
+    const {AFTER} = lib.FLOWS['owed-change-next-tap'].stages;
+    expect(AFTER).toMatchObject({onTop: true, clearSpent: true});
+    const after = lib.buildFixture(AFTER, minted('owed-change-next-tap'), {
+      mint: 'http://m',
+      anchor: 'ab'.repeat(80),
+    });
+    // No set-up keys: SET_OWNER again would need the old owner's proof, and
+    // a /reset would wipe the openings the owed change is finished from.
+    expect(Object.keys(after)).toEqual(['proofs']);
+    const fs = require('fs');
+    const path = require('path');
+    const yaml = fs.readFileSync(
+      path.join(
+        __dirname,
+        '../../.maestro/flashcard/owed-change-next-tap.yaml',
+      ),
+      'utf8',
+    );
+    expect(yaml).toMatch(
+      /FIXTURE: \$\{FIXTURE_AFTER\}\n(\s+#.*\n)*\s+RESET: 'false'\n\s+CLEAR_SPENT: 'true'/,
+    );
+  });
+
   it('only the PIN-less flow posts a card without a PIN', () => {
     const pinless = lib.FLOW_NAMES.filter((flow: string) =>
       Object.values(
-        lib.FLOWS[flow].stages as Record<string, {pin?: string}>,
-      ).some(stage => !stage.pin),
+        lib.FLOWS[flow].stages as Record<
+          string,
+          {pin?: string; onTop?: boolean}
+        >,
+      ).some(stage => !stage.pin && !stage.onTop),
     );
     expect(pinless).toEqual(['charge-no-pin']);
   });
@@ -95,11 +159,13 @@ describe('FLOWS', () => {
         nonce: string;
         C: string;
         amount: number;
+        dleq?: Record<string, string>;
       }[]) {
         expect(proof.keysetId).toMatch(/^[0-9a-f]{16}$/);
         expect(proof.nonce).toMatch(/^[0-9a-f]{64}$/);
         expect(proof.C).toMatch(/^0[23][0-9a-f]{64}$/);
         expect(proof.amount).toBeGreaterThan(0);
+        expect(Object.keys(proof.dleq ?? {}).sort()).toEqual(['e', 'r', 's']);
       }
     }
   });
@@ -144,6 +210,25 @@ describe('bridgeLink', () => {
     ).toEqual({
       action: 'set',
       config: {url: 'http://127.0.0.1:9876', holdLoadMs: 10000},
+    });
+  });
+
+  it('adds the block-header stub, which the app parses back as its header API', () => {
+    const {parseCardBridgeLink} = require('../../src/services/cardBridge');
+    const link = lib.bridgeLink(
+      'http://127.0.0.1:9876',
+      'charge-with-change',
+      'http://127.0.0.1:41234/api',
+    );
+    expect(link).toBe(
+      'flashpos://dev/card-bridge?url=http%3A%2F%2F127.0.0.1%3A9876&headers=http%3A%2F%2F127.0.0.1%3A41234%2Fapi',
+    );
+    expect(parseCardBridgeLink(link)).toEqual({
+      action: 'set',
+      config: {
+        url: 'http://127.0.0.1:9876',
+        headerApi: 'http://127.0.0.1:41234/api',
+      },
     });
   });
 
@@ -310,8 +395,8 @@ describe('the cardsim client', () => {
           getPubkey: step('getPubkey'),
           getBalance: step('getBalance'),
           getSlotStatus: step('getSlotStatus'),
-          sign: async (message: Buffer) => {
-            calls.push(`sign:${message.length}`);
+          auth: async (reader: Buffer) => {
+            calls.push(`auth:${reader.length}`);
             return signImpl ? signImpl() : null;
           },
         },
@@ -327,7 +412,7 @@ describe('the cardsim client', () => {
         'getPubkey',
         'getBalance',
         'getSlotStatus',
-        'sign:32',
+        'auth:16',
       ]);
     });
 
@@ -339,9 +424,9 @@ describe('the cardsim client', () => {
       ).resolves.toBe(7500);
     });
 
-    it('takes a card that refuses SIGN_ARBITRARY with a status word as warm', async () => {
+    it('takes a card that refuses AUTH with a status word as warm', async () => {
       const {sim} = recordingSim(() =>
-        Promise.reject(new CardError('SIGN_ARBITRARY: 6982')),
+        Promise.reject(new CardError('AUTH: 6700')),
       );
       await expect(lib.warmCardSim(sim, client)).resolves.toEqual(
         expect.any(Number),
@@ -407,13 +492,22 @@ describe('the cardsim client', () => {
     });
   });
 
-  // The reference client itself, when a cashu-javacard checkout is next to
-  // this repo (locally) or in cardsim/ (the e2e workflow). The plain jest CI
-  // job has neither and skips this.
-  const real = lib.resolveCardSimClient({
+  // The reference client itself, when a protocol 2.0 cashu-javacard
+  // checkout is named by CARDSIM_CLIENT, next to this repo (locally) or in
+  // cardsim/ (the e2e workflow). The plain jest CI job has none and skips
+  // this, and so does a checkout still on the 0.x client (its fixtures have
+  // no record, owner or DLEQ).
+  const found = lib.resolveCardSimClient({
+    env: process.env.CARDSIM_CLIENT,
     root: path.join(__dirname, '../..'),
     exists: fs.existsSync,
   });
+  const real =
+    found &&
+    fs.existsSync(found) &&
+    require(found).constants?.VERSION?.major === 2
+      ? found
+      : null;
   (real ? describe : describe.skip)('through the reference client', () => {
     it('a bridge that stops answering fails the call instead of hanging', async () => {
       const wedged = (_url: string, init: {signal: AbortSignal}) =>
@@ -573,5 +667,46 @@ describe('flows that fail the change write after the swap (ENG-642)', () => {
     for (const f of postSwap) {
       expect(read(f)).not.toContain('pin-error-text');
     }
+  });
+});
+
+describe('the block-header stub', () => {
+  const tip = {hash: 'ab'.repeat(32), header: 'cd'.repeat(80)};
+
+  it('answers the two Esplora routes the app asks, under any base path', () => {
+    expect(lib.headerStubAnswer('/api/blocks/tip/hash', tip)).toEqual({
+      status: 200,
+      body: tip.hash,
+    });
+    expect(lib.headerStubAnswer(`/api/block/${tip.hash}/header`, tip)).toEqual({
+      status: 200,
+      body: tip.header,
+    });
+    expect(lib.headerStubAnswer('/api/block/00/header', tip).status).toBe(404);
+    expect(lib.headerStubAnswer('/', tip).status).toBe(404);
+  });
+
+  it("serves the newest of the applet's header vectors, which hash to their hash", () => {
+    const vectors = require('../fixtures/card-protocol-2.0/headers.json');
+    const served = lib.tipFromVectors(vectors);
+    const newest = vectors.headers.reduce(
+      (a: {height: number}, b: {height: number}) =>
+        b.height > a.height ? b : a,
+    );
+    expect(served).toEqual({hash: newest.hash, header: newest.header});
+    const {blockHash} = require('../../src/services/blockHeader');
+    expect(blockHash(Array.from(Buffer.from(served.header, 'hex')))).toBe(
+      served.hash,
+    );
+  });
+
+  it('refuses vectors with no header', () => {
+    expect(() => lib.tipFromVectors({headers: []})).toThrow(/no headers/);
+  });
+
+  it("finds headers.json beside a checkout's client.cjs", () => {
+    expect(
+      lib.headerVectorsPath('/x/cashu-javacard/tools/cardsim/client.cjs'),
+    ).toBe('/x/cashu-javacard/spec/vectors/headers.json');
   });
 });

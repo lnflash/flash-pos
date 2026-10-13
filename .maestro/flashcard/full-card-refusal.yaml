@@ -1,5 +1,6 @@
-# Every other slot is spent: 5 sats of change (4 + 1) need 2 free slots and
-# the card has 0. The pre-flight refuses BEFORE anything burns (ENG-630).
+# Every other slot of the 128 is spent: 5 sats of change (4 + 1) need 2
+# free slots and the card has 0. The pre-flight refuses BEFORE anything
+# burns (ENG-630).
 appId: com.flash.pos
 name: 'eCash card: a full card is refused before the burn'
 tags:
