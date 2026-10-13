@@ -184,9 +184,12 @@ back to the package AID only when the full AID answers `6A82`. The package AID
 is a prefix, and on a real J3R180 provisioned as documented (the opener
 `F0 CASHUCARD 4D` installed first, then the applet, then the tag) a SELECT by
 it reaches the opener, which answers `9000` with no version and `6D00` to the
-next command (ENG-681). So a `9000` from the package AID counts only when it
-carries a `02 xx` version; anything else falls through to the old-AID probe
-instead of reading as "This card needs an update".
+next command (ENG-681). So a `9000` from the package AID with an empty body
+(the opener's only answer) falls through to the old-AID probe instead of
+reading as "This card needs an update". A `9000` from it with a `02 xx`
+version is the applet; one with any other body (`03 00`, `01 14`, one byte)
+is an applet running other software, and still reads as "This card needs an
+update".
 
 **Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
 protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 applet AID is tried
@@ -194,7 +197,7 @@ first. Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"),
 any answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
 `6E00` or `6999` — is **"This card needs an update"**. A card where neither
 2.0 AID reaches the applet (the full AID answers `6A82`, the package AID
-`6A82` or a `9000` without a `02 xx` version) is asked for the old AIDs (0.x, and Foxy's 1.x
+`6A82` or a `9000` with an empty body) is asked for the old AIDs (0.x, and Foxy's 1.x
 `F0 46 4F 58 59 43 41 52 44`, which `spec/APDU.md` also names); one that
 answers is an old card, and the terminal says **"This card needs an update"**
 and sends nothing else — no PIN pad, no write, no spend

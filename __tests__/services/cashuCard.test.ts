@@ -709,26 +709,6 @@ describe('selectApplet', () => {
     expect(card.answers.map(toHex)).not.toContain('6d00');
   });
 
-  it('the old package-first order fails on the provisioned card (the bug)', async () => {
-    // What the pre-ENG-681 selectApplet sent first: the package AID. The
-    // opener answers 9000 with no version, which reads as "needs an update",
-    // and the next command (GET_INFO) answers 6D00.
-    const card = j3r180WithOpener();
-    const answer = await card.transceive([
-      0x00,
-      0xa4,
-      0x04,
-      0x00,
-      PACKAGE_AID.length,
-      ...PACKAGE_AID,
-      0x00,
-    ]);
-    expect(answer).toEqual([0x90, 0x00]);
-    expect(await card.transceive([0xb0, 0x01, 0x01, 0x00, 0x00])).toEqual(
-      sw(0x6d00),
-    );
-  });
-
   it('a full-AID answer of version 03 00 needs an update, with no fallback AID tried', async () => {
     const card = fakeCard({selectVersion: [3, 0]});
     const failure = await selectApplet(card.transceive).catch(e => e);
@@ -757,12 +737,7 @@ describe('selectApplet', () => {
     ]);
   });
 
-  it.each([
-    ['no body', [0x90, 0x00]],
-    ['version 03 00', [0x03, 0x00, 0x90, 0x00]],
-    ['version 01 14', [0x01, 0x14, 0x90, 0x00]],
-    ['a one-byte body', [0x02, 0x90, 0x00]],
-  ])(
+  it.each([['no body', [0x90, 0x00]]])(
     'a package-AID 9000 with %s falls through to the old-AID probe',
     async (_, answer) => {
       const card = fakeCard({
@@ -779,6 +754,32 @@ describe('selectApplet', () => {
         toHex(APPLET_AID),
         toHex(PACKAGE_AID),
         toHex(LEGACY_AIDS[0]),
+      ]);
+    },
+  );
+
+  it.each([
+    ['version 03 00', [0x03, 0x00, 0x90, 0x00]],
+    ['version 01 14', [0x01, 0x14, 0x90, 0x00]],
+    ['a one-byte body', [0x02, 0x90, 0x00]],
+  ])(
+    'a package-AID versioned non-2.0 answer (%s) needs an update, no legacy probe',
+    async (_, answer) => {
+      const card = fakeCard({
+        selectFails: [APPLET_AID.length],
+        packageAnswer: answer,
+      });
+      const failure = await selectApplet(card.transceive).catch(e => e);
+
+      // The package AID reached an applet running other software: that is
+      // "needs an update" on its own, not a fall-through to 6A82 and LNURLw.
+      expect(failure).toBeInstanceOf(CardNeedsUpdateError);
+      expect(failure.message).toBe(CARD_NEEDS_UPDATE);
+      expect(isAppletNotFound(failure)).toBe(false);
+      expect(card.sent).toHaveLength(2);
+      expect(card.sent.map(a => toHex(a.slice(5, 5 + a[4])))).toEqual([
+        toHex(APPLET_AID),
+        toHex(PACKAGE_AID),
       ]);
     },
   );

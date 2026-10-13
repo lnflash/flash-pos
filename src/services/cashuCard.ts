@@ -512,9 +512,11 @@ const isNotFound = (error: unknown): boolean =>
  * The package AID is a prefix, and a prefix SELECT finds whichever instance
  * the card lists first. On a real J3R180 provisioned as documented that is
  * the opener (`F0 CASHUCARD 4D`), which answers `9000` with no body (ENG-681).
- * So a `9000` from the package AID counts only when its body is exactly
- * `02 xx`; any other body is not the applet and falls through, like `6A82`.
- * Any other status word from it still throws `CardNeedsUpdateError`.
+ * So on the package AID, `9000` with exactly `02 xx` is the applet, and
+ * `9000` with an EMPTY body (the opener's only answer) falls through like
+ * `6A82`. A `9000` with any other non-empty body (`03 00`, `01 14`, one byte)
+ * is an applet running other software and throws `CardNeedsUpdateError`, as
+ * does any status word but `9000` or `6A82`.
  *
  * Only when neither 2.0 AID reached the applet does this go on to the old
  * AIDs (0.x and Foxy 1.x, spec/APDU.md "SELECT APPLICATION"): if one
@@ -549,8 +551,8 @@ export async function selectApplet(transceive: Transceiver): Promise<number[]> {
     if (version.length === 2 && version[0] === PROTOCOL_MAJOR) {
       return version;
     }
-    if (aid === PACKAGE_AID) {
-      // The prefix reached another instance (the opener), not the applet.
+    if (aid === PACKAGE_AID && version.length === 0) {
+      // The prefix reached the opener (9000, empty body), not the applet.
       continue;
     }
     throw new CardNeedsUpdateError(
