@@ -464,6 +464,31 @@ export class ProofAlreadySpentError extends PermanentSettlementError {
 }
 
 /**
+ * Run every write in order, each whether or not an earlier one failed, then
+ * throw the first failure. For bookkeeping where one write refusing must not
+ * cost the record another write would have kept (ENG-642's pattern: the
+ * merchant's take and the customer's change must each be attempted on their
+ * own, never short-circuited by the other's failure).
+ */
+export async function allAttempted(
+  writes: Array<() => Promise<unknown>>,
+): Promise<void> {
+  let first: {error: unknown} | null = null;
+  for (const write of writes) {
+    try {
+      await write();
+    } catch (error) {
+      if (!first) {
+        first = {error};
+      }
+    }
+  }
+  if (first) {
+    throw first.error;
+  }
+}
+
+/**
  * Rebuild the proof to submit to the mint from a queue entry alone.
  *
  * This is the whole point of persisting `secret`: after a relaunch the card is

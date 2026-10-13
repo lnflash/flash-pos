@@ -64,6 +64,7 @@ import {
 import {recoverNeedsCard, spendAll} from './cashuSpend';
 import {PhaseError} from './phaseError';
 import {
+  allAttempted,
   isCardChange,
   markEntriesSettled,
   markOwedChangeAttemptFailed,
@@ -1353,27 +1354,6 @@ export async function executeCharge({
       throw error;
     }
     throw new PhaseError(PHASE_AFTER_SWAP, error, {paid: true});
-  }
-}
-
-/**
- * Run every write in order, each whether or not an earlier one failed, then
- * throw the first failure. For bookkeeping where one write refusing must not
- * cost the record another write would have kept.
- */
-async function allAttempted(writes: Array<() => Promise<unknown>>) {
-  let first: {error: unknown} | null = null;
-  for (const write of writes) {
-    try {
-      await write();
-    } catch (error) {
-      if (!first) {
-        first = {error};
-      }
-    }
-  }
-  if (first) {
-    throw first.error;
   }
 }
 

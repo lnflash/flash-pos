@@ -52,6 +52,7 @@ import {
 } from '@noble/hashes/utils';
 
 import {
+  allAttempted,
   PermanentSettlementError,
   ProofAlreadySpentError,
   recordOwedCardChange,
@@ -752,16 +753,22 @@ export function createSettlementAdapter(): SettlementAdapter {
       throw mapSwapError(error, entry);
     }
     // The mint holds the payment. From here a failure is a persistence
-    // problem: the customer's change first (it exists nowhere else), then
-    // the merchant's take. Rethrowing leaves the entry ambiguous, which the
-    // drain resolves by checkState — honest, never marked failed.
-    await recordOwedCardChange(
-      entry.cardPubkey,
-      result.cardChange,
-      {mintUrl: entry.mintUrl, unit: entry.unit},
-      Date.now(),
-    );
-    await appendSettledProofs(result.till);
+    // problem: the customer's change and the merchant's take each exist
+    // nowhere else, so BOTH writes always run, whether or not the other
+    // lands (ENG-642's `allAttempted` pattern) — a keychain that refuses
+    // the change write must never cost the merchant's take, and the other
+    // way round. Rethrowing the first failure leaves the entry ambiguous,
+    // which the drain resolves by checkState — honest, never marked failed.
+    await allAttempted([
+      () =>
+        recordOwedCardChange(
+          entry.cardPubkey,
+          result.cardChange,
+          {mintUrl: entry.mintUrl, unit: entry.unit},
+          Date.now(),
+        ),
+      () => appendSettledProofs(result.till),
+    ]);
   };
 
   const checkState = async (

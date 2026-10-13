@@ -46,6 +46,7 @@ import {
 import * as mintModule from '../../src/services/cashuMint';
 import {
   listOwedChange,
+  OWED_CHANGE_KEY,
   PermanentSettlementError,
   ProofAlreadySpentError,
   TransportSettlementError,
@@ -1416,6 +1417,32 @@ describe('swap — a 2.0 payment (SIG_ALL)', () => {
     await expect(createSettlementAdapter().swap(entry)).rejects.toBeInstanceOf(
       TransportSettlementError,
     );
+  });
+
+  it("still records the till when the owed-change write fails, and never drops the other's write (ENG-674 should-fix, allAttempted)", async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    walletMocks.mintSwap.mockImplementation(async req => mint.swap(req));
+    const entry = await sigAllEntry(mint);
+    const {setSecure} = jest.requireMock(
+      '../../src/services/secureStorage',
+    ) as {setSecure: jest.Mock};
+    setSecure.mockImplementation(async (k: string, v: string) => {
+      if (k === OWED_CHANGE_KEY) {
+        throw new Error('keychain refused');
+      }
+      mockStore[k] = v;
+    });
+
+    // The mint accepted the swap before either write ran: rethrowing the
+    // owed-change failure must never cost the merchant's take the write it
+    // would otherwise have kept (ENG-642's `allAttempted` pattern — before
+    // this fix, the till write never ran at all once the change write
+    // threw).
+    await expect(createSettlementAdapter().swap(entry)).rejects.toThrow(
+      'keychain refused',
+    );
+    expect((await listSettledProofs()).map(p => p.amount)).toEqual([16, 4]);
   });
 });
 
