@@ -1089,7 +1089,7 @@ describe('CashuCardCharge', () => {
       ).toHaveLength(0);
     });
 
-    it('the card burned and its answer was lost: "Not confirmed yet", recovered only at the next tap, no re-charge (ENG-674)', async () => {
+    it('the card burned and its answer was lost: "Not confirmed yet", recoverable only if its next payment is on this terminal, no re-charge (ENG-674)', async () => {
       jest.useFakeTimers(FAKE_TIMERS);
       mockExecuteCharge.mockImplementation(
         async ({

@@ -206,8 +206,10 @@ export function signatureInvalid(failure: Failure): boolean {
  * ENG-674: the card burned and its answer was lost —
  * `PHASE_SETTLING_NEEDS_CARD` in `cashuCharge.ts`. Unconfirmed (it also
  * matches `settleUnconfirmed`, for the title), but only the card's next
- * payment on this terminal can recover it: the body must not promise the
- * terminal is retrying on its own.
+ * payment on this terminal can recover it: SPEND_ALL_AGAIN gives the card's
+ * LAST signature, and a payment made anywhere else first replaces it. The
+ * body must not promise the terminal is retrying on its own, nor that the
+ * payment will be recovered.
  */
 const SETTLING_NEEDS_CARD = /\(signature lost, next tap\)$/i;
 
@@ -219,7 +221,7 @@ export const SIGNATURE_INVALID_BODY =
   "The card's signature for this payment is not valid, so this bill is not paid and nothing reached the mint. Don't charge the card again. The payment is saved on this terminal for review.";
 
 export const NEEDS_CARD_BODY =
-  "The card has paid, but its answer was lost, so the mint hasn't confirmed this payment. It is recovered from the card the next time the card pays on this terminal. Hold the goods until then, and don't charge the card again for this bill.";
+  "The card has paid, but its answer was lost, so this payment is not confirmed. It can be recovered only if the card's next payment is made on this terminal. Hold the goods, and don't charge the card again for this bill.";
 
 export const REFUSED_BODY =
   "The mint refused this payment after the card paid it, so this bill is not paid. Don't charge the card again. The payment is saved on this terminal for review.";

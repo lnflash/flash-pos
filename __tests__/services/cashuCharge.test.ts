@@ -2773,6 +2773,18 @@ describe('ENG-674 review round 2', () => {
       ).toBe(NEEDS_CARD_BODY);
       expect(NEEDS_CARD_BODY).not.toMatch(/keeps trying/i);
       expect(NEEDS_CARD_BODY).not.toBe(UNCONFIRMED_BODY);
+      // It promises only what holds (SPEND_ALL_AGAIN gives the card's LAST
+      // signature: a payment made anywhere else first replaces it). Not
+      // confirmed; recoverable only if the card's next payment is on this
+      // terminal; hold the goods. Never that it WILL be recovered.
+      expect(NEEDS_CARD_BODY).toMatch(/this payment is not confirmed/);
+      expect(NEEDS_CARD_BODY).toMatch(
+        /recovered only if the card's next payment is made on this terminal/,
+      );
+      expect(NEEDS_CARD_BODY).toMatch(/Hold the goods/);
+      expect(NEEDS_CARD_BODY).not.toMatch(/is recovered|will be recovered/i);
+      expect(NEEDS_CARD_BODY).not.toMatch(/until then/i);
+      expect(NEEDS_CARD_BODY).not.toMatch(/\u2014|crypto/i);
     });
   });
 
