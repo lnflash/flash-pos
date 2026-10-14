@@ -11,6 +11,8 @@ import {createClient} from 'graphql-ws';
 import {onError} from '@apollo/client/link/error';
 import {getMainDefinition} from '@apollo/client/utilities';
 
+import {shouldRetryOperation} from './retryPolicy';
+
 import {FLASH_GRAPHQL_URI, FLASH_GRAPHQL_WS_URI} from '@env';
 
 const httpLink = createHttpLink({
@@ -62,6 +64,8 @@ const errorLink = onError(({graphQLErrors, networkError}) => {
 const retryLink = new RetryLink({
   attempts: {
     max: 5,
+    // An operation sent with NO_RETRY_CONTEXT goes out once (ENG-703).
+    retryIf: shouldRetryOperation,
   },
 });
 
