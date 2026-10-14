@@ -104,6 +104,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   compareLadderScore,
   ladderScore,
+  pow2PieceCount,
   splitChangeForLadder,
   splitPow2,
 } from '../../src/utils/denominations';
@@ -115,9 +116,13 @@ import {
 
 /**
  * The change a card makes for `changeSat` while keeping `keep` (ENG-701:
- * split to refill its covering ladder, in at most `cap` pieces). Every
- * expected change shape in this file is derived from it, never written out
- * by hand (architect's decision 6).
+ * split to refill its covering ladder, in at most `cap` pieces). Used ONLY
+ * for the change pieces themselves; the shapes it gives for the inputs this
+ * file uses are pinned by hand ('the derived change shapes are pinned'), so
+ * a change to the split fails here rather than passing through. What
+ * happens around the pieces (how much owed change is written, slot
+ * pressure, the APDU count) is asserted with literal values or invariants,
+ * never derived from the function under test.
  */
 const ladderChange = (changeSat: number, keep: number[] = [], cap?: number) =>
   splitChangeForLadder(changeSat, keep, cap);
@@ -295,6 +300,19 @@ describe('planPurchase', () => {
       expect(dates.size).toBe(1);
     }
     expect(first(plans)).toEqual({slots: [0, 2], burnedSat: 6, changeSat: 0});
+  });
+});
+
+describe('the derived change shapes are pinned', () => {
+  // Every `ladderChange(...)` this file asserts against, written out by
+  // hand: the split changing must fail a test, not move its expectation.
+  it.each([
+    [6, [], undefined, [2, 2, 1, 1]],
+    [4, [], undefined, [2, 1, 1]],
+    [6, [4], undefined, [2, 2, 1, 1]],
+    [6, [4], 3, [4, 1, 1]],
+  ])('ladderChange(%p, %p, %p) is %p', (changeSat, keep, cap, expected) => {
+    expect(ladderChange(changeSat, keep, cap)).toEqual(expected);
   });
 });
 
@@ -1166,7 +1184,7 @@ describe('slot pre-flight (ENG-630)', () => {
       slots: [1],
       burnedSat: 18,
       changeSat: 8,
-      changePieces: ladderChange(8, [13], 1),
+      changePieces: [8],
     });
     expect(preRead.owedChange).toEqual([]);
   });
@@ -1218,23 +1236,29 @@ describe('slot pre-flight (ENG-630)', () => {
       slots: [0],
       burnedSat: 16,
       changeSat: 6,
-      changePieces: ladderChange(6, [], 2),
+      changePieces: [4, 2],
     });
     expect(billFirst.owedChange).toEqual([]);
     await expect(outstandingChangeForCard(roomy.pubkey)).resolves.toHaveLength(
       2,
     );
 
-    // Three slots free: the bill's change first (ENG-701: split for the
-    // ladder in up to all three), then the owed pieces that still fit.
+    // Three slots free: the bill's two pieces, then one owed piece fits.
+    // ENG-701's ladder must not take that slot: split [4,1,1] would push
+    // the owed 4 sat off the card and leave it [1,1,4] (6 sat, not even a
+    // covering ladder) with the rest held on this terminal. The card ends
+    // [2,4,4], holding all 10 sat, exactly as before ENG-701.
     const shared = await readAndPlan({
       transceive: roomy.transceive,
       amountSat: 10,
     });
     expect(shared.plan.changeSat).toBe(6);
-    expect(shared.plan.changePieces).toEqual(ladderChange(6, [], 3));
-    expect(shared.owedChange.map(e => e.amount)).toEqual(
-      [4, 2].slice(0, 3 - ladderChange(6, [], 3).length),
+    expect(shared.plan.changePieces).toEqual([4, 2]);
+    expect(shared.owedChange.map(e => e.amount)).toEqual([4]);
+    // The invariant: never fewer owed pieces written than the fewest-pieces
+    // change (pre-ENG-701) leaves room for: 3 empty slots - 2 pieces.
+    expect(shared.owedChange.length).toBeGreaterThanOrEqual(
+      3 - pow2PieceCount(6),
     );
 
     // One slot free for two owed pieces and an EXACT bill: the charge needs
@@ -1275,7 +1299,7 @@ describe('slot pre-flight (ENG-630)', () => {
       slots: [0],
       burnedSat: 16,
       changeSat: 4,
-      changePieces: ladderChange(4, [], 1),
+      changePieces: [4],
     });
     expect(preRead.owedChange).toEqual([]);
 
@@ -1289,9 +1313,9 @@ describe('slot pre-flight (ENG-630)', () => {
     });
 
     expect(result.changeSat).toBe(4);
-    expect(result.changeLoaded).toBe(ladderChange(4, [], 1).length);
+    expect(result.changeLoaded).toBe(1);
     // The bill's change is what went on; the owed piece is still owed.
-    expect(card.loads).toHaveLength(ladderChange(4, [], 1).length);
+    expect(card.loads).toHaveLength(1);
     await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([
       expect.objectContaining({id: owed.id, status: 'owed', attempts: 0}),
     ]);
@@ -3527,6 +3551,32 @@ describe('ENG-701: the change refills the card, and the plan leaves it closest t
         switchedOff(() => selectFittingPlan([plan], 8, card)),
       ).resolves.toEqual({...plan, changePieces: splitPow2(6)});
     });
+
+    it('splitCap caps the split apart from the fit test, never below the fewest pieces', () => {
+      // Eight slots pass the fit test; the split may use two.
+      expect(
+        selectFittingPlan([plan], 8, card, {splitCap: 2})?.changePieces,
+      ).toEqual([4, 2]);
+      // A cap below the fewest pieces still gets the fewest pieces.
+      expect(
+        selectFittingPlan([plan], 8, card, {splitCap: 0})?.changePieces,
+      ).toEqual([4, 2]);
+      // The fit test is unchanged: one slot cannot take 6 sat.
+      expect(selectFittingPlan([plan], 1, card, {splitCap: 8})).toBeNull();
+    });
+
+    it('the split counts the owed pieces written this tap as on the card', () => {
+      // Keeping [4] with [1,1] landing first: [2,2,2] makes the target
+      // ladder in three pieces. Without the owed pieces counted the split is
+      // [2,2,1,1], one more SPEND_ALL_CHANGE + LOAD for a worse card.
+      expect(
+        selectFittingPlan([plan], 8, card, {loading: [1, 1]})?.changePieces,
+      ).toEqual([2, 2, 2]);
+      expect(ladderScore([4, 1, 1, 2, 2, 2])).toEqual([0, 0]);
+      expect(selectFittingPlan([plan], 8, card)?.changePieces).toEqual([
+        2, 2, 1, 1,
+      ]);
+    });
   });
 
   describe('the charge', () => {
@@ -3575,6 +3625,36 @@ describe('ENG-701: the change refills the card, and the plan leaves it closest t
         .map(s => s!.amount)
         .sort((a, b) => a - b);
       expect(unspent).toEqual([1, 1, 2, 2, 4]);
+    });
+
+    it('owed pieces landing this tap shape the split: [16,4] pays 10 with [1,1] owed', async () => {
+      const card = pinCard([16, 4], {slotCount: 9});
+      await owedFromEarlierCharge([1, 1], [card]);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 10,
+      });
+      expect(preRead.plan).toMatchObject({slots: [0], changeSat: 6});
+      expect(preRead.owedChange.map(e => e.amount)).toEqual([1, 1]);
+      expect(preRead.plan.changePieces).toEqual([2, 2, 2]);
+
+      await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      // Three SPEND_ALL_CHANGE + LOAD pairs for the change, not four.
+      expect(card.sent.filter(a => insOf(a) === 0x26)).toHaveLength(3);
+      expect(card.loads.map(l => l.amount)).toEqual([1, 1, 2, 2, 2]);
+      const unspent = card.slots
+        .filter(s => s?.status === 1)
+        .map(s => s!.amount)
+        .sort((a, b) => a - b);
+      expect(unspent).toEqual([1, 1, 2, 2, 2, 4]);
+      expect(ladderScore(unspent)).toEqual([0, 0]);
     });
 
     it('with the kill switch off, the change is the fewest pieces, exactly as before', async () => {

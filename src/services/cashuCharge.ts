@@ -435,28 +435,56 @@ function planOneDate(
  * always fits. `null` when none does.
  *
  * Given the card's `unspent` pieces, the plan comes back with its
- * `changePieces`: the change split to refill the card's covering ladder in
- * at most `freeSlots` pieces (`splitChangeForLadder`, ENG-701), or
- * `splitPow2` with the kill switch off. Computed here, before anything
- * burns, so the pre-flight, the card and the stage read one list.
+ * `changePieces` (`withChangePieces`): the change split to refill the card's
+ * covering ladder (`splitChangeForLadder`, ENG-701), or `splitPow2` with the
+ * kill switch off. Computed here, before anything burns, so the pre-flight,
+ * the card and the stage read one list.
+ *
+ * `opts.splitCap` caps how many pieces the split may take, apart from the
+ * fit test: a slot the ladder's extra pieces would take may be one an owed
+ * piece wants (default `freeSlots`; never below the fewest pieces, so a plan
+ * that fits always gets a split). `opts.loading` is the owed change this tap
+ * writes to the card before the change: the split counts it as kept, so the
+ * extra pieces do not fill gaps the owed pieces are about to fill.
  */
 export function selectFittingPlan(
   plans: PurchasePlan[],
   freeSlots: number,
   unspent?: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  opts: {splitCap?: number; loading?: readonly number[]} = {},
 ): PurchasePlan | null {
   const plan =
     plans.find(p => pow2PieceCount(p.changeSat) <= freeSlots) ?? null;
   if (!plan || !unspent) {
     return plan;
   }
+  return withChangePieces(
+    plan,
+    unspent,
+    Math.min(freeSlots, opts.splitCap ?? freeSlots),
+    opts.loading,
+  );
+}
+
+/**
+ * `plan` with its `changePieces`: the change split to refill the ladder of
+ * what the card keeps plus `loading` (owed pieces written this tap), in at
+ * most `maxPieces` pieces but never fewer than `splitPow2`'s (ENG-701); the
+ * fewest pieces with the kill switch off.
+ */
+export function withChangePieces(
+  plan: PurchasePlan,
+  unspent: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  maxPieces: number,
+  loading: readonly number[] = [],
+): PurchasePlan {
   return {
     ...plan,
     changePieces: isLadderChangeEnabled()
       ? splitChangeForLadder(
           plan.changeSat,
-          keptAmounts(unspent, plan.slots),
-          freeSlots,
+          [...keptAmounts(unspent, plan.slots), ...loading],
+          Math.max(pow2PieceCount(plan.changeSat), maxPieces),
         )
       : splitPow2(plan.changeSat),
   };
@@ -1086,14 +1114,21 @@ export async function readAndPlan({
   let owedChange = loadable.slice(0, emptySlots);
   // The cap is the fewest pieces' test (`pow2PieceCount`) for which plan,
   // and the most pieces the change may split into (ENG-701's ladder): a
-  // longer split only leaves more owed pieces for a later tap.
-  let plan = selectFittingPlan(plans, room(owedChange.length), unspent);
+  // longer split only leaves more owed pieces for a later tap. The split
+  // counts the owed pieces this tap writes first as already on the card.
+  let plan = selectFittingPlan(plans, room(owedChange.length), unspent, {
+    loading: owedChange.map(e => e.amount),
+  });
   if (!plan) {
-    plan = selectFittingPlan(
-      plans,
-      Math.min(emptySlots, freeOpenings),
-      unspent,
-    );
+    // The bill gets every empty slot for its fit test, but the ladder's
+    // EXTRA pieces (ENG-701) take none an owed piece wants: the split may
+    // grow past the fewest pieces only into slots the owed change leaves
+    // free. Otherwise a longer split would push owed change (whole sats the
+    // customer is owed) off the card to make the card's shape nicer.
+    const fitSlots = Math.min(emptySlots, freeOpenings);
+    plan = selectFittingPlan(plans, fitSlots, unspent, {
+      splitCap: fitSlots - loadable.length,
+    });
     if (!plan) {
       const first = plans[0].changeSat;
       const pieces = pow2PieceCount(first);
@@ -1106,6 +1141,16 @@ export async function readAndPlan({
     owedChange = loadable.slice(
       0,
       Math.max(0, emptySlots - planChangePieces(plan).length),
+    );
+    // Split again with the owed pieces that do land counted as kept, in the
+    // room they leave. (This branch is reached only when the owed pieces
+    // crowd the slots, so the room is the fewest pieces today; the split is
+    // still made against what the card will hold, not what it held.)
+    plan = withChangePieces(
+      plan,
+      unspent,
+      room(owedChange.length),
+      owedChange.map(e => e.amount),
     );
   }
 
