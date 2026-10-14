@@ -6,8 +6,10 @@ import {
   cancelCardSession,
   describeCardFailure,
   extendCardTimeout,
+  isMultiRequestError,
   isUserCancel,
   isCardReadingSupported,
+  MULTI_REQUEST_MESSAGE,
   nfcTransceiver,
   openCardSession,
   readCardOverNfc,
@@ -433,6 +435,36 @@ describe('isUserCancel', () => {
     expect(isUserCancel(new Error('boom'))).toBe(false);
     expect(isUserCancel('cancel')).toBe(false);
     expect(isUserCancel(null)).toBe(false);
+  });
+});
+
+describe('isMultiRequestError', () => {
+  it('pins the native ERR_MULTI_REQ string (NfcManager.java:61)', () => {
+    expect(MULTI_REQUEST_MESSAGE).toBe(
+      'You can only issue one request at a time',
+    );
+  });
+
+  it('is true for the native error as the Android wrapper hands it over', () => {
+    expect(
+      isMultiRequestError(new NfcError.NfcErrorBase(MULTI_REQUEST_MESSAGE)),
+    ).toBe(true);
+    expect(isMultiRequestError(new Error(MULTI_REQUEST_MESSAGE))).toBe(true);
+  });
+
+  it('is false for every other NFC failure', () => {
+    expect(isMultiRequestError(new NfcError.UserCancel())).toBe(false);
+    expect(isMultiRequestError(new NfcError.TagConnectionLost())).toBe(false);
+    expect(
+      isMultiRequestError(
+        new NfcError.NfcErrorBase('no tech request available'),
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for non-errors, even one carrying the same text', () => {
+    expect(isMultiRequestError(MULTI_REQUEST_MESSAGE)).toBe(false);
+    expect(isMultiRequestError(null)).toBe(false);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type CardSummary,
 } from '../../src/services/cashuCard';
 import {BRIDGE_TAG, setCardBridge} from '../../src/services/cardBridge';
+import {MULTI_REQUEST_MESSAGE} from '../../src/services/cashuCardNfc';
 
 const actualNfc = jest.requireActual('../../src/services/cashuCardNfc');
 
@@ -408,6 +409,29 @@ describe('useKeypadCardReader on Android', () => {
       () => expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2),
       {timeout: REARM_AFTER_ERROR_MS * 4},
     );
+  });
+
+  it('ERR_MULTI_REQ on arm is not a card failure: no toast, re-arms after a breather', async () => {
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+
+    // Another screen's request was still pending when the keypad armed: the
+    // native module refuses with its bare ERR_MULTI_REQ string.
+    await act(async () => {
+      pendingRequest()!.reject(
+        new NfcError.NfcErrorBase(MULTI_REQUEST_MESSAGE),
+      );
+    });
+    await flush();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockSetNfcBusy).toHaveBeenLastCalledWith(false);
+    await waitFor(
+      () => expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2),
+      {timeout: REARM_AFTER_ERROR_MS * 4},
+    );
+    expect(mockToastShow).not.toHaveBeenCalled();
   });
 
   it('says quietly that a card without the applet is not a Flash card, and re-arms', async () => {

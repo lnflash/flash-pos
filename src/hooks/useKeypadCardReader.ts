@@ -26,6 +26,7 @@ import {
   cancelCardSession,
   describeCardFailure,
   isCardReadingSupported,
+  isMultiRequestError,
   isUserCancel,
   openCardSession,
   usingCardBridge,
@@ -296,6 +297,12 @@ export function useKeypadCardReader() {
         // generation says which it was.
         if (isUserCancel(error) || gen !== focusGenRef.current) {
           return 'cancelled';
+        }
+        // Another screen's request is still pending (ERR_MULTI_REQ): not a
+        // card failure, nothing to tell the merchant. Re-arm after the
+        // breather; the finally below clears the stray request.
+        if (isMultiRequestError(error)) {
+          return 'busy';
         }
         // A 0.x card: refused before anything is written or spent, and said
         // so plainly (decision 8) — never as "Not a Flash card".
