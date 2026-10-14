@@ -8,6 +8,9 @@ type Props = {
   eventModeEnabled?: boolean;
   onViewEventSettings?: () => void;
 
+  /** ENG-701: the offline card refusals. Production builds too. */
+  onViewRefusalLog?: () => void;
+
   /** Dev builds only — see the `__DEV__` row below. */
   onViewCashuCardDebug?: () => void;
   /** Dev builds only — see the `__DEV__` row below. */
@@ -20,6 +23,7 @@ const Settings: React.FC<Props> = ({
   onViewRewardSettings,
   eventModeEnabled,
   onViewEventSettings,
+  onViewRefusalLog,
   onViewCashuCardDebug,
   onViewCashuCardSpend,
   onViewChargePreview,
@@ -42,6 +46,19 @@ const Settings: React.FC<Props> = ({
           <Column>
             <Key>Event Settings</Key>
             <Value>Configure event rewards</Value>
+          </Column>
+          <Icon name={'chevron-forward-outline'} type="ionicon" />
+        </Container>
+      )}
+
+      {/* ENG-701: for the operator, so not behind __DEV__ — the route is
+          registered in every build (src/routes/index.tsx). */}
+      {onViewRefusalLog && (
+        <Container activeOpacity={0.5} onPress={onViewRefusalLog}>
+          <Icon name={'alert-circle-outline'} type="ionicon" />
+          <Column>
+            <Key>Card refusals</Key>
+            <Value>Charges refused while the mint was offline</Value>
           </Column>
           <Icon name={'chevron-forward-outline'} type="ionicon" />
         </Container>

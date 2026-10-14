@@ -1,4 +1,5 @@
 import {buildCardSigAllSecret} from '../../src/services/cashuMint';
+import {splitChangeForLadder} from '../../src/utils/denominations';
 
 // The e2e runner's pure half (scripts/e2e-flashcard/lib.cjs). Plain CommonJS
 // so Node runs it with no build step; jest loads it the same way.
@@ -603,7 +604,61 @@ describe('back-during-change-write (ENG-645)', () => {
   });
 
   it('checks the card: one burn, the change written once', () => {
-    expect(text).toContain('"unspent":[4,1],"spentLabels":["P8"]');
+    // 8 pays 3: the 5 of change as ENG-701 splits it, every piece once.
+    expect(text).toContain(
+      `"unspent":${JSON.stringify(
+        splitChangeForLadder(5, []),
+      )},"spentLabels":["P8"]`,
+    );
+  });
+});
+
+describe("the flows' card states are ENG-701's change split (decision 6)", () => {
+  const fs = require('fs');
+  const path = require('path');
+  const read = (f: string): string =>
+    fs.readFileSync(
+      path.join(__dirname, '../../.maestro/flashcard', f),
+      'utf8',
+    );
+  /** Every `EXPECT` a flow passes assert-state.js, in order. */
+  const expects = (f: string) =>
+    [...read(f).matchAll(/EXPECT: '(.*)'/g)].map(m => JSON.parse(m[1]));
+
+  // Each flow's card is the one 8-sat piece (P8) paying 3: 5 of change.
+  const change = splitChangeForLadder(5, []);
+  const [first, ...rest] = change;
+  const sum = (xs: number[]) => xs.reduce((t, x) => t + x, 0);
+
+  it.each([
+    ['charge-with-change.yaml', [{unspent: change, spentLabels: ['P8']}]],
+    ['charge-no-pin.yaml', [{unspent: change, spentLabels: ['P8']}]],
+    ['back-during-change-write.yaml', [{unspent: change, spentLabels: ['P8']}]],
+    // The first LOAD lands with its answer lost; the balance tap adds the rest.
+    [
+      'lost-load-answer.yaml',
+      [
+        {unspent: [first], spentLabels: ['P8']},
+        {unspent: change, spentLabels: ['P8']},
+      ],
+    ],
+    // Nothing lands on the full card; the next tap writes it all, P4 pays.
+    [
+      'owed-change-next-tap.yaml',
+      [
+        {unspent: [], spentLabels: ['P8']},
+        {unspent: change, spentLabels: ['P4']},
+      ],
+    ],
+  ])('%s', (flow, want) => {
+    expect(expects(flow as string)).toEqual(want);
+  });
+
+  it('lost-load-answer names the change the balance tap adds', () => {
+    const added = sum(rest);
+    expect(read('lost-load-answer.yaml')).toContain(
+      `text: 'Change added · ${added} ${added === 1 ? 'sat' : 'sats'}'`,
+    );
   });
 });
 

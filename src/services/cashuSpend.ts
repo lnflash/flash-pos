@@ -64,7 +64,7 @@ import {
   type SettlementInput,
   type SettlementOutput,
 } from './cashuSettlement';
-import {splitPow2} from '../utils/denominations';
+import {isChangeSplit, splitPow2} from '../utils/denominations';
 
 export const DEFAULT_UNIT = 'sat';
 
@@ -105,6 +105,14 @@ export interface SpendAllArgs {
   merchant: ChargeOutputs;
   /** The card's own change, made on the card in power-of-two pieces. */
   changeSat: number;
+  /**
+   * The pieces the card makes `changeSat` in, in the order it receives them
+   * (the plan's `changePieces`, ENG-701: split to refill the card's ladder).
+   * Powers of two summing to `changeSat` (none for 0), or the payment is
+   * refused before any APDU: SIG_ALL binds these outputs. Absent: the
+   * fewest, `splitPow2(changeSat)`.
+   */
+  changePieces?: number[];
   /** The full keyset id the card's change is minted in (the first piece's). */
   changeKeysetId: string;
   cardPubkey: string;
@@ -189,6 +197,17 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
   if (inputs.length === 0) {
     throw new CardProtocolError('a payment needs at least one piece');
   }
+  const changePieces =
+    args.changePieces ?? (changeSat > 0 ? splitPow2(changeSat) : []);
+  if (!isChangeSplit(changePieces, changeSat)) {
+    // Before BEGIN: the card signs these outputs with the payment, so a
+    // split that is not the change must never reach it.
+    throw new CardProtocolError(
+      `the change pieces [${changePieces.join(
+        ', ',
+      )}] are not ${changeSat} sat in powers of two`,
+    );
+  }
   const slots = inputs.map(i => i.slot);
   const total = inputs.reduce((t, i) => t + i.amount, 0);
 
@@ -205,7 +224,7 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
   await spendAllOutputs(transceive, merchant.outputs);
   const outputs: SettlementOutput[] = [...merchant.outputs];
   const cardChangeIndex = changeSat > 0 ? outputs.length : undefined;
-  for (const amount of changeSat > 0 ? splitPow2(changeSat) : []) {
+  for (const amount of changePieces) {
     const B_ = await spendAllChange(transceive, amount);
     outputs.push({amount, B_, keysetId: args.changeKeysetId});
   }

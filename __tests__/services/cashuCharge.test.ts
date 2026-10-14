@@ -39,7 +39,9 @@ import {
   PHASE_SETTLING_NEEDS_CARD,
   PHASE_SETTLING_REFUSED,
   PHASE_SETTLING_UNCONFIRMED,
+  EXACT_SUBSET_LIMIT,
   allowanceCovers,
+  bestExactSubset,
   chargeCard,
   executeCharge,
   headerTime,
@@ -55,6 +57,7 @@ import {
   readAndPlan,
   reconcileOwedChange,
   selectFittingPlan,
+  withChangePieces,
   writeOwedChange,
 } from '../../src/services/cashuCharge';
 import {
@@ -97,6 +100,33 @@ import {
   testMint,
   type FakeCardOptions,
 } from '../support/cardProtocol2';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import {
+  compareLadderScore,
+  ladderScore,
+  pow2PieceCount,
+  splitChangeForLadder,
+  splitPow2,
+} from '../../src/utils/denominations';
+import {
+  REFUSAL_LOG_KEY,
+  getRefusalCounts,
+  getRefusalLog,
+} from '../../src/services/refusalLog';
+
+/**
+ * The change a card makes for `changeSat` while keeping `keep` (ENG-701:
+ * split to refill its covering ladder, in at most `cap` pieces). Used ONLY
+ * for the change pieces themselves; the shapes it gives for the inputs this
+ * file uses are pinned by hand ('the derived change shapes are pinned'), so
+ * a change to the split fails here rather than passing through. What
+ * happens around the pieces (how much owed change is written, slot
+ * pressure, the APDU count) is asserted with literal values or invariants,
+ * never derived from the function under test.
+ */
+const ladderChange = (changeSat: number, keep: number[] = [], cap?: number) =>
+  splitChangeForLadder(changeSat, keep, cap);
 
 const mockStore: Record<string, string> = {};
 
@@ -271,6 +301,19 @@ describe('planPurchase', () => {
       expect(dates.size).toBe(1);
     }
     expect(first(plans)).toEqual({slots: [0, 2], burnedSat: 6, changeSat: 0});
+  });
+});
+
+describe('the derived change shapes are pinned', () => {
+  // Every `ladderChange(...)` this file asserts against, written out by
+  // hand: the split changing must fail a test, not move its expectation.
+  it.each([
+    [6, [], undefined, [2, 2, 1, 1]],
+    [4, [], undefined, [2, 1, 1]],
+    [6, [4], undefined, [2, 2, 1, 1]],
+    [6, [4], 3, [4, 1, 1]],
+  ])('ladderChange(%p, %p, %p) is %p', (changeSat, keep, cap, expected) => {
+    expect(ladderChange(changeSat, keep, cap)).toEqual(expected);
   });
 });
 
@@ -568,7 +611,7 @@ describe('the no-PIN allowance (decision 11)', () => {
 
     expect(card.insSent).not.toContain(0x40);
     expect(result.changeSat).toBe(6);
-    expect(result.changeLoaded).toBe(2);
+    expect(result.changeLoaded).toBe(ladderChange(6).length);
     expect(card.balance).toBe(6);
     // The change went on after a fresh SELECT took the payment's change grant.
     const afterSign = card.insSent.slice(card.insSent.indexOf(0x24) + 1);
@@ -706,12 +749,13 @@ describe('chargeCard', () => {
 
     expect(result.burned).toHaveLength(1);
     expect(result.changeSat).toBe(6);
-    expect(result.changeLoaded).toBe(2);
-    // The card made its own change (SPEND_ALL_CHANGE, 4 then 2) and took it back.
-    expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual([
-      4, 2,
-    ]);
-    expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+    expect(result.changeLoaded).toBe(ladderChange(6).length);
+    // The card made its own change (SPEND_ALL_CHANGE, the ladder split,
+    // largest first) and took it back.
+    expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual(
+      ladderChange(6),
+    );
+    expect(card.loads.map(l => l.amount)).toEqual(ladderChange(6));
     expect(card.loads.every(l => l.dleq)).toBe(true);
     expect(card.balance).toBe(6);
     // The swap consumed the burned pieces: the payment ends settled, and the
@@ -741,13 +785,12 @@ describe('chargeCard', () => {
     expect(card.balance).toBe(before - 10);
     expect(tillProofs().reduce((t, p) => t + p.amount, 0)).toBe(10);
     // The owed record holds each change piece once, both written.
-    expect(owedStore().map(e => [e.amount, e.status])).toEqual([
-      [4, 'written'],
-      [2, 'written'],
-    ]);
+    expect(owedStore().map(e => [e.amount, e.status])).toEqual(
+      ladderChange(6).map(amount => [amount, 'written']),
+    );
     // And no terminal-made change: every change output was the card's own.
     const cardMade = card.sent.filter(a => insOf(a) === 0x26).length;
-    expect(cardMade).toBe(2);
+    expect(cardMade).toBe(ladderChange(6).length);
   });
 
   it("the piece loaded back is the card's own opening, finished with the mint's signature", async () => {
@@ -760,12 +803,13 @@ describe('chargeCard', () => {
       mintUrl: MINT_URL,
     });
 
-    expect(card.loads).toHaveLength(1);
-    const [load] = card.loads;
-    // The nonce the card drew for its change, and a C the mint signed for the
-    // secret the card will rebuild from it at its next payment.
-    const secret = buildCardSigAllSecret(load.nonce, card.pubkey);
-    expect(testMint().verifyProof(secret, load.C, load.amount)).toBe(true);
+    expect(card.loads.map(l => l.amount)).toEqual(ladderChange(4));
+    // The nonce the card drew for each piece of its change, and a C the mint
+    // signed for the secret the card will rebuild from it at its next payment.
+    for (const load of card.loads) {
+      const secret = buildCardSigAllSecret(load.nonce, card.pubkey);
+      expect(testMint().verifyProof(secret, load.C, load.amount)).toBe(true);
+    }
     expect(card.openings).toEqual([]);
   });
 
@@ -796,7 +840,11 @@ describe('chargeCard', () => {
     // claim success.
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
-    expect(entries[0].outputs.map(o => o.amount)).toEqual([8, 2, 4, 2]);
+    expect(entries[0].outputs.map(o => o.amount)).toEqual([
+      8,
+      2,
+      ...ladderChange(6),
+    ]);
     expect(tillProofs()).toHaveLength(0);
   });
 
@@ -826,7 +874,7 @@ describe('chargeCard', () => {
       mintUrl: MINT_URL,
     });
 
-    expect(result.changeLoaded).toBe(2);
+    expect(result.changeLoaded).toBe(ladderChange(6).length);
     expect(card.balance).toBe(6);
     expect(tillProofs().reduce((t, p) => t + p.amount, 0)).toBe(9);
   });
@@ -1079,7 +1127,7 @@ describe('classifying a swap failure (ENG-674)', () => {
     });
 
     expect(result.changeSat).toBe(6);
-    expect(result.changeLoaded).toBe(2);
+    expect(result.changeLoaded).toBe(ladderChange(6).length);
     const kept = await cachedKeysets(MINT_URL);
     expect(kept.find(k => k.id === KEYSET_ID)?.active).toBe(true);
   });
@@ -1132,7 +1180,13 @@ describe('slot pre-flight (ENG-630)', () => {
       amountSat: 10,
     });
 
-    expect(preRead.plan).toEqual({slots: [1], burnedSat: 18, changeSat: 8});
+    // The one free slot caps the change at one piece (ENG-701's split too).
+    expect(preRead.plan).toEqual({
+      slots: [1],
+      burnedSat: 18,
+      changeSat: 8,
+      changePieces: [8],
+    });
     expect(preRead.owedChange).toEqual([]);
   });
 
@@ -1179,19 +1233,37 @@ describe('slot pre-flight (ENG-630)', () => {
       transceive: billFirstCard.transceive,
       amountSat: 10,
     });
-    expect(billFirst.plan).toEqual({slots: [0], burnedSat: 16, changeSat: 6});
+    expect(billFirst.plan).toEqual({
+      slots: [0],
+      burnedSat: 16,
+      changeSat: 6,
+      changePieces: [4, 2],
+    });
     expect(billFirst.owedChange).toEqual([]);
     await expect(outstandingChangeForCard(roomy.pubkey)).resolves.toHaveLength(
       2,
     );
 
     // Three slots free: the bill's two pieces, then one owed piece fits.
+    // ENG-701's ladder must not take that slot: split [4,1,1] would push
+    // the owed 4 sat off the card and leave it [1,1,4] (6 sat, not even a
+    // covering ladder) with the rest held on this terminal. The card ends
+    // [2,4,4], holding all 10 sat, exactly as before ENG-701.
     const shared = await readAndPlan({
       transceive: roomy.transceive,
       amountSat: 10,
     });
     expect(shared.plan.changeSat).toBe(6);
+    // The fallback (owed pieces crowd the slots) always makes the fewest
+    // pieces, whatever the ladder would prefer for this card.
+    expect(shared.plan.changePieces).toEqual(splitPow2(6));
+    expect(shared.plan.changePieces).toEqual([4, 2]);
     expect(shared.owedChange.map(e => e.amount)).toEqual([4]);
+    // The invariant: never fewer owed pieces written than the fewest-pieces
+    // change (pre-ENG-701) leaves room for: 3 empty slots - 2 pieces.
+    expect(shared.owedChange.length).toBeGreaterThanOrEqual(
+      3 - pow2PieceCount(6),
+    );
 
     // One slot free for two owed pieces and an EXACT bill: the charge needs
     // no slot, so it goes through; the one piece that fits is written and
@@ -1227,7 +1299,12 @@ describe('slot pre-flight (ENG-630)', () => {
       transceive: card.transceive,
       amountSat: 12,
     });
-    expect(preRead.plan).toEqual({slots: [0], burnedSat: 16, changeSat: 4});
+    expect(preRead.plan).toEqual({
+      slots: [0],
+      burnedSat: 16,
+      changeSat: 4,
+      changePieces: [4],
+    });
     expect(preRead.owedChange).toEqual([]);
 
     const result = await executeCharge({
@@ -1305,15 +1382,14 @@ describe('owed change (ENG-630)', () => {
     expect(storeAtFirstLoad).toEqual(expect.any(String));
     const recorded = JSON.parse(storeAtFirstLoad as unknown as string)
       .entries as OwedChangeEntry[];
-    expect(recorded.map(e => e.amount)).toEqual([4, 2]);
+    expect(recorded.map(e => e.amount)).toEqual(ladderChange(6));
     // The mint's half (B_, C_) is what exists before the card's openings are read.
     expect(recorded.every(e => e.B_ && e.C_)).toBe(true);
     expect(recorded.every(e => e.status === 'owed')).toBe(true);
-    // Both loads answered: both pieces are written, with their slots.
-    expect(owedStore().map(e => [e.status, e.slot])).toEqual([
-      ['written', 1],
-      ['written', 2],
-    ]);
+    // Every load answered: every piece is written, with its slot.
+    expect(owedStore().map(e => [e.status, e.slot])).toEqual(
+      ladderChange(6).map((_, i) => ['written', i + 1]),
+    );
     await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
 
@@ -1333,11 +1409,16 @@ describe('owed change (ENG-630)', () => {
       now: 1000,
     }).catch(e => e);
 
+    // The change pieces (ENG-701's split): the first lands, the rest wait.
+    const [first, ...rest] = ladderChange(6);
+    const restSat = 6 - first;
     expect(failure).toBeInstanceOf(PhaseError);
-    // The 4-sat piece the card took before the refusal is named in the
-    // phase, so the body can say how much landed (ENG-645).
+    // The piece the card took before the refusal is named in the phase, so
+    // the body can say how much landed (ENG-645).
     expect(failure.message).toMatch(
-      /^\[writing change to card \(4 sat on card\)\] LOAD_PROOF failed: card is full/,
+      new RegExp(
+        `^\\[writing change to card \\(${first} sat on card\\)\\] LOAD_PROOF failed: card is full`,
+      ),
     );
     expectCardFull(failure);
     expect(failedAfterSwap(parseFailure(describeCardFailure(failure)))).toBe(
@@ -1352,26 +1433,28 @@ describe('owed change (ENG-630)', () => {
         fmt: (sat: number) => `${sat} sats`,
       }),
     ).toBe(
-      '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats are saved on this terminal and will be added once the card has a free slot.',
+      `10 sats are paid. ${first} sats of your 6 sats change are on the card. The other ${restSat} sats are saved on this terminal and will be added once the card has a free slot.`,
     );
     // The payment settled at the mint: the merchant's money is accounted for.
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'settled')).toHaveLength(1);
-    // One piece on the card, one still owed — and opened: a whole piece.
+    // One piece on the card, the rest still owed — the refused one opened:
+    // a whole piece.
     expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
-      [4, 'written', 1],
-      [2, 'owed', undefined],
+      [first, 'written', 1],
+      ...rest.map(amount => [amount, 'owed', undefined]),
     ]);
     const owed = await outstandingChangeForCard(card.pubkey);
-    expect(owed.map(e => e.amount)).toEqual([2]);
+    expect(owed.map(e => e.amount)).toEqual(rest);
     expect(owed[0].nonce).toEqual(expect.any(String));
 
-    // The next tap, same card: it now holds the 4-sat piece (unspent) and
-    // the burned slot. A 4-sat bill is exact; the owed 2 sat goes on first.
+    // The next tap, same card: it now holds the first piece (unspent) and
+    // the burned slot. A bill of that piece is exact; the owed rest goes on
+    // first.
     const before = card.sent.length;
     const result = await chargeCard({
       transceive: card.transceive,
-      amountSat: 4,
+      amountSat: first,
       pin: '1234',
       mintUrl: MINT_URL,
       now: 2000,
@@ -1385,10 +1468,10 @@ describe('owed change (ENG-630)', () => {
     expect(verifyIdx).toBeGreaterThanOrEqual(0);
     expect(loadIdx).toBeGreaterThan(verifyIdx);
     expect(signIdx).toBeGreaterThan(loadIdx);
-    expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+    expect(card.loads.map(l => l.amount)).toEqual([first, ...rest]);
     expect(owedStore().map(e => [e.amount, e.status, e.slot])).toEqual([
-      [4, 'written', 1],
-      [2, 'written', 2],
+      [first, 'written', 1],
+      ...rest.map((amount, i) => [amount, 'written', i + 2]),
     ]);
     await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
   });
@@ -1405,23 +1488,33 @@ describe('owed change (ENG-630)', () => {
         now: 1000,
       }),
     ).rejects.toThrow(/^\[writing change to card\] Tag was lost/);
-    expect(owedStore()).toEqual([
-      expect.objectContaining({amount: 4, status: 'owed'}),
-    ]);
+    // The change pieces (ENG-701's split): the first LOAD landed, its answer lost.
+    const [first, ...rest] = ladderChange(4);
+    expect(owedStore()).toEqual(
+      [first, ...rest].map(amount =>
+        expect.objectContaining({amount, status: 'owed'}),
+      ),
+    );
 
-    // Next tap: the card holds the piece (the LOAD landed) and let its
-    // opening go. The read marks it written and sends no LOAD.
+    // Next tap: the card holds the first piece (the LOAD landed) and let its
+    // opening go. The read marks it written and sends no LOAD; the pieces
+    // never sent are still owed, and come back to be written.
     const loadsBefore = card.sent.filter(a => insOf(a) === 0x30).length;
     const preRead = await readAndPlan({
       transceive: card.transceive,
-      amountSat: 4,
+      amountSat: first,
       now: 2000,
     });
 
-    expect(preRead.owedChange).toEqual([]);
+    expect(preRead.owedChange.map(e => e.amount)).toEqual(rest);
     expect(card.sent.filter(a => insOf(a) === 0x30)).toHaveLength(loadsBefore);
-    expect(owedStore()).toEqual([expect.objectContaining({status: 'written'})]);
-    await expect(outstandingChangeForCard(card.pubkey)).resolves.toEqual([]);
+    expect(owedStore()).toEqual([
+      expect.objectContaining({amount: first, status: 'written'}),
+      ...rest.map(amount => expect.objectContaining({amount, status: 'owed'})),
+    ]);
+    await expect(
+      outstandingChangeForCard(card.pubkey).then(o => o.map(e => e.amount)),
+    ).resolves.toEqual(rest);
   });
 
   it('reconcileOwedChange reads nothing when the card is owed nothing', async () => {
@@ -2082,8 +2175,8 @@ describe('owed change (ENG-630)', () => {
         now: 1000,
       });
 
-      expect(result.changeLoaded).toBe(2);
-      expect(card.loads).toHaveLength(2);
+      expect(result.changeLoaded).toBe(ladderChange(6).length);
+      expect(card.loads).toHaveLength(ladderChange(6).length);
       expect(warn).toHaveBeenCalledWith(
         expect.stringMatching(/owed change could not be recorded/),
         'keychain write denied',
@@ -2120,12 +2213,14 @@ describe('owed change (ENG-630)', () => {
       }).catch(e => e);
 
       expect(failure).toBeInstanceOf(PhaseError);
-      // The first piece (4 sat) landed before the refusal (ENG-645).
+      // The first piece landed before the refusal (ENG-645).
+      const [first] = ladderChange(6);
       expect(failure.message).toBe(
-        '[writing change to card (unrecorded, 4 sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        `[writing change to card (unrecorded, ${first} sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
       );
       expectCardFull(failure);
-      // The stage still saw the ordinary change-write phase, once per piece.
+      // The stage still saw the ordinary change-write phase, once per piece
+      // tried (the first, and the second it refused).
       expect(phases.filter(p => p === 'writing change to card')).toHaveLength(
         2,
       );
@@ -2258,8 +2353,9 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
 
     expect(isPaidFailure(failure)).toBe(true);
     expect(classified(failure)).toBe(true);
+    // Every change piece is saved (the card took none of them).
     await expect(outstandingChangeForCard(card.pubkey)).resolves.toHaveLength(
-      1,
+      ladderChange(4).length,
     );
   });
 
@@ -2416,9 +2512,8 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
         now: 1000,
       }).catch(e => e);
 
-      // Both pieces reached the card despite the bookkeeping failing first.
-      expect(card.loads).toHaveLength(2);
-      expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+      // Every piece reached the card despite the bookkeeping failing first.
+      expect(card.loads.map(l => l.amount)).toEqual(ladderChange(6));
       expect(card.burnCount).toBe(1);
 
       expect(failure).toBeInstanceOf(PhaseError);
@@ -2456,9 +2551,10 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
       expect(failure).toBeInstanceOf(PhaseError);
       // The owed-change record was refused too, so the load reports the
       // change as unrecorded — the more specific story for the body copy —
-      // and names the 4 sats the card already took (ENG-645).
+      // and names the sats the card already took (ENG-645).
+      const [first] = ladderChange(6);
       expect(failure.message).toBe(
-        '[writing change to card (unrecorded, 4 sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)',
+        `[writing change to card (unrecorded, ${first} sat on card)] LOAD_PROOF failed: card is full — no free slot (0x6A84)`,
       );
       expect(failure.message).not.toMatch(/recording the payment/);
       expect(isPaidFailure(failure)).toBe(true);
@@ -2466,9 +2562,11 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
         false,
       );
       // How much landed and how much did not: never the whole 6 sats
-      // called missing when 4 of them are on the card (ENG-645).
+      // called missing when some of them are on the card (ENG-645).
       expect(paidBody(failure)).toBe(
-        '10 sats are paid. 4 sats of your 6 sats change are on the card. The other 2 sats could not be put on the card.',
+        `10 sats are paid. ${first} sats of your 6 sats change are on the card. The other ${
+          6 - first
+        } sats could not be put on the card.`,
       );
       expect(paidBody(failure)).not.toMatch(/Your 6 sats change/);
       // The superseded bookkeeping failure (the refused till write) is
@@ -2514,7 +2612,7 @@ describe('the point of no return: a failure after the swap is PAID (ENG-642)', (
         mintUrl: MINT_URL,
         now: 1000,
       });
-      expect(result.changeLoaded).toBe(1);
+      expect(result.changeLoaded).toBe(ladderChange(4).length);
       expect(warn).toHaveBeenCalledWith(
         expect.stringMatching(/needs-card recovery skipped/),
         expect.stringContaining('keychain read denied'),
@@ -3330,5 +3428,378 @@ describe('ENG-674 review round 2', () => {
       ).toBe(REFUSED_BODY);
       expect(REFUSED_BODY).not.toMatch(/\bis paid\b|\bare paid\b/);
     });
+  });
+});
+
+describe('ENG-701: the change refills the card, and the plan leaves it closest to its ladder', () => {
+  const pieces = (amounts: number[]) =>
+    amounts.map((amount, slot) => ({slot, amount}));
+  /** The card after a plan: what it keeps and its change, as ENG-701 splits it. */
+  const after = (amounts: number[], burned: number[], changeSat: number) => {
+    const kept = amounts.filter((_, slot) => !burned.includes(slot));
+    return [...kept, ...ladderChange(changeSat, kept)];
+  };
+  /** Run `fn` with the kill switch (FLASH_LADDER_CHANGE) off. */
+  const switchedOff = async <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const saved = process.env.FLASH_LADDER_CHANGE;
+    process.env.FLASH_LADDER_CHANGE = 'false';
+    try {
+      return await fn();
+    } finally {
+      if (saved === undefined) {
+        delete process.env.FLASH_LADDER_CHANGE;
+      } else {
+        process.env.FLASH_LADDER_CHANGE = saved;
+      }
+    }
+  };
+
+  describe('coin selection', () => {
+    it('an exact bill burns the subset that leaves the card a ladder: [1,1,2,2] pays 4 with 2 + 2', async () => {
+      const card = pieces([1, 1, 2, 2]);
+      expect(planPurchase(card, 4)[0]).toEqual({
+        slots: [2, 3],
+        burnedSat: 4,
+        changeSat: 0,
+      });
+      // Left with [1, 1]: a 1-sat bill still pays. The DP's first witness
+      // (1 + 1 + 2, today with the switch off) leaves [2], which cannot.
+      const off = await switchedOff(() => planPurchase(card, 4)[0]);
+      expect(off.slots).toEqual([0, 1, 2]);
+    });
+
+    it('with the change tied, the plan that leaves the card closer to its ladder wins over fewer slots', async () => {
+      // A 3-sat bill from [2, 2, 2, 4]: burn the 4 or two 2s, 1 sat of change
+      // either way.
+      const amounts = [2, 2, 2, 4];
+      const card = pieces(amounts);
+      const [best] = planPurchase(card, 3);
+      expect(best).toMatchObject({burnedSat: 4, changeSat: 1});
+      expect(best.slots).toEqual([0, 1]);
+      // [2, 4] + 1 is the ladder of 7; [2, 2, 2] + 1 is not.
+      expect(
+        compareLadderScore(
+          ladderScore(after(amounts, [0, 1], 1)),
+          ladderScore(after(amounts, [3], 1)),
+        ),
+      ).toBeLessThan(0);
+      const off = await switchedOff(() => planPurchase(card, 3)[0]);
+      expect(off.slots).toEqual([3]);
+    });
+
+    it('less change still beats a better shape', () => {
+      // A 3-sat bill from [4, 8]: the 4 leaves [8] + 1, the 8 leaves a
+      // ladder — but the 4 makes 1 sat of change, not 5.
+      const amounts = [4, 8];
+      expect(planPurchase(pieces(amounts), 3)[0]).toEqual({
+        slots: [0],
+        burnedSat: 4,
+        changeSat: 1,
+      });
+      expect(
+        compareLadderScore(
+          ladderScore(after(amounts, [1], 5)),
+          ladderScore(after(amounts, [0], 1)),
+        ),
+      ).toBeLessThan(0);
+    });
+
+    it('past the enumeration limit, the exact subset is the DP witness', () => {
+      const many = pieces(
+        [1, 2, 4, 8, 16, 32].flatMap(a => new Array(20).fill(a)),
+      );
+      expect(bestExactSubset(many, 300)).toBeNull();
+      const [exact] = planPurchase(many, 300);
+      expect(exact.changeSat).toBe(0);
+      expect(exact.slots.reduce((t, slot) => t + many[slot].amount, 0)).toBe(
+        300,
+      );
+      expect(EXACT_SUBSET_LIMIT).toBe(4096);
+    });
+
+    it('bestExactSubset: the subset whose remainder scores best, fewest slots on a tie, null when none is exact', () => {
+      expect(bestExactSubset(pieces([1, 1, 2, 2]), 4)).toEqual([2, 3]);
+      expect(bestExactSubset(pieces([4, 2, 2]), 4)).toEqual([0]);
+      expect(bestExactSubset(pieces([4, 4]), 3)).toBeNull();
+    });
+  });
+
+  describe('selectFittingPlan', () => {
+    const card = [
+      {slot: 0, amount: 16},
+      {slot: 1, amount: 4},
+    ];
+    const plan = {slots: [0], burnedSat: 16, changeSat: 6};
+
+    it('the chosen plan carries the ladder split when there is room', () => {
+      expect(selectFittingPlan([plan], 8, card)).toEqual({
+        ...plan,
+        changePieces: [2, 2, 1, 1],
+      });
+      expect(ladderChange(6, [4])).toEqual([2, 2, 1, 1]);
+    });
+
+    it('and the fewest pieces when the slots are tight', () => {
+      expect(selectFittingPlan([plan], 2, card)).toEqual({
+        ...plan,
+        changePieces: [4, 2],
+      });
+      expect(selectFittingPlan([plan], 3, card)?.changePieces).toEqual(
+        ladderChange(6, [4], 3),
+      );
+      expect(selectFittingPlan([plan], 1, card)).toBeNull();
+    });
+
+    it('with the kill switch off, the fewest pieces whatever the room', async () => {
+      await expect(
+        switchedOff(() => selectFittingPlan([plan], 8, card)),
+      ).resolves.toEqual({...plan, changePieces: splitPow2(6)});
+    });
+
+    it('withChangePieces caps the split at maxPieces, never below the fewest pieces', () => {
+      // Two pieces allowed: the fewest, though the ladder wants four.
+      expect(withChangePieces(plan, card, 2).changePieces).toEqual([4, 2]);
+      // A cap below the fewest pieces still gets the fewest pieces.
+      expect(withChangePieces(plan, card, 0).changePieces).toEqual([4, 2]);
+      // Room to spare: the ladder split.
+      expect(withChangePieces(plan, card, 8).changePieces).toEqual([
+        2, 2, 1, 1,
+      ]);
+      // The fit test is selectFittingPlan's: one slot cannot take 6 sat.
+      expect(selectFittingPlan([plan], 1, card)).toBeNull();
+    });
+
+    it('the split counts the owed pieces written this tap as on the card', () => {
+      // Keeping [4] with [1,1] landing first: [2,2,2] makes the target
+      // ladder in three pieces. Without the owed pieces counted the split is
+      // [2,2,1,1], one more SPEND_ALL_CHANGE + LOAD for a worse card.
+      expect(
+        selectFittingPlan([plan], 8, card, {loading: [1, 1]})?.changePieces,
+      ).toEqual([2, 2, 2]);
+      expect(ladderScore([4, 1, 1, 2, 2, 2])).toEqual([0, 0]);
+      expect(selectFittingPlan([plan], 8, card)?.changePieces).toEqual([
+        2, 2, 1, 1,
+      ]);
+    });
+  });
+
+  describe('the charge', () => {
+    it('a card with slots for the fewest pieces but not the ladder still pays, in the fewest pieces', async () => {
+      // Two empty slots: 6 of change fits as 4 + 2, not as the ladder's four.
+      const card = pinCard([16], {slotCount: 3});
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 10,
+      });
+      expect(preRead.plan.changePieces).toEqual(splitPow2(6));
+
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual([
+        4, 2,
+      ]);
+      expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+      expect(result.changeLoaded).toBe(2);
+      expect(card.balance).toBe(6);
+    });
+
+    it('the card writes the plan’s split, and is left a covering ladder: 16 pays 10 beside a 4', async () => {
+      const card = pinCard([16, 4]);
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      expect(result.changeSat).toBe(6);
+      const change = ladderChange(6, [4]);
+      expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual(
+        change,
+      );
+      expect(card.loads.map(l => l.amount)).toEqual(change);
+      const unspent = card.slots
+        .filter(s => s?.status === 1)
+        .map(s => s!.amount)
+        .sort((a, b) => a - b);
+      expect(unspent).toEqual([1, 1, 2, 2, 4]);
+    });
+
+    it('owed pieces landing this tap shape the split: [16,4] pays 10 with [1,1] owed', async () => {
+      const card = pinCard([16, 4], {slotCount: 9});
+      await owedFromEarlierCharge([1, 1], [card]);
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 10,
+      });
+      expect(preRead.plan).toMatchObject({slots: [0], changeSat: 6});
+      expect(preRead.owedChange.map(e => e.amount)).toEqual([1, 1]);
+      expect(preRead.plan.changePieces).toEqual([2, 2, 2]);
+
+      await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      // Three SPEND_ALL_CHANGE + LOAD pairs for the change, not four.
+      expect(card.sent.filter(a => insOf(a) === 0x26)).toHaveLength(3);
+      expect(card.loads.map(l => l.amount)).toEqual([1, 1, 2, 2, 2]);
+      const unspent = card.slots
+        .filter(s => s?.status === 1)
+        .map(s => s!.amount)
+        .sort((a, b) => a - b);
+      expect(unspent).toEqual([1, 1, 2, 2, 2, 4]);
+      expect(ladderScore(unspent)).toEqual([0, 0]);
+    });
+
+    it('with the kill switch off, the change is the fewest pieces, exactly as before', async () => {
+      const card = pinCard([16, 4]);
+      await switchedOff(() =>
+        chargeCard({
+          transceive: card.transceive,
+          amountSat: 10,
+          pin: '1234',
+          mintUrl: MINT_URL,
+          now: 1000,
+        }),
+      );
+      expect(card.sent.filter(a => insOf(a) === 0x26).map(a => a[8])).toEqual([
+        4, 2,
+      ]);
+      expect(card.loads.map(l => l.amount)).toEqual([4, 2]);
+    });
+  });
+
+  describe('the refusal log', () => {
+    beforeEach(async () => {
+      await AsyncStorage.clear();
+    });
+
+    const offline = () =>
+      jest.spyOn(globalThis, 'fetch').mockRejectedValue(OFFLINE());
+
+    it('an offline CHANGE_NEEDS_MINT refusal logs one entry: the bill and the piece sizes', async () => {
+      const card = pinCard([16, 4]);
+      const fetchSpy = offline();
+      try {
+        const failure = await chargeCard({
+          transceive: card.transceive,
+          amountSat: 10,
+          pin: '1234',
+          mintUrl: MINT_URL,
+          now: 1000,
+        }).catch(e => e);
+        expect(failure.message).toBe(
+          `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+        );
+      } finally {
+        fetchSpy.mockRestore();
+      }
+      const log = await getRefusalLog();
+      expect(log).toEqual([
+        {
+          kind: 'change_needs_mint',
+          amountSat: 10,
+          cardPieces: [16, 4],
+          at: expect.any(Number),
+        },
+      ]);
+      await expect(getRefusalCounts()).resolves.toEqual({
+        change_needs_mint: 1,
+        online_only: 0,
+      });
+      await expectNoSecrets(card);
+    });
+
+    it('an offline ONLINE_ONLY refusal logs one entry', async () => {
+      const card = pinCard([16], {withDleq: false});
+      const fetchSpy = offline();
+      try {
+        const failure = await chargeCard({
+          transceive: card.transceive,
+          amountSat: 16,
+          pin: '1234',
+          mintUrl: MINT_URL,
+        }).catch(e => e);
+        expect(failure.message).toBe(`[preparing the payment] ${ONLINE_ONLY}`);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+      await expect(getRefusalLog()).resolves.toEqual([
+        {
+          kind: 'online_only',
+          amountSat: 16,
+          cardPieces: [16],
+          at: expect.any(Number),
+        },
+      ]);
+      await expectNoSecrets(card);
+    });
+
+    it('a charge that is not refused logs nothing', async () => {
+      const card = pinCard([16]);
+      await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      await expect(getRefusalLog()).resolves.toEqual([]);
+    });
+
+    it('a log that will not write never masks the refusal', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockImplementationOnce(async () => {
+        throw new Error('disk full');
+      });
+      const card = pinCard([16]);
+      const fetchSpy = offline();
+      try {
+        const failure = await chargeCard({
+          transceive: card.transceive,
+          amountSat: 10,
+          pin: '1234',
+          mintUrl: MINT_URL,
+          now: 1000,
+        }).catch(e => e);
+        expect(failure.message).toBe(
+          `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+        );
+        expect(card.insSent.filter(i => PAYMENT_INS.includes(i))).toEqual([]);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    /** The stored log holds nothing that identifies a piece or the card. */
+    async function expectNoSecrets(card: FakeCard2) {
+      const raw = await AsyncStorage.getItem(REFUSAL_LOG_KEY);
+      expect(raw).toEqual(expect.any(String));
+      {
+        const text = raw as string;
+        expect(text).not.toContain(card.pubkey);
+        expect(text).not.toContain(KEYSET_ID);
+        for (const slot of card.slots) {
+          if (!slot) {
+            continue;
+          }
+          expect(text).not.toContain(slot.nonce);
+          expect(text).not.toContain(slot.C);
+          expect(text).not.toContain(
+            buildCardSigAllSecret(slot.nonce, card.pubkey),
+          );
+        }
+        expect(text).not.toMatch(/nonce|secret|keyset|pubkey|"C"/i);
+      }
+    }
   });
 });

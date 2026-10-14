@@ -24,7 +24,7 @@ module.exports = {
         moduleName: '@env-optional',
         path: '.env',
         allowUndefined: true,
-        allowlist: ['FLASH_HEADER_APIS'],
+        allowlist: ['FLASH_HEADER_APIS', 'FLASH_LADDER_CHANGE'],
       },
       'dotenv-import-optional',
     ],

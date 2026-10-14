@@ -32,7 +32,13 @@ type RootStackType = {
   // own NFC session, so the screen skips its first tap.
   CashuCardCharge?: {
     preRead?: {
-      plan: {slots: number[]; burnedSat: number; changeSat: number};
+      plan: {
+        slots: number[];
+        burnedSat: number;
+        changeSat: number;
+        /** ENG-701: how the card makes the change, largest first. */
+        changePieces?: number[];
+      };
       unspent: unknown[];
       /** Protocol 2.0: the planned pieces whole (CardProofSlot[]). */
       pieces?: unknown[];
@@ -60,6 +66,9 @@ type RootStackType = {
   };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;
+  // ENG-701: offline card refusals (CHANGE_NEEDS_MINT, ONLINE_ONLY), from
+  // the production Settings row.
+  RefusalLog: undefined;
   // Dev-only route — registered under `__DEV__` in src/routes/index.tsx and
   // reached only from the `__DEV__` Settings row; guard every call site with
   // `__DEV__`, since a release build has no such screen.

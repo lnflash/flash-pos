@@ -43,7 +43,7 @@ tags:
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'
+      EXPECT: '{"unspent":[2,1,1,1],"spentLabels":["P8"]}'
 - tapOn: 'Done'
 - runFlow:
     file: common/balance.yaml

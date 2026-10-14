@@ -56,6 +56,8 @@ export interface PlanSummary {
   /** The notes this charge burns, in burn order. */
   burnSlots: number[];
   changeSat: number;
+  /** How the card makes the change (the plan's `changePieces`); absent: the fewest. */
+  changePieces?: number[];
   last4: string | null;
   pinRequired: boolean;
 }
@@ -130,7 +132,7 @@ export function planShape(plan: PlanSummary, amountSat: number): PlanShape {
     burns: plan.burnSlots,
     totals: runningTotals(plan.burnSlots),
     changeSat: plan.changeSat,
-    pieces: changePieces(plan.changeSat),
+    pieces: changePieces(plan.changeSat, plan.changePieces),
     paidSat: amountSat,
   };
 }

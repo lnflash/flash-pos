@@ -666,6 +666,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         s => unspent.find(p => p.slot === s)?.amount ?? 0,
       ),
       changeSat: plan.plan.changeSat,
+      changePieces: plan.plan.changePieces,
       last4: last4FromPubkey(plan.cardPubkey),
       pinRequired: plan.pinRequired,
     };

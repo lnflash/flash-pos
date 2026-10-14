@@ -1,9 +1,10 @@
 # The first change LOAD reaches the card but its answer is lost (deep link
 # dropLoad=1: the bridge forwards the APDU, then reports the tag lost).
-# The 4-sat piece is ON the card and still "owed" on disk. The balance tap
-# after the charge is the tap after a payment: the card's change grant lets
-# the 1 sat still owed go on with no PIN. The 4 is reconciled from the
-# card's openings (its opening is gone: it landed) and never loaded twice.
+# The first piece of the change (ENG-701's split of the 5: 2 + 1 + 1 + 1) is
+# ON the card and still "owed" on disk. The balance tap after the charge is
+# the tap after a payment: the card's change grant lets the 3 sats still
+# owed go on with no PIN. The 2 is reconciled from the card's openings (its
+# opening is gone: it landed) and never loaded twice.
 appId: com.flash.pos
 name: 'eCash card: a lost LOAD answer is reconciled, never duplicated'
 tags:
@@ -34,7 +35,7 @@ tags:
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4],"spentLabels":["P8"]}'
+      EXPECT: '{"unspent":[2],"spentLabels":["P8"]}'
 # The stack's back gesture leaves the paid state as Done does: a reset to
 # the keypad, never a pop onto a screen that could charge the bill again
 # (owed-change-next-tap leaves by Done itself).
@@ -45,11 +46,11 @@ tags:
       SATS: '5'
 - assertVisible:
     id: 'balance-added'
-    text: 'Change added · 1 sat'
+    text: 'Change added · 3 sats'
 - assertNotVisible:
     id: 'balance-owed'
-# The 4 once and the 1 once: assert-state fails on any nonce in two slots.
+# Every piece once: assert-state fails on any nonce in two slots.
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'
+      EXPECT: '{"unspent":[2,1,1,1],"spentLabels":["P8"]}'

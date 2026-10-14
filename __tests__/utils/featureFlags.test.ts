@@ -34,3 +34,38 @@ describe('featureFlags', () => {
     expect(isRewardsEnabled()).toBe(false);
   });
 });
+
+describe('isLadderChangeEnabled (ENG-701 kill switch)', () => {
+  const saved = process.env.FLASH_LADDER_CHANGE;
+
+  afterEach(() => {
+    jest.resetModules();
+    if (saved === undefined) {
+      delete process.env.FLASH_LADDER_CHANGE;
+    } else {
+      process.env.FLASH_LADDER_CHANGE = saved;
+    }
+  });
+
+  it('is on when FLASH_LADDER_CHANGE is missing', () => {
+    delete process.env.FLASH_LADDER_CHANGE;
+    const {isLadderChangeEnabled} = require('../../src/utils/featureFlags');
+    expect(isLadderChangeEnabled()).toBe(true);
+  });
+
+  it('is on for anything but false', () => {
+    const {isLadderChangeEnabled} = require('../../src/utils/featureFlags');
+    for (const value of ['true', '', '1', 'on']) {
+      process.env.FLASH_LADDER_CHANGE = value;
+      expect(isLadderChangeEnabled()).toBe(true);
+    }
+  });
+
+  it('is off for FLASH_LADDER_CHANGE=false, in any case', () => {
+    const {isLadderChangeEnabled} = require('../../src/utils/featureFlags');
+    for (const value of ['false', 'FALSE', ' False ']) {
+      process.env.FLASH_LADDER_CHANGE = value;
+      expect(isLadderChangeEnabled()).toBe(false);
+    }
+  });
+});

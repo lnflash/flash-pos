@@ -88,7 +88,16 @@ import {
   type SettlementEntry,
   type SettlementInput,
 } from './cashuSettlement';
-import {pow2PieceCount} from '../utils/denominations';
+import {
+  compareLadderScore,
+  ladderScore,
+  pow2PieceCount,
+  splitChangeForLadder,
+  splitPow2,
+  type LadderScore,
+} from '../utils/denominations';
+import {isLadderChangeEnabled} from '../utils/featureFlags';
+import {recordRefusal} from './refusalLog';
 
 import {FLASH_CASHU_MINT_URL} from '@env';
 
@@ -166,20 +175,148 @@ export const NOT_THE_CARD_READ =
  *
  * Candidates are deduplicated by slot-set and sorted by change; the caller
  * walks them until one fits the card (`selectFittingPlan`).
+ *
+ * ENG-701 (`isLadderChangeEnabled`): among candidates with the same change,
+ * the one that leaves the card closest to its covering ladder wins (the
+ * pieces kept plus the change, split as `splitChangeForLadder` splits it),
+ * then the fewest slots. Change stays the first key: more change is never
+ * taken for a better shape. The exact subset is the one that leaves the
+ * best-shaped card (`bestExactSubset`), not the DP's first witness.
  */
 export interface PurchasePlan {
   slots: number[];
   burnedSat: number;
   changeSat: number;
+  /**
+   * How the card makes this plan's change, largest first: set by
+   * `selectFittingPlan` once the plan is chosen, so the slot pre-flight,
+   * `spendAll` and the stage all read the one list (ENG-701). Absent:
+   * `splitPow2(changeSat)`.
+   */
+  changePieces?: number[];
+}
+
+type PlannedPiece = Pick<CardProofSlot, 'slot' | 'amount'> & {date?: number};
+
+/** The amounts of `all` a plan burning `slots` leaves on the card. */
+const keptAmounts = (
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  slots: readonly number[],
+): number[] => {
+  const burned = new Set(slots);
+  return all.filter(p => !burned.has(p.slot)).map(p => p.amount);
+};
+
+/**
+ * The card's shape after a plan: what it keeps plus its change, split as the
+ * card will make it (uncapped: the slots are checked later).
+ */
+const shapeAfter = (
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  plan: PurchasePlan,
+): LadderScore => {
+  const kept = keptAmounts(all, plan.slots);
+  return ladderScore([...kept, ...splitChangeForLadder(plan.changeSat, kept)]);
+};
+
+/**
+ * The plan ranking: least change, then (ENG-701, `all` given) the card
+ * closest to its ladder afterwards, then the fewest slots.
+ */
+function planOrder(
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[] | null,
+): (a: PurchasePlan, b: PurchasePlan) => number {
+  const scores = new Map<PurchasePlan, LadderScore>();
+  const score = (plan: PurchasePlan) => {
+    let got = scores.get(plan);
+    if (!got) {
+      got = shapeAfter(all!, plan);
+      scores.set(plan, got);
+    }
+    return got;
+  };
+  return (a, b) =>
+    a.changeSat - b.changeSat ||
+    (all ? compareLadderScore(score(a), score(b)) : 0) ||
+    a.slots.length - b.slots.length;
+}
+
+/** Past this many count vectors `bestExactSubset` gives up (the DP's witness stays). */
+export const EXACT_SUBSET_LIMIT = 4096;
+
+/**
+ * The exact subset of `group` paying `amountSat` that leaves the card
+ * (`all`) closest to its covering ladder, fewest slots on a tie. Enumerates
+ * how many pieces of each amount to take (few distinct amounts on a card:
+ * powers of two), at most `EXACT_SUBSET_LIMIT` of them; `null` past that or
+ * when no subset is exact. Pieces of one amount are taken in `group`'s order.
+ */
+export function bestExactSubset(
+  group: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  amountSat: number,
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[] = group,
+): number[] | null {
+  const byAmount = new Map<number, number[]>();
+  for (const p of group) {
+    byAmount.set(p.amount, [...(byAmount.get(p.amount) ?? []), p.slot]);
+  }
+  const amounts = [...byAmount.keys()].sort((a, b) => b - a);
+  // What the amounts from i on can still pay at most.
+  const reach = amounts.map((_, i) =>
+    amounts.slice(i).reduce((t, a) => t + a * byAmount.get(a)!.length, 0),
+  );
+  let visited = 0;
+  let best: {slots: number[]; score: LadderScore} | null = null;
+  const counts: number[] = [];
+  const walk = (i: number, left: number): boolean => {
+    visited += 1;
+    if (visited > EXACT_SUBSET_LIMIT) {
+      return false;
+    }
+    if (left === 0) {
+      const slots = amounts.flatMap((a, j) =>
+        byAmount.get(a)!.slice(0, counts[j] ?? 0),
+      );
+      const score = ladderScore(keptAmounts(all, slots));
+      const cmp = best ? compareLadderScore(score, best.score) : -1;
+      if (cmp < 0 || (cmp === 0 && slots.length < best!.slots.length)) {
+        best = {slots, score};
+      }
+      return true;
+    }
+    if (i >= amounts.length || reach[i] < left) {
+      return true;
+    }
+    const a = amounts[i];
+    for (
+      let n = Math.min(byAmount.get(a)!.length, Math.floor(left / a));
+      n >= 0;
+      n--
+    ) {
+      counts[i] = n;
+      if (!walk(i + 1, left - n * a)) {
+        return false;
+      }
+    }
+    counts[i] = 0;
+    return true;
+  };
+  if (!walk(0, amountSat)) {
+    return null;
+  }
+  return best ? (best as {slots: number[]}).slots : null;
 }
 
 export function planPurchase(
-  unspent: (Pick<CardProofSlot, 'slot' | 'amount'> & {date?: number})[],
+  unspent: PlannedPiece[],
   amountSat: number,
 ): PurchasePlan[] {
   if (amountSat <= 0) {
     return [];
   }
+  // ENG-701: rank by the shape the whole card is left in (every date's
+  // pieces), or, switched off, exactly as before.
+  const all = isLadderChangeEnabled() ? unspent : null;
   // One payment's pieces share one date (SPEND_ALL_BEGIN refuses a mix with
   // 6A80: pieces of different dates have different lock conditions, and a
   // mint takes no one signature for those). Plan each date apart.
@@ -190,26 +327,27 @@ export function planPurchase(
         planOneDate(
           unspent.filter(p => (p.date ?? 0) === date),
           amountSat,
+          all,
         ),
       ),
+      all,
     );
   }
-  return planOneDate(unspent, amountSat);
+  return planOneDate(unspent, amountSat, all);
 }
 
 /** Every date's candidates in one ranking, as `planOneDate` ranks one. */
-function mergePlans(groups: PurchasePlan[][]): PurchasePlan[] {
-  return groups
-    .flat()
-    .sort(
-      (a, b) => a.changeSat - b.changeSat || a.slots.length - b.slots.length,
-    )
-    .slice(0, 8);
+function mergePlans(
+  groups: PurchasePlan[][],
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[] | null,
+): PurchasePlan[] {
+  return groups.flat().sort(planOrder(all)).slice(0, 8);
 }
 
 function planOneDate(
   unspent: Pick<CardProofSlot, 'slot' | 'amount'>[],
   amountSat: number,
+  all: readonly Pick<CardProofSlot, 'slot' | 'amount'>[] | null,
 ): PurchasePlan[] {
   const total = unspent.reduce((t, p) => t + p.amount, 0);
   if (total < amountSat) {
@@ -228,6 +366,13 @@ function planOneDate(
         reach[s] = [...prev, p.slot];
       }
     }
+  }
+  // ENG-701: the exact subset that leaves the best-shaped card, in place of
+  // the DP's first witness (which is neither the fewest slots nor the best
+  // shape). Past the enumeration limit the witness stays.
+  if (all && reach[amountSat]) {
+    reach[amountSat] =
+      bestExactSubset(unspent, amountSat, all) ?? reach[amountSat];
   }
   for (let sum = amountSat; sum <= total; sum++) {
     if (reach[sum]) {
@@ -264,12 +409,11 @@ function planOneDate(
     candidates.push({slots: acc, burnedSat: sum, changeSat: sum - amountSat});
   }
 
-  // Dedupe by slot-set, cheapest change first, fewest slots as tiebreak.
+  // Dedupe by slot-set, cheapest change first, then (ENG-701) the card's
+  // shape afterwards, fewest slots as the last tiebreak.
   const seen = new Set<string>();
   return candidates
-    .sort(
-      (a, b) => a.changeSat - b.changeSat || a.slots.length - b.slots.length,
-    )
+    .sort(planOrder(all))
     .filter(c => {
       const key = [...c.slots].sort((x, y) => x - y).join(',');
       if (seen.has(key)) {
@@ -286,14 +430,61 @@ function planOneDate(
  * change fits the card's free slots: the card makes its change in
  * power-of-two pieces and takes one slot per piece, so a plan whose change
  * needs more slots than the card has free would burn and then strand the
- * change. An exact plan (`changeSat` 0) always fits. `null` when none does.
+ * change. The fit test is the fewest pieces (`splitPow2`), so which plans
+ * are accepted is what it was before ENG-701. An exact plan (`changeSat` 0)
+ * always fits. `null` when none does.
+ *
+ * Given the card's `unspent` pieces, the plan comes back with its
+ * `changePieces` (`withChangePieces`): the change split to refill the card's
+ * covering ladder (`splitChangeForLadder`, ENG-701), or `splitPow2` with the
+ * kill switch off. Computed here, before anything burns, so the pre-flight,
+ * the card and the stage read one list.
+ *
+ * `opts.loading` is the owed change this tap writes to the card before the
+ * change: the split counts it as kept, so the extra pieces do not fill gaps
+ * the owed pieces are about to fill.
  */
 export function selectFittingPlan(
   plans: PurchasePlan[],
   freeSlots: number,
+  unspent?: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  opts: {loading?: readonly number[]} = {},
 ): PurchasePlan | null {
-  return plans.find(p => pow2PieceCount(p.changeSat) <= freeSlots) ?? null;
+  const plan =
+    plans.find(p => pow2PieceCount(p.changeSat) <= freeSlots) ?? null;
+  if (!plan || !unspent) {
+    return plan;
+  }
+  return withChangePieces(plan, unspent, freeSlots, opts.loading);
 }
+
+/**
+ * `plan` with its `changePieces`: the change split to refill the ladder of
+ * what the card keeps plus `loading` (owed pieces written this tap), in at
+ * most `maxPieces` pieces but never fewer than `splitPow2`'s (ENG-701); the
+ * fewest pieces with the kill switch off.
+ */
+export function withChangePieces(
+  plan: PurchasePlan,
+  unspent: readonly Pick<CardProofSlot, 'slot' | 'amount'>[],
+  maxPieces: number,
+  loading: readonly number[] = [],
+): PurchasePlan {
+  return {
+    ...plan,
+    changePieces: isLadderChangeEnabled()
+      ? splitChangeForLadder(
+          plan.changeSat,
+          [...keptAmounts(unspent, plan.slots), ...loading],
+          Math.max(pow2PieceCount(plan.changeSat), maxPieces),
+        )
+      : splitPow2(plan.changeSat),
+  };
+}
+
+/** The change pieces a chosen plan makes, largest first. */
+export const planChangePieces = (plan: PurchasePlan): number[] =>
+  plan.changePieces ?? splitPow2(plan.changeSat);
 
 /** The blinded message a change opening makes, rebuilt as the card made it. */
 function openingB_(
@@ -913,9 +1104,23 @@ export async function readAndPlan({
   const room = (owedWritten: number) =>
     Math.min(emptySlots - owedWritten, freeOpenings + owedWritten);
   let owedChange = loadable.slice(0, emptySlots);
-  let plan = selectFittingPlan(plans, room(owedChange.length));
+  // The cap is the fewest pieces' test (`pow2PieceCount`) for which plan,
+  // and the most pieces the change may split into (ENG-701's ladder): a
+  // longer split only leaves more owed pieces for a later tap. The split
+  // counts the owed pieces this tap writes first as already on the card.
+  let plan = selectFittingPlan(plans, room(owedChange.length), unspent, {
+    loading: owedChange.map(e => e.amount),
+  });
   if (!plan) {
-    plan = selectFittingPlan(plans, Math.min(emptySlots, freeOpenings));
+    // The bill gets every empty slot for its fit test, and its change is
+    // the fewest pieces (`splitPow2`): no ENG-701 ladder here. This branch
+    // is reached only when the owed pieces crowd the slots, so any slot a
+    // longer split would take is one an owed piece wants, and a longer
+    // split would push owed change (whole sats the customer is owed) off
+    // the card to make the card's shape nicer. Owed pieces fill whatever
+    // empty slots the fewest pieces leave.
+    const fitSlots = Math.min(emptySlots, freeOpenings);
+    plan = selectFittingPlan(plans, fitSlots);
     if (!plan) {
       const first = plans[0].changeSat;
       const pieces = pow2PieceCount(first);
@@ -928,6 +1133,16 @@ export async function readAndPlan({
     owedChange = loadable.slice(
       0,
       Math.max(0, emptySlots - pow2PieceCount(plan.changeSat)),
+    );
+    // The room the owed pieces leave is never more than the fewest pieces
+    // (more would have passed the first try's fit test), so this is always
+    // `splitPow2`; it is set here so the pre-flight, the card and the stage
+    // read one list.
+    plan = withChangePieces(
+      plan,
+      unspent,
+      room(owedChange.length),
+      owedChange.map(e => e.amount),
     );
   }
 
@@ -1124,6 +1339,28 @@ export interface ExecuteChargeArgs {
 }
 
 /**
+ * Count an offline refusal in the local log (ENG-701): the bill and the
+ * card's piece sizes only. Never awaited and never thrown: the refusal is
+ * what the merchant sees, and a log that will not write must not delay or
+ * mask it.
+ */
+function noteRefusal(
+  kind: 'online_only' | 'change_needs_mint',
+  amountSat: number,
+  unspent: readonly Pick<CardProofSlot, 'amount'>[],
+): void {
+  try {
+    recordRefusal(
+      kind,
+      amountSat,
+      unspent.map(p => p.amount),
+    ).catch(() => {});
+  } catch {
+    // The log is best effort.
+  }
+}
+
+/**
  * The keysets of the planned pieces, from what is kept or, failing that and
  * only when the mint has just answered in full (`fresh`), the mint.
  */
@@ -1290,12 +1527,14 @@ export async function executeCharge({
       (await mintReachable(mintUrl, MINT_BUDGET_MS)) &&
       (await refreshKeysets(mintUrl, MINT_BUDGET_MS));
     if (requiresOnline && !fresh) {
+      noteRefusal('online_only', amountSat, unspent);
       throw new Error(ONLINE_ONLY);
     }
     if (changeSat > 0 && !fresh) {
       // The card is about to sign for change the mint has not been asked
       // about since whatever this terminal last cached — never (ENG-674
       // blocking 2a). Refused here, before SPEND_ALL_BEGIN: nothing burns.
+      noteRefusal('change_needs_mint', amountSat, unspent);
       throw new Error(CHANGE_NEEDS_MINT);
     }
     const keysets = await plannedKeysets(mintUrl, pieces, fresh);
@@ -1356,6 +1595,7 @@ export async function executeCharge({
       inputs: prepared.inputs,
       merchant: prepared.merchant,
       changeSat,
+      changePieces: planChangePieces(plan),
       changeKeysetId: prepared.changeKeyset.id,
       cardPubkey,
       mintUrl,

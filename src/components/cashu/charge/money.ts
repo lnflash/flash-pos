@@ -5,9 +5,19 @@ import {splitPow2} from '../../../utils/denominations';
  * leave the card, how the FROM total runs, which change slips go back.
  */
 
-/** Change pieces in the order the card receives them (largest first). */
-export function changePieces(changeSat: number): number[] {
-  return changeSat > 0 ? splitPow2(changeSat) : [];
+/**
+ * Change pieces in the order the card receives them (largest first): the
+ * plan's own split when it has one (ENG-701: the card writes exactly these,
+ * so the stage animates the same slips), otherwise the fewest.
+ */
+export function changePieces(
+  changeSat: number,
+  planned?: readonly number[],
+): number[] {
+  if (changeSat <= 0) {
+    return [];
+  }
+  return planned && planned.length > 0 ? [...planned] : splitPow2(changeSat);
 }
 
 /** The FROM CARD total after each burn: [16, 8] → [16, 24]. */

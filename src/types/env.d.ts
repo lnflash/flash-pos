@@ -57,4 +57,10 @@ declare module '@env-optional' {
    * then blockstream.info.
    */
   export const FLASH_HEADER_APIS: string | undefined;
+  /**
+   * ENG-701's kill switch (utils/featureFlags.ts `isLadderChangeEnabled`):
+   * `false` restores power-of-two change and the coin selection before
+   * ENG-701. Absent or anything else: on.
+   */
+  export const FLASH_LADDER_CHANGE: string | undefined;
 }

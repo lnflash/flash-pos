@@ -132,3 +132,40 @@ describe('Settings — charge animation preview row', () => {
     expect(queryByText('Preview charge animation')).toBeNull();
   });
 });
+
+// ENG-701: the offline refusal log is for the operator, so its row is in
+// release builds too (the route is registered in every build).
+describe('Settings — card refusals row', () => {
+  it('renders in a release build and fires its handler', () => {
+    devGlobal.__DEV__ = false;
+    const onViewRefusalLog = jest.fn();
+    const {getByText} = render(
+      <Settings
+        onViewRewardSettings={jest.fn()}
+        onViewRefusalLog={onViewRefusalLog}
+      />,
+    );
+
+    expect(
+      getByText('Charges refused while the mint was offline'),
+    ).toBeTruthy();
+    fireEvent.press(getByText('Card refusals'));
+    expect(onViewRefusalLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders in a dev build too', () => {
+    devGlobal.__DEV__ = true;
+    const {getByText} = render(
+      <Settings
+        onViewRewardSettings={jest.fn()}
+        onViewRefusalLog={jest.fn()}
+      />,
+    );
+    expect(getByText('Card refusals')).toBeTruthy();
+  });
+
+  it('is absent when no handler is wired', () => {
+    const {queryByText} = render(<Settings onViewRewardSettings={jest.fn()} />);
+    expect(queryByText('Card refusals')).toBeNull();
+  });
+});
