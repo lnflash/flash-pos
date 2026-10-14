@@ -442,6 +442,38 @@ function validateFlows(client, flows) {
   }
 }
 
+/**
+ * Hosted macOS runners fail whole flows for reasons outside the app: the
+ * Maestro iOS driver not starting, the TEST API never answering the login,
+ * a held LOAD outrun by a slow step (runs 38503213894, 38585692095). Each
+ * attempt is a fresh start (new proofs, card reset, fixture posted, app
+ * relaunched with clear state), so a flow gets FLOW_ATTEMPTS tries and
+ * passes on the first that does. A pass that needed a retry is reported as
+ * such, never hidden.
+ */
+const FLOW_ATTEMPTS = 2;
+
+/**
+ * Run `attempt(n)` (1-based) until it resolves true or `attempts` are spent.
+ * A throw counts as a failed attempt and is handed to `onFail`. Resolves
+ * {ok, attempts: the number used}.
+ */
+async function runAttempts(attempts, attempt, onFail = () => {}) {
+  const max = Math.max(1, Math.floor(attempts));
+  for (let n = 1; n <= max; n++) {
+    let ok = false;
+    try {
+      ok = (await attempt(n)) === true;
+    } catch (error) {
+      onFail(n, error);
+    }
+    if (ok) {
+      return {ok: true, attempts: n};
+    }
+  }
+  return {ok: false, attempts: max};
+}
+
 module.exports = {
   BILL_SAT,
   CARD_SAT,
@@ -450,6 +482,7 @@ module.exports = {
   HOLD_LOAD_MS,
   NEXT_SAT,
   FLOWS,
+  FLOW_ATTEMPTS,
   FLOW_NAMES,
   PIN,
   bridgeLink,
@@ -462,6 +495,7 @@ module.exports = {
   placeholderProofs,
   requireCardSimClient,
   resolveCardSimClient,
+  runAttempts,
   tipFromVectors,
   toHex,
   validateFlows,
