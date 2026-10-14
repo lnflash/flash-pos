@@ -57,6 +57,7 @@ import {
   readAndPlan,
   reconcileOwedChange,
   selectFittingPlan,
+  withChangePieces,
   writeOwedChange,
 } from '../../src/services/cashuCharge';
 import {
@@ -1253,6 +1254,9 @@ describe('slot pre-flight (ENG-630)', () => {
       amountSat: 10,
     });
     expect(shared.plan.changeSat).toBe(6);
+    // The fallback (owed pieces crowd the slots) always makes the fewest
+    // pieces, whatever the ladder would prefer for this card.
+    expect(shared.plan.changePieces).toEqual(splitPow2(6));
     expect(shared.plan.changePieces).toEqual([4, 2]);
     expect(shared.owedChange.map(e => e.amount)).toEqual([4]);
     // The invariant: never fewer owed pieces written than the fewest-pieces
@@ -3552,17 +3556,17 @@ describe('ENG-701: the change refills the card, and the plan leaves it closest t
       ).resolves.toEqual({...plan, changePieces: splitPow2(6)});
     });
 
-    it('splitCap caps the split apart from the fit test, never below the fewest pieces', () => {
-      // Eight slots pass the fit test; the split may use two.
-      expect(
-        selectFittingPlan([plan], 8, card, {splitCap: 2})?.changePieces,
-      ).toEqual([4, 2]);
+    it('withChangePieces caps the split at maxPieces, never below the fewest pieces', () => {
+      // Two pieces allowed: the fewest, though the ladder wants four.
+      expect(withChangePieces(plan, card, 2).changePieces).toEqual([4, 2]);
       // A cap below the fewest pieces still gets the fewest pieces.
-      expect(
-        selectFittingPlan([plan], 8, card, {splitCap: 0})?.changePieces,
-      ).toEqual([4, 2]);
-      // The fit test is unchanged: one slot cannot take 6 sat.
-      expect(selectFittingPlan([plan], 1, card, {splitCap: 8})).toBeNull();
+      expect(withChangePieces(plan, card, 0).changePieces).toEqual([4, 2]);
+      // Room to spare: the ladder split.
+      expect(withChangePieces(plan, card, 8).changePieces).toEqual([
+        2, 2, 1, 1,
+      ]);
+      // The fit test is selectFittingPlan's: one slot cannot take 6 sat.
+      expect(selectFittingPlan([plan], 1, card)).toBeNull();
     });
 
     it('the split counts the owed pieces written this tap as on the card', () => {
