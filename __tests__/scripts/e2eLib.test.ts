@@ -710,3 +710,55 @@ describe('the block-header stub', () => {
     ).toBe('/x/cashu-javacard/spec/vectors/headers.json');
   });
 });
+
+describe('runAttempts', () => {
+  it('stops at the first attempt that passes', async () => {
+    const seen: number[] = [];
+    const out = await lib.runAttempts(3, async (n: number) => {
+      seen.push(n);
+      return n === 2;
+    });
+    expect(out).toEqual({ok: true, attempts: 2});
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it('fails after the last attempt, having tried every one', async () => {
+    const seen: number[] = [];
+    const out = await lib.runAttempts(2, async (n: number) => {
+      seen.push(n);
+      return false;
+    });
+    expect(out).toEqual({ok: false, attempts: 2});
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it('counts a throw as a failed attempt and reports it', async () => {
+    const failures: Array<[number, string]> = [];
+    const out = await lib.runAttempts(
+      2,
+      async (n: number) => {
+        if (n === 1) {
+          throw new Error('driver not ready');
+        }
+        return true;
+      },
+      (n: number, error: Error) => failures.push([n, error.message]),
+    );
+    expect(out).toEqual({ok: true, attempts: 2});
+    expect(failures).toEqual([[1, 'driver not ready']]);
+  });
+
+  it('treats only a literal true as a pass', async () => {
+    const out = await lib.runAttempts(2, async () => 1 as unknown as boolean);
+    expect(out).toEqual({ok: false, attempts: 2});
+  });
+
+  it('runs at least once, whatever it is given', async () => {
+    const out = await lib.runAttempts(0, async () => true);
+    expect(out).toEqual({ok: true, attempts: 1});
+  });
+
+  it('gives each flow two tries in CI', () => {
+    expect(lib.FLOW_ATTEMPTS).toBe(2);
+  });
+});

@@ -17,7 +17,9 @@ import {
   DAILY_LIMIT_BODY,
   ONLINE_ONLY_BODY,
   REFUSED_BODY,
+  PIN_CHANGE_NEEDS_CONNECTION_TEXT,
   PIN_NEEDED_TEXT,
+  PIN_ONLINE_ONLY_TEXT,
   UNCONFIRMED_BODY,
 } from '../../../src/components/cashu/charge/money';
 import {
@@ -530,6 +532,56 @@ describe('pinFailureText', () => {
       'wrong length',
     );
     expect(pinFailureText('Tag was lost.')).toBe('Tag was lost.');
+  });
+
+  // ENG-698: the offline refusals arrive while a PIN card's sheet is up, and
+  // the raw sentence was cut to "This bill needs change, and this termin…".
+  // The details exactly as `makeStep` wraps them, through `parseFailure`.
+  const PREPARING = '[preparing the payment] ';
+
+  it('names a bill whose change needs the mint in one short sentence', () => {
+    expect(PIN_CHANGE_NEEDS_CONNECTION_TEXT).toBe(
+      'Change needs a connection. Nothing was taken.',
+    );
+    expect(
+      pinFailureText(parseFailure(PREPARING + CHANGE_NEEDS_MINT).detail),
+    ).toBe(PIN_CHANGE_NEEDS_CONNECTION_TEXT);
+  });
+
+  it('names an online-only card on an offline terminal in one short sentence', () => {
+    expect(PIN_ONLINE_ONLY_TEXT).toBe(
+      'This card needs a connection. Nothing was taken.',
+    );
+    expect(pinFailureText(parseFailure(PREPARING + ONLINE_ONLY).detail)).toBe(
+      PIN_ONLINE_ONLY_TEXT,
+    );
+  });
+
+  it('keeps both offline lines no longer than the longest PIN verdict', () => {
+    const longest = pinFailureText('VERIFY_PIN failed: PIN blocked');
+    expect(longest).toBe('PIN blocked — this card can no longer be charged.');
+    expect(longest.length).toBe(49);
+    expect(PIN_CHANGE_NEEDS_CONNECTION_TEXT.length).toBeLessThanOrEqual(
+      longest.length,
+    );
+    expect(PIN_ONLINE_ONLY_TEXT.length).toBeLessThanOrEqual(longest.length);
+  });
+
+  it('leaves every PIN verdict exactly as it was', () => {
+    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — 2 tries left')).toBe(
+      'Wrong PIN — 2 tries left. Try again.',
+    );
+    expect(pinFailureText('VERIFY_PIN failed: wrong PIN — no tries left')).toBe(
+      'PIN blocked — this card can no longer be charged.',
+    );
+    expect(pinFailureText('VERIFY_PIN failed: no PIN set')).toBe(
+      'This card has no PIN. Tap again without one.',
+    );
+    expect(
+      pinFailureText(
+        'SPEND_ALL_SIGN failed: PIN needed for this payment (0x6A94)',
+      ),
+    ).toBe(PIN_NEEDED_TEXT);
   });
 });
 

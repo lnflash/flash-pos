@@ -24,6 +24,29 @@ export interface PinSheetProps {
 }
 
 const DOT = 14;
+const DOTS_TOP = 66;
+const PAD_TOP = 128;
+
+/**
+ * The error line wraps to two lines instead of cutting a long failure off
+ * (ENG-698). Its slot starts under the dots and is two lines of
+ * `TYPE.helper` (20pt line height) at MAX_FONT_SCALE tall: 80 to 126, inside
+ * the gap to the keypad at 128. A one-line error sits within a point of the
+ * helper line (92 to 112), and neither the dots nor the keypad move.
+ */
+export const ERROR_LINES = 2;
+const ERROR_SLOT_TOP = DOTS_TOP + DOT;
+const ERROR_SLOT_H = Math.ceil(
+  TYPE.helper.lineHeight * ERROR_LINES * MAX_FONT_SCALE,
+);
+
+/** The sheet's vertical stops, for the layout test. */
+export const PIN_SHEET_GEOMETRY = {
+  dotsBottom: DOTS_TOP + DOT,
+  errorSlotTop: ERROR_SLOT_TOP,
+  errorSlotHeight: ERROR_SLOT_H,
+  padTop: PAD_TOP,
+} as const;
 
 function Dots({pin, green}: {pin: string; green: PinSheetProps['green']}) {
   const count = Math.min(PIN_MAX_LENGTH, Math.max(PIN_MIN_LENGTH, pin.length));
@@ -98,23 +121,23 @@ function PinSheet({
             </Text>
           )}
         </Animated.View>
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            StyleSheet.absoluteFill,
-            styles.center,
-            {opacity: n.errHelper},
-          ]}>
-          <Text
-            testID="pin-error-text"
-            style={[TYPE.helper, styles.errorText]}
-            maxFontSizeMultiplier={MAX_FONT_SCALE}
-            numberOfLines={1}>
-            {errorText ?? ''}
-          </Text>
-        </Animated.View>
       </View>
-      <View style={[styles.pad, {height: L.pin.rowHeight * 4}]}>
+      <Animated.View
+        pointerEvents="none"
+        testID="pin-error-slot"
+        style={[styles.errorSlot, styles.center, {opacity: n.errHelper}]}>
+        <Text
+          testID="pin-error-text"
+          style={[TYPE.helper, styles.errorText]}
+          maxFontSizeMultiplier={MAX_FONT_SCALE}
+          numberOfLines={ERROR_LINES}
+          textBreakStrategy="balanced">
+          {errorText ?? ''}
+        </Text>
+      </Animated.View>
+      <View
+        style={[styles.pad, {height: L.pin.rowHeight * 4}]}
+        testID="pin-pad">
         <PinPad
           tone="ink"
           rowHeight={L.pin.rowHeight}
@@ -150,7 +173,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    top: 66,
+    top: DOTS_TOP,
     height: DOT,
     flexDirection: 'row',
     justifyContent: 'center',
@@ -170,10 +193,18 @@ const styles = StyleSheet.create({
   dotFilled: {backgroundColor: COLOR.ink},
   dotGreen: {backgroundColor: COLOR.green},
   helperSlot: {position: 'absolute', left: 24, right: 24, top: 92, height: 20},
+  errorSlot: {
+    position: 'absolute',
+    left: 24,
+    right: 24,
+    top: ERROR_SLOT_TOP,
+    height: ERROR_SLOT_H,
+  },
   center: {alignItems: 'center', justifyContent: 'center'},
   chargeNow: {fontFamily: 'Outfit-SemiBold', color: COLOR.ink},
-  errorText: {color: COLOR.red},
-  pad: {position: 'absolute', left: 24, right: 24, top: 128},
+  /** A wrapped line centres under the centred sheet, like StatusBlock's. */
+  errorText: {color: COLOR.red, textAlign: 'center'},
+  pad: {position: 'absolute', left: 24, right: 24, top: PAD_TOP},
 });
 
 export default React.memo(PinSheet);

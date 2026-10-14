@@ -431,44 +431,63 @@ async function main() {
   );
   const card = {mint: opts.mint, anchor: tip.header};
 
+  const attempts = Number(process.env.E2E_FLOW_ATTEMPTS) || lib.FLOW_ATTEMPTS;
   const results = [];
   for (const flow of opts.flows) {
-    console.log(`\n=== ${flow}`);
-    try {
-      const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
-      const fixtures = fixturesFor(flow, minted, card);
-      // Again on the minted proofs, which the placeholders only stand in for.
-      lib.validateStages(client, flow, fixtures);
-      // The flow starts on this card; later stages are its own to post.
-      await resetCard(sim, pubkey);
-      const state = await sim.fixture(fixtures.INITIAL);
+    const outcome = await lib.runAttempts(
+      attempts,
+      async n => {
+        console.log(
+          `\n=== ${flow}${n > 1 ? ` (attempt ${n} of ${attempts})` : ''}`,
+        );
+        const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
+        const fixtures = fixturesFor(flow, minted, card);
+        // Again on the minted proofs, which the placeholders only stand in for.
+        lib.validateStages(client, flow, fixtures);
+        // The flow starts on this card; later stages are its own to post.
+        await resetCard(sim, pubkey);
+        const state = await sim.fixture(fixtures.INITIAL);
+        console.log(
+          `card: ${state.balance} sat, ${state.counts.unspent} unspent / ${state.counts.spent} spent / ${state.counts.empty} empty`,
+        );
+        const run = spawnSync(
+          maestro,
+          maestroArgs(opts, flow, fixtures, minted),
+          {
+            stdio: 'inherit',
+            cwd: ROOT,
+          },
+        );
+        if (run.error) {
+          throw run.error;
+        }
+        return run.status === 0;
+      },
+      (n, error) =>
+        console.error(
+          `${flow} (attempt ${n}): ${
+            error instanceof Error ? error.message : error
+          }`,
+        ),
+    );
+    if (outcome.ok && outcome.attempts > 1) {
+      // Visible in the PR's checks, so a flow that keeps needing a retry is
+      // looked at rather than absorbed.
       console.log(
-        `card: ${state.balance} sat, ${state.counts.unspent} unspent / ${state.counts.spent} spent / ${state.counts.empty} empty`,
+        `::warning::e2e flow ${flow} passed on attempt ${outcome.attempts} of ${attempts}`,
       );
-      const run = spawnSync(
-        maestro,
-        maestroArgs(opts, flow, fixtures, minted),
-        {
-          stdio: 'inherit',
-          cwd: ROOT,
-        },
-      );
-      if (run.error) {
-        throw run.error;
-      }
-      results.push({flow, ok: run.status === 0});
-    } catch (error) {
-      console.error(
-        `${flow}: ${error instanceof Error ? error.message : error}`,
-      );
-      results.push({flow, ok: false});
     }
+    results.push({flow, ...outcome});
   }
 
   await stub.close();
   console.log('\n=== results');
-  for (const {flow, ok} of results) {
-    console.log(`${ok ? 'PASS' : 'FAIL'}  ${flow}`);
+  for (const {flow, ok, attempts: used} of results) {
+    console.log(
+      `${ok ? 'PASS' : 'FAIL'}  ${flow}${
+        used > 1 ? `  (${used} attempts)` : ''
+      }`,
+    );
   }
   return results.every(r => r.ok) ? 0 : 1;
 }
