@@ -7,7 +7,7 @@ import {
   cashuOutstanding,
   lastAutoSettleResult,
   runAutoSettlement,
-  SWEEP_RESERVE_SAT,
+  SWEEP_MIN_SAT,
   type CashuOutstanding,
 } from '../../services/cashuAutoSettle';
 import {
@@ -148,24 +148,20 @@ const PendingSettlementBanner = () => {
   if (queueSat === 0 && settledSat === 0 && failedCount === 0) {
     return null;
   }
-  // The float never sweeps, so "awaiting payout" overstated what the wallet
-  // would ever receive. Name the till and the part of it that moves.
-  const sweepableSat = Math.max(0, settledSat - SWEEP_RESERVE_SAT);
-
   return (
     <Banner>
       <BannerText>
         ⚠ {queueSat + settledSat} sat in the till
-        {sweepableSat > 0 ? ` — ${sweepableSat} sat to sweep` : ''}
+        {settledSat > 0 ? ` (${settledSat} sat to sweep)` : ''}
       </BannerText>
       <BannerSub>
         {queueCount > 0
           ? `${queueCount} tapped payment(s) settle automatically when online. `
           : ''}
         {settledSat > 0
-          ? sweepableSat > 0
-            ? `${settledSat} sat settled at the mint; ${sweepableSat} sat sweeps to your wallet, ${Math.min(settledSat, SWEEP_RESERVE_SAT)} sat stays as float for change. `
-            : `${settledSat} sat settled at the mint, held as float for change (sweeps above ${SWEEP_RESERVE_SAT} sat). `
+          ? settledSat < SWEEP_MIN_SAT
+            ? `${settledSat} sat settled at the mint; it sweeps to your wallet once the till reaches ${SWEEP_MIN_SAT} sat. `
+            : `${settledSat} sat settled at the mint; it sweeps to your wallet when online. `
           : ''}
         {failedCount > 0
           ? `${failedCount} settlement(s) failed (${failedSat} sat) — Settle now retries them.`

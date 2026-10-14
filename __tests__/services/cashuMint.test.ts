@@ -628,6 +628,28 @@ describe('meltSettledProofs', () => {
       Object.keys(mockStore).some(k => k.startsWith('@cashu_settled_payout')),
     ).toBe(true);
   });
+
+  it('an explicit proofs subset melts only that subset (ENG-696)', async () => {
+    const a = {...settled[0], secret: 'subset-a'};
+    const b = {...settled[0], secret: 'subset-b'};
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([a, b]);
+
+    const result = await meltSettledProofs({
+      mintUrl: MINT_URL,
+      bolt11: 'lnbc-invoice',
+      proofs: [a],
+    });
+
+    expect(result.paidSat).toBe(16);
+    expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+    expect(walletMocks.meltProofsBolt11.mock.calls[0][1]).toEqual([a]);
+    // The proof outside the subset stays; the melted one leaves; the change
+    // joins.
+    const store = JSON.parse(mockStore['@cashu_settled_proofs']) as {
+      secret: string;
+    }[];
+    expect(store.map(p => p.secret)).toEqual(['subset-b', 'change-secret']);
+  });
 });
 
 // ENG-626: a till under the sweep reserve asked the mint checkstate every
@@ -700,7 +722,190 @@ describe('sweepSettledProofs', () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
   });
 
-  it('a till under the reserve makes no mint call at all (ENG-626)', async () => {
+  it('a till under the minimum sweep makes no mint call at all (ENG-626)', async () => {
+    // 9 sat against the production minimum of 10, with no reserve: the run
+    // answers from the store alone, as ENG-626 requires.
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'small-a'),
+      tillProof(1, 'small-b'),
+    ]);
+
+    const result = await sweepSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+      keepReserveSat: 0,
+      minSweepSat: 10,
+    });
+
+    expect(result).toEqual({
+      paidSat: 0,
+      feeReserveSat: 0,
+      preimage: null,
+      change: [],
+    });
+    expect(walletMocks.checkProofsStates).not.toHaveBeenCalled();
+    expect(walletMocks.createMeltQuoteBolt11).not.toHaveBeenCalled();
+    expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    // The till is untouched.
+    await expect(listSettledProofs()).resolves.toHaveLength(2);
+  });
+
+  it('a till that reaches the minimum sweeps all of it (ENG-696)', async () => {
+    // The boundary pair: 9 sat stays put, one more sat sweeps all 10.
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'min-a'),
+      tillProof(1, 'min-b'),
+    ]);
+    const quote = {
+      quote: 'min-q1',
+      amount: 10,
+      fee_reserve: 0,
+      unit: 'sat',
+      state: 'UNPAID',
+      request: 'lnbc-invoice',
+      payment_preimage: null,
+    };
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue(quote);
+    walletMocks.meltProofsBolt11.mockImplementation(async q => ({
+      quote: {...q, state: 'PAID', payment_preimage: 'preimage-1'},
+      change: [],
+    }));
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+    ]);
+    const args = {
+      mintUrl: MINT_URL,
+      bolt11: 'lnbc-invoice',
+      keepReserveSat: 0,
+      minSweepSat: 10,
+    };
+
+    await expect(sweepSettledProofs(args)).resolves.toMatchObject({
+      paidSat: 0,
+    });
+    expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
+
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'min-a'),
+      tillProof(1, 'min-b'),
+      tillProof(1, 'min-c'),
+    ]);
+    const result = await sweepSettledProofs(args);
+
+    expect(result.paidSat).toBe(10);
+    expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+    expect(
+      (walletMocks.meltProofsBolt11.mock.calls[0][1] as {secret: string}[])
+        .map(p => p.secret)
+        .sort(),
+    ).toEqual(['min-a', 'min-b', 'min-c']);
+    await expect(listSettledProofs()).resolves.toEqual([]);
+  });
+
+  it('melts exactly the selected set and leaves no spent proof in the store (ENG-696)', async () => {
+    // A reserve of 16 against a 20-sat till: the target is 4, so the
+    // largest-first selection is one 8, not the whole till.
+    const p8 = tillProof(8, 'p8');
+    const p8b = tillProof(8, 'p8b');
+    const p4 = tillProof(4, 'p4');
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([p8, p8b, p4]);
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+    ]);
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      quote: 'sel-q1',
+      amount: 8,
+      fee_reserve: 0,
+      unit: 'sat',
+      state: 'UNPAID',
+      request: 'lnbc-invoice',
+      payment_preimage: null,
+    });
+    walletMocks.meltProofsBolt11.mockImplementation(async q => ({
+      quote: {...q, state: 'PAID', payment_preimage: 'preimage-1'},
+      change: [],
+    }));
+
+    const result = await sweepSettledProofs({
+      mintUrl: MINT_URL,
+      bolt11: 'lnbc-invoice',
+      keepReserveSat: 16,
+    });
+
+    expect(result.paidSat).toBe(8);
+    expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+    const melted = walletMocks.meltProofsBolt11.mock.calls[0][1] as {
+      secret: string;
+    }[];
+    expect(melted).toEqual([p8]);
+    const store = await listSettledProofs();
+    expect(store).toEqual([p8b, p4]);
+    // Nothing the mint consumed is still listed as money in the till.
+    const storeSecrets = new Set(store.map(p => p.secret));
+    expect(melted.filter(p => storeSecrets.has(p.secret))).toEqual([]);
+  });
+
+  it('the lightning-address invoice is sized from what is melted (ENG-696)', async () => {
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'p8'),
+      tillProof(8, 'p8b'),
+      tillProof(4, 'p4'),
+    ]);
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+    ]);
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      quote: 'sel-q2',
+      amount: 8,
+      fee_reserve: 0,
+      unit: 'sat',
+      state: 'UNPAID',
+      request: 'lnbc-invoice',
+      payment_preimage: null,
+    });
+    walletMocks.meltProofsBolt11.mockImplementation(async q => ({
+      quote: {...q, state: 'PAID', payment_preimage: 'preimage-1'},
+      change: [],
+    }));
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tag: 'payRequest',
+          minSendable: '1000',
+          maxSendable: '100000000',
+          callback: 'https://wallet.example/lnurlp/scan',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({pr: 'lnbc80n1invoice'}),
+      });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await sweepSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+      keepReserveSat: 16,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://wallet.example/lnurlp/scan?amount=8000',
+    );
+  });
+
+  it('a till at or under the reserve parameter makes no mint call either', async () => {
     mockStore['@cashu_settled_proofs'] = JSON.stringify([
       tillProof(8, 'float-a'),
       tillProof(4, 'float-b'),
@@ -722,7 +927,6 @@ describe('sweepSettledProofs', () => {
     expect(walletMocks.createMeltQuoteBolt11).not.toHaveBeenCalled();
     expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
-    // The float is untouched.
     await expect(listSettledProofs()).resolves.toHaveLength(2);
   });
 
@@ -777,15 +981,17 @@ describe('sweepSettledProofs', () => {
       ]);
       await reconcileTill(MINT_URL, {now: T0});
       expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
+      // The stale listing sorts first among equals, so the first selection
+      // (32 of the 48 listed, a 16-sat reserve kept) includes it.
       mockStore['@cashu_settled_proofs'] = JSON.stringify([
+        tillProof(16, 'gone'),
         tillProof(16, 'live-a'),
         tillProof(16, 'live-b'),
-        tillProof(16, 'gone'),
       ]);
-      walletMocks.createMeltQuoteBolt11.mockImplementation(async () => ({
+      walletMocks.createMeltQuoteBolt11.mockResolvedValue({
         ...meltQuote,
-        amount: (await listSettledProofs()).reduce((t, p) => t + p.amount, 0),
-      }));
+        amount: 32,
+      });
       walletMocks.meltProofsBolt11.mockImplementation(async quote => ({
         quote: {...quote, state: 'PAID', payment_preimage: 'preimage-1'},
         change: [],
@@ -795,10 +1001,14 @@ describe('sweepSettledProofs', () => {
     it('is healed by a forced reconcile and one silent retry, not left to the window (ENG-626)', async () => {
       walletMocks.meltProofsBolt11.mockRejectedValueOnce(alreadySpent());
       walletMocks.checkProofsStates.mockResolvedValueOnce([
-        {state: cashu.CheckStateEnum.UNSPENT},
-        {state: cashu.CheckStateEnum.UNSPENT},
         {state: cashu.CheckStateEnum.SPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
       ]);
+      // The retry re-selects from the healed 32-sat store: 16 melts.
+      walletMocks.createMeltQuoteBolt11
+        .mockResolvedValueOnce({...meltQuote, amount: 32})
+        .mockResolvedValueOnce({...meltQuote, amount: 16});
 
       const result = await sweepSettledProofs({
         mintUrl: MINT_URL,
@@ -811,22 +1021,31 @@ describe('sweepSettledProofs', () => {
       // and the melt went through on the second try.
       expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(2);
       expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(2);
-      expect(result.paidSat).toBe(32);
+      expect(result.paidSat).toBe(16);
+      expect(
+        (
+          walletMocks.meltProofsBolt11.mock.calls[1][1] as {secret: string}[]
+        ).map(p => p.secret),
+      ).toEqual(['live-a']);
       const store = JSON.parse(mockStore['@cashu_settled_proofs']) as {
         secret: string;
       }[];
       expect(store.map(p => p.secret)).not.toContain('gone');
-      // The float survived the sweep.
-      expect(store).toHaveLength(1);
+      // The reserve the caller asked for stayed in the till.
+      expect(store.map(p => p.secret)).toEqual(['live-b']);
     });
 
     it('gives up after one retry when the mint keeps saying spent', async () => {
       walletMocks.meltProofsBolt11.mockRejectedValue(alreadySpent());
       walletMocks.checkProofsStates.mockResolvedValue([
-        {state: cashu.CheckStateEnum.UNSPENT},
-        {state: cashu.CheckStateEnum.UNSPENT},
         {state: cashu.CheckStateEnum.SPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
       ]);
+      // The second quote fits the healed selection, so the retry melts.
+      walletMocks.createMeltQuoteBolt11
+        .mockResolvedValueOnce({...meltQuote, amount: 32})
+        .mockResolvedValueOnce({...meltQuote, amount: 16});
 
       await expect(
         sweepSettledProofs({
@@ -881,6 +1100,37 @@ describe('sweepSettledProofs', () => {
 
       expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(1);
       expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops quietly when the healed till falls under the minimum (ENG-696)', async () => {
+      mockStore['@cashu_settled_proofs'] = JSON.stringify([
+        tillProof(16, 'gone'),
+        tillProof(8, 'live-small'),
+      ]);
+      walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+        ...meltQuote,
+        amount: 24,
+      });
+      walletMocks.meltProofsBolt11.mockRejectedValueOnce(alreadySpent());
+      walletMocks.checkProofsStates.mockResolvedValueOnce([
+        {state: cashu.CheckStateEnum.SPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
+      ]);
+
+      const result = await sweepSettledProofs({
+        mintUrl: MINT_URL,
+        bolt11: 'lnbc-invoice',
+        keepReserveSat: 0,
+        minSweepSat: 10,
+        now: T0 + 10_000,
+      });
+
+      expect(result.paidSat).toBe(0);
+      expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+      expect(walletMocks.createMeltQuoteBolt11).toHaveBeenCalledTimes(1);
+      await expect(listSettledProofs()).resolves.toEqual([
+        tillProof(8, 'live-small'),
+      ]);
     });
   });
 });

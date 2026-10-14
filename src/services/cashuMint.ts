@@ -991,6 +991,11 @@ export interface PayoutArgs {
   /** Serve the LNURL metadata from this base instead of the address's domain —
    *  the flash account's payRequest lives on the flash ln-address service. */
   lnurlpUrl?: string;
+  /**
+   * Melt exactly these settled proofs; omitted = the whole store. The sweep
+   * passes its selection so nothing outside it is melted or invoiced for.
+   */
+  proofs?: SettledProof[];
   now?: number;
 }
 
@@ -1018,12 +1023,13 @@ export async function meltSettledProofs({
   bolt11,
   lightningAddress,
   lnurlpUrl,
+  proofs: subset,
   now = Date.now(),
 }: PayoutArgs): Promise<PayoutResult> {
   if (Boolean(bolt11) === Boolean(lightningAddress)) {
     throw new Error('payout needs exactly one of bolt11 or lightningAddress');
   }
-  const proofs = await listSettledProofs();
+  const proofs = subset ?? (await listSettledProofs());
   if (proofs.length === 0) {
     throw new Error('no settled proofs to pay out');
   }
@@ -1234,11 +1240,19 @@ export async function reconcileTill(
 }
 
 /**
- * Sweep everything except the change float to the account address.
+ * Sweep the settled till to the account address.
  *
- * `keepReserveSat` is the till float: small-denomination proofs the terminal
- * holds back so offline purchases can make change. Greedy from the largest
- * proof, so the smallest denominations survive in the till.
+ * Protocol 2.0 keeps no till float: the card makes its own change, so in
+ * production everything settled sweeps (`keepReserveSat` 0). The reserve
+ * stays an explicit parameter, held back largest-first so the smallest
+ * proofs are the ones kept.
+ *
+ * `minSweepSat` keeps a dust till off the mint: below it the run answers
+ * from the store alone, with no reconcile and no melt quote (ENG-626).
+ *
+ * Only the selected proofs are melted, and the invoice is sized from them:
+ * `meltSettledProofs` takes the selection and drops exactly those from the
+ * store, so nothing the mint consumed stays listed as money in the till.
  */
 export async function sweepSettledProofs(opts: {
   mintUrl: string;
@@ -1246,52 +1260,59 @@ export async function sweepSettledProofs(opts: {
   lightningAddress?: string;
   lnurlpUrl?: string;
   keepReserveSat?: number;
+  minSweepSat?: number;
   now?: number;
 }): Promise<PayoutResult> {
-  const {keepReserveSat = 0, mintUrl} = opts;
+  const {keepReserveSat = 0, minSweepSat = 0, mintUrl} = opts;
   const sumSat = (ps: SettledProof[]) => ps.reduce((t, p) => t + p.amount, 0);
-  // Nothing above the float means nothing to sweep: answer from the store
-  // alone, with no mint call. Reconciling first here is what ENG-626 was —
-  // a till sitting under the reserve asked the mint checkstate every 20 s,
-  // took a 429 each time, and the run still read as clean.
-  if (sumSat(await listSettledProofs()) <= keepReserveSat) {
-    return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+  const nothing: PayoutResult = {
+    paidSat: 0,
+    feeReserveSat: 0,
+    preimage: null,
+    change: [],
+  };
+  const tooSmall = (total: number) =>
+    total <= keepReserveSat || total < minSweepSat;
+  // Nothing to sweep (at or under the reserve, or under the minimum): answer
+  // from the store alone, with no mint call. Reconciling first here is what
+  // ENG-626 was: a small till asked the mint checkstate every 20 s, took a
+  // 429 each time, and the run still read as clean.
+  if (tooSmall(sumSat(await listSettledProofs()))) {
+    return nothing;
   }
   // Reconcile before melting: a till listing the mint already spent
   // (consumed by an earlier melt/swap whose store update was lost) would
   // fail every payout with 11001 forever. Drop spent listings, then sweep
-  // the survivors. A 429 propagates — the caller backs off.
+  // the survivors. A 429 propagates: the caller backs off.
   await reconcileTill(mintUrl, {now: opts.now});
   // The reconcile is throttled, so a listing that went stale INSIDE the
   // window (a melt response lost since the last ask) still reaches the melt
   // and comes back 11001. That verdict is the mint telling us the store is
   // stale right now: reconcile again regardless of the window and retry
   // once, so the self-heal stays silent instead of toasting on every tick
-  // until the window reopens.
+  // until the window reopens. The retry re-reads the healed store and
+  // selects again.
   for (let attempt = 0; ; attempt += 1) {
     const proofs = await listSettledProofs();
     const total = sumSat(proofs);
-    if (total <= keepReserveSat) {
-      return {paidSat: 0, feeReserveSat: 0, preimage: null, change: []};
+    if (tooSmall(total)) {
+      return nothing;
     }
-    // Largest-first melt selection, stopping so the remaining proofs still
-    // cover the reserve. Melted proofs leave the store inside
-    // meltSettledProofs; the survivors are the float.
+    // Largest-first selection, stopping once it covers everything above the
+    // reserve. Only these are melted; the rest stay in the store untouched.
     const sorted = [...proofs].sort((a, b) => b.amount - a.amount);
     const meltTarget = total - keepReserveSat;
     let acc = 0;
-    const meltSet = new Set<string>();
+    const toMelt: SettledProof[] = [];
     for (const p of sorted) {
       if (acc >= meltTarget) {
         break;
       }
-      meltSet.add(p.secret);
+      toMelt.push(p);
       acc += p.amount;
     }
-    const survivors = proofs.filter(p => !meltSet.has(p.secret));
-    let result: PayoutResult;
     try {
-      result = await meltSettledProofs({...opts});
+      return await meltSettledProofs({...opts, proofs: toMelt});
     } catch (error) {
       if (
         attempt === 0 &&
@@ -1303,17 +1324,6 @@ export async function sweepSettledProofs(opts: {
       }
       throw error;
     }
-    // meltSettledProofs melted the WHOLE store; re-stage the survivors by
-    // writing them back over whatever the melt left (its change).
-    const current = await listSettledProofs();
-    await setSecure(
-      SETTLED_PROOFS_KEY,
-      JSON.stringify([
-        ...current.filter(c => !survivors.some(s => s.secret === c.secret)),
-        ...survivors,
-      ]),
-    );
-    return result;
   }
 }
 

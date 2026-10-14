@@ -18,6 +18,8 @@ import {
   payoutToast,
   RATE_LIMITED_PAYOUT,
   runAutoSettlement,
+  SWEEP_MIN_SAT,
+  SWEEP_RESERVE_SAT,
   type AutoSettleResult,
 } from '../../src/services/cashuAutoSettle';
 import {FLASH_LN_ADDRESS, FLASH_LN_ADDRESS_URL} from '@env';
@@ -72,8 +74,17 @@ describe('runAutoSettlement', () => {
         // (the display domain and the LNURL endpoint are different hosts).
         lightningAddress: `merchant@${FLASH_LN_ADDRESS}`,
         lnurlpUrl: FLASH_LN_ADDRESS_URL,
+        // ENG-696: no till float in protocol 2.0, so nothing is held back;
+        // the minimum keeps a dust till off the mint (ENG-626).
+        keepReserveSat: 0,
+        minSweepSat: SWEEP_MIN_SAT,
       }),
     );
+  });
+
+  it('holds no float back, and sweeps from 10 sat (ENG-696)', () => {
+    expect(SWEEP_RESERVE_SAT).toBe(0);
+    expect(SWEEP_MIN_SAT).toBe(10);
   });
 
   it('an empty run (offline drain held everything) skips the sweep', async () => {

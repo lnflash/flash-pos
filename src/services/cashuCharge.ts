@@ -1507,9 +1507,9 @@ export async function executeCharge({
       // The post-swap bookkeeping, then the change LOADs. Every step always
       // runs, so none depends on another succeeding:
       //  - The merchant's take joins the till FIRST (the sweep melts it
-      //    above the float reserve to the account address). Like the change,
-      //    it exists only in this process until it is written: a settlement
-      //    queue that refuses the write below must not drop it.
+      //    to the account address). Like the change, it exists only in
+      //    this process until it is written: a settlement queue that
+      //    refuses the write below must not drop it.
       //  - The swap consumed the burned pieces: mark the payment settled.
       //  - The change goes onto the card EVEN IF the bookkeeping failed.
       //    The owed-change record, the till and the queue all write through
