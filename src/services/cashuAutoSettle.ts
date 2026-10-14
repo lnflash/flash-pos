@@ -41,10 +41,19 @@ export interface AutoSettleResult {
 }
 
 /**
- * The till float: small proofs held back so offline purchases can make change
- * without the network. Everything settled above it sweeps to the wallet.
+ * No till float in protocol 2.0: the card makes its own change, so
+ * everything settled sweeps. Kept as a named constant so the sweep's reserve
+ * stays an explicit argument.
  */
-export const SWEEP_RESERVE_SAT = 16;
+export const SWEEP_RESERVE_SAT = 0;
+
+/**
+ * The smallest till worth a payout. Below it a run answers from the store
+ * alone, with no reconcile and no melt quote: a 1-2 sat till asking the mint
+ * every 20 s is the 429 storm ENG-626 fixed. At or above it, everything
+ * settled sweeps.
+ */
+export const SWEEP_MIN_SAT = 10;
 
 /** The `payoutError` a run reports when the mint answered 429. */
 export const RATE_LIMITED_PAYOUT = 'mint is rate-limiting, backing off';
@@ -154,6 +163,7 @@ export async function runAutoSettlement(
           lightningAddress: `${username}@${FLASH_LN_ADDRESS}`,
           lnurlpUrl: FLASH_LN_ADDRESS_URL,
           keepReserveSat: SWEEP_RESERVE_SAT,
+          minSweepSat: SWEEP_MIN_SAT,
         });
         paidSat = payout.paidSat;
       } catch (error) {

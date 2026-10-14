@@ -51,6 +51,35 @@ export const CARD_LOCKED_BODY =
 export const DAILY_LIMIT_BODY = "This card has reached today's spending limit.";
 
 /**
+ * A bill with change while the mint is out of reach (`CHANGE_NEEDS_MINT` in
+ * `cashuCharge.ts`): refused in the preparing step, before anything burns.
+ */
+const CHANGE_NEEDS_MINT_RE =
+  /this bill needs change, and this terminal needs to reach the mint/i;
+
+export function changeNeedsMint(failure: Failure): boolean {
+  return CHANGE_NEEDS_MINT_RE.test(failure.detail);
+}
+
+/**
+ * A card whose pieces cannot be checked offline, with the mint out of reach
+ * (`ONLINE_ONLY` in `cashuCharge.ts`): refused before anything burns.
+ */
+const ONLINE_ONLY_RE = /can only be charged while this terminal is online/i;
+
+export function onlineOnly(failure: Failure): boolean {
+  return ONLINE_ONLY_RE.test(failure.detail);
+}
+
+/** The copy for a bill whose change needs the mint (ENG-696). */
+export const CHANGE_NEEDS_MINT_BODY =
+  'Nothing was taken from the card. Try again once this terminal is online.';
+
+/** The copy for an online-only card on an offline terminal (ENG-696). */
+export const ONLINE_ONLY_BODY =
+  'Nothing was taken from the card. Charge it once this terminal is online.';
+
+/**
  * The card would not sign without its PIN (6A94 at SPEND_ALL_SIGN): the bill
  * is over its no-PIN allowance. The screen moves to the PIN pad.
  */
@@ -264,6 +293,13 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
     // The card refuses before it burns (6A8F, or the pre-flight): nothing
     // was taken, and another tap today will be refused the same way.
     return DAILY_LIMIT_BODY;
+  }
+  if (!ctx.paid && changeNeedsMint(failure)) {
+    // Refused in the preparing step, before the card signed or burned.
+    return CHANGE_NEEDS_MINT_BODY;
+  }
+  if (!ctx.paid && onlineOnly(failure)) {
+    return ONLINE_ONLY_BODY;
   }
   if (failure.cardFull && ctx.burnsDone === 0 && !ctx.paid) {
     // The pre-flight (or a LOAD of earlier change) refused before any burn.

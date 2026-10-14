@@ -64,6 +64,10 @@ env:
   # app expands back against the mint's keysets.
   NUTSHELL_VERSION: '0.20.3'
   MAESTRO_VERSION: '2.10.0'
+  # A cold hosted simulator can take minutes to start Maestro's XCTest
+  # driver; at the default, whole flows failed before their first step with
+  # "iOS driver not ready in time" (run 38503213894, both attempts).
+  MAESTRO_DRIVER_STARTUP_TIMEOUT: '180000'
   CARDSIM_URL: http://127.0.0.1:9876
   MINT_URL: http://127.0.0.1:3338
 
