@@ -15,6 +15,8 @@ import transactionHistorySlice from '../../src/store/slices/transactionHistorySl
 import {PhaseError} from '../../src/services/phaseError';
 import {
   NEEDS_CARD_BODY,
+  PIN_CHANGE_NEEDS_CONNECTION_TEXT,
+  PIN_ONLINE_ONLY_TEXT,
   REFUSED_BODY,
   SIGNATURE_INVALID_BODY,
   UNCONFIRMED_BODY,
@@ -1359,6 +1361,44 @@ describe('CashuCardCharge', () => {
       await enterPin(getByLabelText);
       expect(mockExecuteCharge).toHaveBeenCalledTimes(4);
       expect(getByText('Paid — you can lift the card', visible)).toBeTruthy();
+    });
+
+    it('an offline refusal on the PIN sheet reads as one short sentence that may wrap, never cut off (ENG-698)', async () => {
+      jest.useFakeTimers(FAKE_TIMERS);
+      // The texts the service really throws, wrapped as `makeStep` wraps
+      // them in the preparing step: refused before anything burns.
+      const {CHANGE_NEEDS_MINT, ONLINE_ONLY, PHASE_PREPARING} =
+        jest.requireActual('../../src/services/cashuCharge');
+      mockExecuteCharge
+        .mockImplementationOnce(
+          async ({onPhase}: {onPhase: (p: string) => void}) => {
+            onPhase('reading card');
+            onPhase('verifying PIN');
+            onPhase(PHASE_PREPARING);
+            throw new PhaseError(PHASE_PREPARING, new Error(CHANGE_NEEDS_MINT));
+          },
+        )
+        .mockRejectedValueOnce(
+          new PhaseError(PHASE_PREPARING, new Error(ONLINE_ONLY)),
+        );
+      const {getByLabelText, getByTestId, queryByText} = await renderScreen({
+        preRead: {...PLAN, pinRequired: true},
+      });
+
+      await enterPin(getByLabelText);
+      expect(getByTestId('pin-sheet')).toBeTruthy();
+      const line = getByTestId('pin-error-text');
+      expect(line.props.children).toBe(PIN_CHANGE_NEEDS_CONNECTION_TEXT);
+      expect(line.props.numberOfLines).toBe(2);
+      expect(line.props.textBreakStrategy).toBe('balanced');
+      expect(queryByText(CHANGE_NEEDS_MINT, all)).toBeNull();
+
+      await enterPin(getByLabelText);
+      expect(getByTestId('pin-sheet')).toBeTruthy();
+      expect(getByTestId('pin-error-text').props.children).toBe(
+        PIN_ONLINE_ONLY_TEXT,
+      );
+      expect(mockExecuteCharge).toHaveBeenCalledTimes(2);
     });
   });
 
