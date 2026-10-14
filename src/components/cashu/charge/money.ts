@@ -399,11 +399,24 @@ export function failureBody(failure: Failure, ctx: FailureContext): string {
 const MONEY_PHASE = /^(burning|settling|writing|re-signing)/i;
 
 /**
+ * The PIN sheet's line for a bill whose change needs the mint, with the mint
+ * out of reach (ENG-698). The refusal arrives while a PIN card's sheet is up;
+ * the raw `CHANGE_NEEDS_MINT` is three times what the line holds.
+ */
+export const PIN_CHANGE_NEEDS_CONNECTION_TEXT =
+  'Change needs a connection. Nothing was taken.';
+
+/** The PIN sheet's line for an online-only card, offline (ENG-698). */
+export const PIN_ONLINE_ONLY_TEXT =
+  'This card needs a connection. Nothing was taken.';
+
+/**
  * The PIN sheet's error line. The raw failure is
  * "VERIFY_PIN failed: wrong PIN — 2 tries left": the APDU name is noise to
  * the customer and the line has room for one sentence, so keep the part
- * that tells them what to do. Anything that is not a PIN verdict passes
- * through unchanged.
+ * that tells them what to do. The two offline refusals (change that needs
+ * the mint, an online-only card) get one short sentence each, like the PIN
+ * verdicts. Anything else passes through unchanged.
  */
 export function pinFailureText(detail: string): string {
   const tries = /wrong PIN — (\d+) (try|tries) left/i.exec(detail);
@@ -418,6 +431,12 @@ export function pinFailureText(detail: string): string {
   }
   if (PIN_NEEDED.test(detail)) {
     return PIN_NEEDED_TEXT;
+  }
+  if (CHANGE_NEEDS_MINT_RE.test(detail)) {
+    return PIN_CHANGE_NEEDS_CONNECTION_TEXT;
+  }
+  if (ONLINE_ONLY_RE.test(detail)) {
+    return PIN_ONLINE_ONLY_TEXT;
   }
   return detail.replace(/^VERIFY_PIN failed: /, '');
 }
