@@ -1396,7 +1396,11 @@ describe('CashuCardCharge', () => {
           expect.objectContaining({textAlign: 'center'}),
         ]),
       );
-      expect(queryByText(CHANGE_NEEDS_MINT, all)).toBeNull();
+      // Nothing visible reads the raw refusal (a fragment, not the exact
+      // sentence: the pill carries it with its "[phase] " prefix). The
+      // pill is hidden in the PIN pose and still holds it, verbatim.
+      expect(queryByText(/This bill needs change/, visible)).toBeNull();
+      expect(queryByText(/This bill needs change/, all)).not.toBeNull();
 
       await enterPin(getByLabelText);
       expect(getByTestId('pin-sheet')).toBeTruthy();
