@@ -84,6 +84,12 @@ describe('PinSheet error slot (ENG-698)', () => {
   });
 
   it('exports the same stops it renders', () => {
+    const sheet = renderSheet();
+    const slot = flat(sheet.getByTestId('pin-error-slot').props.style);
+    const pad = flat(sheet.getByTestId('pin-pad').props.style);
+    expect(slot.top).toBe(PIN_SHEET_GEOMETRY.errorSlotTop);
+    expect(slot.height).toBe(PIN_SHEET_GEOMETRY.errorSlotHeight);
+    expect(pad.top).toBe(PIN_SHEET_GEOMETRY.padTop);
     expect(PIN_SHEET_GEOMETRY.dotsBottom).toBe(80);
     expect(PIN_SHEET_GEOMETRY.padTop).toBe(128);
     expect(PIN_SHEET_GEOMETRY.errorSlotTop).toBeGreaterThanOrEqual(
