@@ -905,6 +905,81 @@ describe('sweepSettledProofs', () => {
     );
   });
 
+  it('a lightning-address sweep keeps exactly the fee-reserve change in the till (ENG-696)', async () => {
+    // Production config. A 10-sat till against a 2-sat minimum reserve: the
+    // invoice is sized at 10 - 2 = 8, the route costs nothing, and the mint
+    // hands the unused 2 back as change. That change is the whole till
+    // afterwards: nothing melted stays listed, nothing else appears.
+    mockStore['@cashu_settled_proofs'] = JSON.stringify([
+      tillProof(8, 'ln-a'),
+      tillProof(2, 'ln-b'),
+    ]);
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: cashu.CheckStateEnum.UNSPENT},
+      {state: cashu.CheckStateEnum.UNSPENT},
+    ]);
+    const quoteFor = (amount: number) => ({
+      quote: `ln-q${amount}`,
+      amount,
+      fee_reserve: 2,
+      unit: 'sat',
+      state: 'UNPAID',
+      request: `lnbc-${amount}`,
+      payment_preimage: null,
+    });
+    walletMocks.createMeltQuoteBolt11.mockImplementation(async (req: string) =>
+      quoteFor(Number(req.replace('lnbc-', ''))),
+    );
+    const changeProof = {
+      id: KEYSET_ID,
+      amount: 2,
+      secret: 'fee-change',
+      C: TEST_CARD_PUBKEY,
+    };
+    walletMocks.meltProofsBolt11.mockImplementation(async q => ({
+      quote: {...q, state: 'PAID', payment_preimage: 'preimage-1'},
+      change: [changeProof],
+    }));
+    const fetchMock = jest.fn(async (url: string) => {
+      if (url.includes('/.well-known/lnurlp/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            tag: 'payRequest',
+            minSendable: '1000',
+            maxSendable: '100000000',
+            callback: 'https://wallet.example/lnurlp/cb',
+          }),
+        };
+      }
+      const msat = Number(new URL(url).searchParams.get('amount'));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({pr: `lnbc-${msat / 1000}`}),
+      };
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await sweepSettledProofs({
+      mintUrl: MINT_URL,
+      lightningAddress: 'merchant@wallet.example',
+      keepReserveSat: 0,
+      minSweepSat: 10,
+    });
+
+    expect(result.paidSat).toBe(8);
+    expect(result.feeReserveSat).toBe(2);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      'https://wallet.example/lnurlp/cb?amount=8000',
+    );
+    expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(1);
+    await expect(listSettledProofs()).resolves.toEqual([
+      {...changeProof, mintUrl: MINT_URL},
+    ]);
+  });
+
   it('a till at or under the reserve parameter makes no mint call either', async () => {
     mockStore['@cashu_settled_proofs'] = JSON.stringify([
       tillProof(8, 'float-a'),
@@ -1033,6 +1108,44 @@ describe('sweepSettledProofs', () => {
       expect(store.map(p => p.secret)).not.toContain('gone');
       // The reserve the caller asked for stayed in the till.
       expect(store.map(p => p.secret)).toEqual(['live-b']);
+    });
+
+    it('heals under the production config and the retry melts the whole healed till (ENG-696)', async () => {
+      // No reserve, minimum 10: the first melt takes all three listings, the
+      // mint answers 11001 for the stale one, the forced reconcile drops it,
+      // and the retry melts both survivors so the till ends empty.
+      walletMocks.meltProofsBolt11.mockRejectedValueOnce(alreadySpent());
+      walletMocks.checkProofsStates.mockResolvedValueOnce([
+        {state: cashu.CheckStateEnum.SPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
+        {state: cashu.CheckStateEnum.UNSPENT},
+      ]);
+      walletMocks.createMeltQuoteBolt11
+        .mockResolvedValueOnce({...meltQuote, amount: 48})
+        .mockResolvedValueOnce({...meltQuote, amount: 32});
+
+      const result = await sweepSettledProofs({
+        mintUrl: MINT_URL,
+        bolt11: 'lnbc-invoice',
+        keepReserveSat: 0,
+        minSweepSat: 10,
+        now: T0 + 10_000,
+      });
+
+      expect(walletMocks.checkProofsStates).toHaveBeenCalledTimes(2);
+      expect(walletMocks.meltProofsBolt11).toHaveBeenCalledTimes(2);
+      expect(
+        (
+          walletMocks.meltProofsBolt11.mock.calls[0][1] as {secret: string}[]
+        ).map(p => p.secret),
+      ).toEqual(['gone', 'live-a', 'live-b']);
+      expect(
+        (
+          walletMocks.meltProofsBolt11.mock.calls[1][1] as {secret: string}[]
+        ).map(p => p.secret),
+      ).toEqual(['live-a', 'live-b']);
+      expect(result.paidSat).toBe(32);
+      await expect(listSettledProofs()).resolves.toEqual([]);
     });
 
     it('gives up after one retry when the mint keeps saying spent', async () => {

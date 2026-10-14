@@ -77,19 +77,25 @@ const PendingSettlementBanner = () => {
         });
       } else if (result.stillPending > 0) {
         toastShow({
-          message: 'eCash: settlement retrying — the mint is throttling, it will clear',
+          message:
+            'eCash: settlement retrying — the mint is throttling, it will clear',
           type: 'info',
         });
       } else if (result.settled > 0) {
         toastShow({
-          message: `eCash: settled ${result.settled} tapped payment(s)${result.skippedPayout ? ` — ${result.skippedPayout}` : ''}`,
+          message: `eCash: settled ${result.settled} tapped payment(s)${
+            result.skippedPayout ? ` — ${result.skippedPayout}` : ''
+          }`,
           type: 'info',
         });
       } else if (result.skippedPayout) {
         toastShow({message: `eCash: ${result.skippedPayout}`, type: 'info'});
       }
     } catch {
-      toastShow({message: 'eCash: settlement run failed — retrying automatically', type: 'error'});
+      toastShow({
+        message: 'eCash: settlement run failed — retrying automatically',
+        type: 'error',
+      });
     } finally {
       setSettling(false);
       refresh();
@@ -118,7 +124,10 @@ const PendingSettlementBanner = () => {
         });
       }
     } catch {
-      toastShow({message: 'eCash: could not retire the failed settlements', type: 'error'});
+      toastShow({
+        message: 'eCash: could not retire the failed settlements',
+        type: 'error',
+      });
     } finally {
       setSettling(false);
       refresh();
@@ -144,15 +153,28 @@ const PendingSettlementBanner = () => {
   if (!outstanding) {
     return null;
   }
-  const {queueSat, queueCount, settledSat, failedCount, failedSat} = outstanding;
+  const {queueSat, queueCount, settledSat, failedCount, failedSat} =
+    outstanding;
   if (queueSat === 0 && settledSat === 0 && failedCount === 0) {
     return null;
+  }
+  // A settled remainder under the minimum, with nothing queued and nothing
+  // failed, is not an alarm: it is routine (a lightning-address sweep's
+  // unused fee reserve comes back as change and lands here) and it sweeps
+  // with the next sale. A quiet line, no ⚠ and no Settle now, since a run
+  // would only skip it again.
+  if (queueSat === 0 && failedCount === 0 && settledSat < SWEEP_MIN_SAT) {
+    return (
+      <QuietLine>
+        {`${settledSat} sat settled at the mint; it sweeps to your wallet once the till reaches ${SWEEP_MIN_SAT} sat.`}
+      </QuietLine>
+    );
   }
   return (
     <Banner>
       <BannerText>
         ⚠ {queueSat + settledSat} sat in the till
-        {settledSat > 0 ? ` (${settledSat} sat to sweep)` : ''}
+        {settledSat >= SWEEP_MIN_SAT ? ` (${settledSat} sat to sweep)` : ''}
       </BannerText>
       <BannerSub>
         {queueCount > 0
@@ -192,6 +214,13 @@ const Banner = styled.View`
   border-left-color: #d97706;
   border-radius: 8px;
   padding: 12px;
+  margin-bottom: 12px;
+`;
+
+const QuietLine = styled.Text`
+  font-size: 12px;
+  font-family: 'Outfit-Regular';
+  color: #6b7280;
   margin-bottom: 12px;
 `;
 

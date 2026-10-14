@@ -83,6 +83,41 @@ describe('PendingSettlementBanner (ENG-696)', () => {
     unmount();
   });
 
+  it('a sub-minimum residue alone is a quiet line, not an alarm', async () => {
+    // A lightning-address sweep returns its unused fee reserve as change:
+    // 2 sat left in the till, under the minimum, nothing queued or failed.
+    const {getByText, queryByText, unmount} = await renderBanner(
+      outstanding({settledSat: 2}),
+    );
+    expect(
+      getByText(
+        '2 sat settled at the mint; it sweeps to your wallet once the till reaches 10 sat.',
+      ),
+    ).toBeTruthy();
+    expect(queryByText(/⚠/)).toBeNull();
+    expect(queryByText(/to sweep/)).toBeNull();
+    expect(queryByText('Settle now')).toBeNull();
+    unmount();
+  });
+
+  it('a sub-minimum residue beside a queue is counted but not named as sweeping', async () => {
+    const {getByText, queryByText, unmount} = await renderBanner(
+      outstanding({queueSat: 8, queueCount: 1, settledSat: 2}),
+    );
+    expect(getByText('⚠ 10 sat in the till')).toBeTruthy();
+    expect(queryByText(/to sweep/)).toBeNull();
+    unmount();
+  });
+
+  it('a sub-minimum residue beside a failure still raises the alarm', async () => {
+    const {getByText, unmount} = await renderBanner(
+      outstanding({settledSat: 2, failedCount: 1, failedSat: 8}),
+    );
+    expect(getByText('⚠ 2 sat in the till')).toBeTruthy();
+    expect(getByText('Settled elsewhere')).toBeTruthy();
+    unmount();
+  });
+
   it('counts the queue in the till, but only settled sats as sweeping', async () => {
     const {getByText, unmount} = await renderBanner(
       outstanding({queueSat: 8, queueCount: 1, settledSat: 12}),
