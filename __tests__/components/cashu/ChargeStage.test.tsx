@@ -18,6 +18,19 @@ import {
   PLAN_C,
 } from '../../../src/components/cashu/charge/previewScript';
 import {DUR} from '../../../src/components/cashu/charge/tokens';
+import {
+  CHANGE_NEEDS_MINT_TITLE,
+  ONLINE_ONLY_TITLE,
+  REFUSED_TITLE,
+} from '../../../src/components/cashu/charge/ChargeStage';
+import {
+  CHANGE_NEEDS_MINT_BODY,
+  ONLINE_ONLY_BODY,
+} from '../../../src/components/cashu/charge/money';
+import {
+  CHANGE_NEEDS_MINT,
+  ONLINE_ONLY,
+} from '../../../src/services/cashuCharge';
 
 const visible = {includeHiddenElements: false} as const;
 /** For "must not exist at all": hidden layers count too. */
@@ -235,6 +248,35 @@ describe('errors', () => {
     update({mode: 'running', stage: feed(['reading card', 'verifying PIN'])});
     update({mode: 'error', error: '[verifying PIN] wrong PIN'});
     expect(getByText('Charge didn’t finish', visible)).toBeTruthy();
+  });
+
+  it('names a bill whose change needs the mint, and says nothing was taken (ENG-696)', () => {
+    const raw = `[preparing the payment] ${CHANGE_NEEDS_MINT}`;
+    const {getByTestId, getByText, update} = setup();
+    update({mode: 'running', stage: feed(['reading card', 'verifying PIN'])});
+    update({mode: 'error', error: raw});
+    expect(getByText(CHANGE_NEEDS_MINT_TITLE, visible)).toBeTruthy();
+    expect(getByText(CHANGE_NEEDS_MINT_BODY, visible)).toBeTruthy();
+    // The pill keeps the card's refusal exactly as reported.
+    expect(within(getByTestId('error-pill')).getByText(raw)).toBeTruthy();
+  });
+
+  it('names an online-only card, and says nothing was taken (ENG-696)', () => {
+    const raw = `[preparing the payment] ${ONLINE_ONLY}`;
+    const {getByTestId, getByText, update} = setup();
+    update({mode: 'running', stage: feed(['reading card', 'verifying PIN'])});
+    update({mode: 'error', error: raw});
+    expect(getByText(ONLINE_ONLY_TITLE, visible)).toBeTruthy();
+    expect(getByText(ONLINE_ONLY_BODY, visible)).toBeTruthy();
+    expect(within(getByTestId('error-pill')).getByText(raw)).toBeTruthy();
+  });
+
+  it('each new title fits where a longer title already renders (ENG-696)', () => {
+    // The title is numberOfLines={1}; REFUSED_TITLE already ships there.
+    expect(CHANGE_NEEDS_MINT_TITLE.length).toBeLessThanOrEqual(
+      REFUSED_TITLE.length,
+    );
+    expect(ONLINE_ONLY_TITLE.length).toBeLessThanOrEqual(REFUSED_TITLE.length);
   });
 
   it('names a full card, before the burn and during the change write (ENG-630)', () => {

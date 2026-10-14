@@ -10,8 +10,10 @@ import HoldPill, {type HoldVariant} from './HoldPill';
 import Ledger from './Ledger';
 import MoneyPool from './MoneyPool';
 import {
+  changeNeedsMint,
   changeOnCard,
   failureBody,
+  onlineOnly,
   parseFailure,
   settleRefused,
   settleUnconfirmed,
@@ -103,6 +105,16 @@ export const REFUSED_TITLE = 'Not paid — the mint refused it';
  */
 export const SIGNATURE_INVALID_TITLE =
   "Not paid — the card's signature is not valid";
+/**
+ * ENG-696: a bill with change, refused before anything burned because the
+ * mint is out of reach. The body says nothing was taken.
+ */
+export const CHANGE_NEEDS_MINT_TITLE = 'Change needs a connection';
+/**
+ * ENG-696: a card whose pieces cannot be checked offline, refused before
+ * anything burned while the terminal is offline.
+ */
+export const ONLINE_ONLY_TITLE = 'This card is online-only';
 export const IDLE_HELPER = 'Then hold the card to the top of the phone';
 export const NFC_NOTICE =
   'This phone can’t read cards — turn on NFC in Settings';
@@ -187,6 +199,10 @@ function ChargeStage(props: ChargeStageProps) {
           : changeSat > 0 && !changeOnCard(failure)
           ? PAID_CHANGE_NOT_ON_CARD_TITLE
           : PAID_FAILURE_TITLE
+        : changeNeedsMint(failure)
+        ? CHANGE_NEEDS_MINT_TITLE
+        : onlineOnly(failure)
+        ? ONLINE_ONLY_TITLE
         : failure.cardFull
         ? 'The card is full'
         : failure.tagLost

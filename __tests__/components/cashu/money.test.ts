@@ -10,12 +10,21 @@ import {
   runningTotals,
   settleRefused,
   settleUnconfirmed,
+  changeNeedsMint,
+  onlineOnly,
   CARD_LOCKED_BODY,
+  CHANGE_NEEDS_MINT_BODY,
   DAILY_LIMIT_BODY,
+  ONLINE_ONLY_BODY,
   REFUSED_BODY,
   PIN_NEEDED_TEXT,
   UNCONFIRMED_BODY,
 } from '../../../src/components/cashu/charge/money';
+import {
+  CARD_LOCKED,
+  CHANGE_NEEDS_MINT,
+  ONLINE_ONLY,
+} from '../../../src/services/cashuCharge';
 import {splitPow2} from '../../../src/utils/denominations';
 
 /**
@@ -651,5 +660,53 @@ describe('a locked card (ENG-674)', () => {
       {burnsDone: 0, paidSat: 16, changeSat: 0, fmt: n => `${n} sats`},
     );
     expect(body).toBe(CARD_LOCKED_BODY);
+  });
+});
+
+// ENG-696: both refusals are thrown inside the preparing step, before
+// anything burns, so `makeStep` reports them as `[preparing the payment]
+// <constant>`. The detectors read the constants exported by cashuCharge, so
+// a wording change there cannot silently drop them back to the raw text.
+describe('the change-needs-mint and online-only refusals (ENG-696)', () => {
+  const changeNeedsMintFailure = parseFailure(
+    `[preparing the payment] ${CHANGE_NEEDS_MINT}`,
+  );
+  const onlineOnlyFailure = parseFailure(
+    `[preparing the payment] ${ONLINE_ONLY}`,
+  );
+  const lockedFailure = parseFailure(`[reading card] ${CARD_LOCKED}`);
+  const unpaid = {burnsDone: 0, paidSat: 7, changeSat: 1, paid: false};
+  const fmt = (n: number) => `${n} sats`;
+
+  it('changeNeedsMint recognises its own refusal and nothing else', () => {
+    expect(changeNeedsMint(changeNeedsMintFailure)).toBe(true);
+    expect(changeNeedsMint(onlineOnlyFailure)).toBe(false);
+    expect(changeNeedsMint(lockedFailure)).toBe(false);
+  });
+
+  it('onlineOnly recognises its own refusal and nothing else', () => {
+    expect(onlineOnly(onlineOnlyFailure)).toBe(true);
+    expect(onlineOnly(changeNeedsMintFailure)).toBe(false);
+    expect(onlineOnly(lockedFailure)).toBe(false);
+  });
+
+  it('the body says nothing was taken, instead of repeating the pill', () => {
+    const changeBody = failureBody(changeNeedsMintFailure, {...unpaid, fmt});
+    expect(changeBody).toBe(CHANGE_NEEDS_MINT_BODY);
+    expect(changeBody).toMatch(/^Nothing was taken/);
+
+    const onlineBody = failureBody(onlineOnlyFailure, {...unpaid, fmt});
+    expect(onlineBody).toBe(ONLINE_ONLY_BODY);
+    expect(onlineBody).toMatch(/^Nothing was taken/);
+  });
+
+  it('each body fits where the locked-card body already renders', () => {
+    // The body is numberOfLines={2}; CARD_LOCKED_BODY already ships there.
+    expect(CHANGE_NEEDS_MINT_BODY.length).toBeLessThanOrEqual(
+      CARD_LOCKED_BODY.length,
+    );
+    expect(ONLINE_ONLY_BODY.length).toBeLessThanOrEqual(
+      CARD_LOCKED_BODY.length,
+    );
   });
 });
