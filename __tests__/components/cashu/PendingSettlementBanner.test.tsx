@@ -61,7 +61,9 @@ describe('PendingSettlementBanner (ENG-696)', () => {
     );
     expect(getByText('⚠ 25 sat in the till (25 sat to sweep)')).toBeTruthy();
     expect(
-      getByText('25 sat settled at the mint; it sweeps to your wallet when online.'),
+      getByText(
+        '25 sat settled at the mint; it sweeps to your wallet when online.',
+      ),
     ).toBeTruthy();
     expect(queryByText(/float/)).toBeNull();
     unmount();
