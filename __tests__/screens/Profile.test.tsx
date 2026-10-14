@@ -33,10 +33,12 @@ jest.mock('../../src/components/profile', () => {
       onViewRewardSettings,
       onViewCashuCardDebug,
       onViewChargePreview,
+      onViewRefusalLog,
     }: {
       onViewRewardSettings: () => void;
       onViewCashuCardDebug?: () => void;
       onViewChargePreview?: () => void;
+      onViewRefusalLog?: () => void;
     }) =>
       MockReact.createElement(
         MockReact.Fragment,
@@ -55,6 +57,11 @@ jest.mock('../../src/components/profile', () => {
           TouchableOpacity,
           {key: 'preview', onPress: onViewChargePreview},
           MockReact.createElement(Text, null, 'Preview charge animation'),
+        ),
+        MockReact.createElement(
+          TouchableOpacity,
+          {key: 'refusals', onPress: onViewRefusalLog},
+          MockReact.createElement(Text, null, 'Card refusals'),
         ),
       ),
     Security: () => MockReact.createElement(Text, null, 'Security'),
@@ -180,5 +187,33 @@ describe('Profile charge preview wiring', () => {
     fireEvent.press(getByText('Preview charge animation'));
 
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+// ENG-701: the refusal log is registered in every build, so its navigate
+// call carries no __DEV__ gate.
+describe('Profile card refusals wiring', () => {
+  const devGlobal = global as unknown as {__DEV__: boolean};
+  const originalDev = devGlobal.__DEV__;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsRewardsEnabled.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    devGlobal.__DEV__ = originalDev;
+  });
+
+  it.each([
+    ['a release build', false],
+    ['a dev build', true],
+  ])('navigates to the refusal log in %s', (_label, dev) => {
+    devGlobal.__DEV__ = dev as boolean;
+    const {getByText} = renderProfile();
+
+    fireEvent.press(getByText('Card refusals'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('RefusalLog');
   });
 });

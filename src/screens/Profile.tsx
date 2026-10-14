@@ -161,6 +161,11 @@ const Profile = () => {
     navigation.navigate('EventSettings');
   };
 
+  // ENG-701: registered in every build, so no __DEV__ gate.
+  const onViewRefusalLog = () => {
+    navigation.navigate('RefusalLog');
+  };
+
   // CashuCardDebug is registered only under __DEV__, so the navigate call has
   // to be gated too — in a release build the route does not exist.
   const onViewCashuCardDebug = () => {
@@ -195,6 +200,7 @@ const Profile = () => {
         onViewRewardSettings={onViewRewardSettings}
         eventModeEnabled={eventModeEnabled}
         onViewEventSettings={onViewEventSettings}
+        onViewRefusalLog={onViewRefusalLog}
         onViewCashuCardDebug={onViewCashuCardDebug}
         onViewCashuCardSpend={onViewCashuCardSpend}
         onViewChargePreview={onViewChargePreview}

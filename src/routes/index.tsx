@@ -21,6 +21,7 @@ import {
   CashuCardDebug,
   CashuCardSpend,
   ChargeAnimationPreview,
+  RefusalLog,
 } from '../screens';
 
 // hooks
@@ -115,6 +116,17 @@ const Root = () => {
           headerShown: true,
           headerTitle: 'Card Balance',
           animation: 'fade_from_bottom',
+        }}
+      />
+      {/* ENG-701: offline card refusals, for the operator. Production, like
+          the Settings row that reaches it. */}
+      <Stack.Screen
+        name="RefusalLog"
+        component={RefusalLog}
+        options={{
+          headerShown: true,
+          headerTitle: 'Card refusals',
+          animation: 'slide_from_right',
         }}
       />
       <Stack.Screen
