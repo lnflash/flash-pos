@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
 import styled from 'styled-components/native';
+import {StackScreenProps} from '@react-navigation/stack';
 
 // components
 // Imported from the leaf, not the `../components` barrel: the barrel pulls in
@@ -18,6 +19,9 @@ import {
 } from '../services/cashuCardNfc';
 import type {CardSummary} from '../services/cashuCard';
 import {getCardBridge, setCardBridge} from '../services/cardBridge'; // __DEV__-only screen; null in release
+import {useCardSessionRelease} from '../hooks/useCardSessionRelease';
+
+type Props = StackScreenProps<RootStackType, 'CashuCardDebug'>;
 
 const contentStyle = {padding: 20};
 const readButtonStyle = {marginTop: 24, marginBottom: 16};
@@ -40,7 +44,7 @@ const BRIDGE_PLACEHOLDER = 'http://127.0.0.1:9876';
  * cashu-javacard repo. If this screen shows a pubkey, the applet is installed,
  * the AID selects over NFC, and the card's crypto is answering.
  */
-const CashuCardDebug = () => {
+const CashuCardDebug = ({navigation}: Props) => {
   const [supported, setSupported] = useState<boolean | null>(null);
   const [reading, setReading] = useState(false);
   const [summary, setSummary] = useState<CardSummary | null>(null);
@@ -86,10 +90,16 @@ const CashuCardDebug = () => {
   // An IsoDep request never times out on Android — it stays pending until a
   // card arrives. Leaving this screen mid-read would strand it, and a pending
   // session swallows every BoltCard tap app-wide, on the live payment path.
+  // Released as the stack lets the screen go, not at unmount (ENG-704).
+  useCardSessionRelease({
+    navigation,
+    onRelease: () => {
+      cancelledRef.current = true;
+    },
+  });
   useEffect(
     () => () => {
       cancelledRef.current = true;
-      cancelCardSession();
     },
     [],
   );

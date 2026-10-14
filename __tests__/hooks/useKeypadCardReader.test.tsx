@@ -528,7 +528,7 @@ describe('useKeypadCardReader on Android', () => {
     expect(pendingRequest()).toBeDefined();
   });
 
-  it('a focus right after a card screen leaves never toasts', async () => {
+  it('a focus that lands on a stray request flushes it and arms without a toast', async () => {
     // Native-faithful for this test only: a request while another is pending
     // is refused with ERR_MULTI_REQ (NfcManager.java:130-145).
     mockNfc.requestTechnology.mockImplementation(() => {
@@ -539,8 +539,10 @@ describe('useKeypadCardReader on Android', () => {
       requests.push(request);
       return request.promise;
     });
-    // The charge screen's request, still pending: it cancels only on
-    // unmount, after its close transition, so the keypad regains focus first.
+    // A card screen's request, still pending as the keypad regains focus:
+    // one removed without a `beforeRemove` (card screens release there,
+    // see useCardSessionRelease) cancels only on unmount, after its close
+    // transition.
     mockNfc.requestTechnology(['IsoDep']).catch(() => {});
 
     renderHook(() => useKeypadCardReader());
@@ -558,14 +560,57 @@ describe('useKeypadCardReader on Android', () => {
     expect(pendingRequest()).toBeDefined();
     expect(mockToastShow).not.toHaveBeenCalled();
 
-    // The charge screen's late unmount cleanup cancels whatever is pending,
-    // which is now the keypad's request: silent, and re-armed at once.
+    // That screen's late unmount cleanup cancels whatever is pending, which
+    // is now the keypad's request. While no card is in the field it is
+    // silent, and re-armed at once.
     await act(() => actualNfc.cancelCardSession());
     await flush();
 
     expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(3);
     expect(pendingRequest()).toBeDefined();
     expect(mockToastShow).not.toHaveBeenCalled();
+  });
+
+  it('a foreign cancel that cuts a read mid-flight is reported as a failed read', async () => {
+    // Decided (ENG-704): the keypad cannot tell another screen's late cancel
+    // from a card that left the field. Both close the tag under the
+    // transceive, so the merchant sees the read failed and taps again. Card
+    // screens release from `beforeRemove` so this cannot come from them.
+    const read = deferred<CardSummary>();
+    mockReadCard.mockReturnValue(read.promise);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
+
+    // Native: cancelTechnologyRequest closes the connected tag, and the
+    // in-flight transceive fails with an I/O error, not UserCancel.
+    await act(() => actualNfc.cancelCardSession());
+    const cut = new Error('transceive failed: tag connection lost');
+    await act(async () => {
+      read.reject(cut);
+    });
+    await flush();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockToastShow).toHaveBeenCalledTimes(1);
+    expect(mockToastShow).toHaveBeenCalledWith({
+      message: actualNfc.describeCardFailure(cut),
+      type: 'error',
+    });
+    // Then it re-arms after the breather, ready for the next tap.
+    const arms = mockNfc.requestTechnology.mock.calls.length;
+    await waitFor(
+      () =>
+        expect(mockNfc.requestTechnology.mock.calls.length).toBeGreaterThan(
+          arms,
+        ),
+      {timeout: REARM_AFTER_ERROR_MS * 4},
+    );
+    blur();
+    await flush();
   });
 
   it('never arms twice while one request is pending', async () => {

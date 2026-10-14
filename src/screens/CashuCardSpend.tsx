@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, ScrollView, TextInput} from 'react-native';
 import styled from 'styled-components/native';
+import {StackScreenProps} from '@react-navigation/stack';
 
 // components
 // Imported from the leaf, not the `../components` barrel — same reasoning as
@@ -35,6 +36,9 @@ import {
 } from '../services/cashuSettlement';
 import {FLASH_CASHU_MINT_URL} from '@env';
 import {toastShow} from '../utils/toast';
+import {useCardSessionRelease} from '../hooks/useCardSessionRelease';
+
+type Props = StackScreenProps<RootStackType, 'CashuCardSpend'>;
 
 const contentStyle = {padding: 20};
 const readButtonStyle = {marginTop: 24, marginBottom: 8};
@@ -63,7 +67,7 @@ const PayoutInput = styled(TextInput)`
  *
  * CashuCardDebug is the read-only bring-up harness; this one moves money.
  */
-const CashuCardSpend = () => {
+const CashuCardSpend = ({navigation}: Props) => {
   const {username} = useAppSelector(state => state.user);
   const [supported, setSupported] = useState<boolean | null>(null);
   // `setSpending` went away with the in-session settle; the flag stays wired
@@ -104,11 +108,17 @@ const CashuCardSpend = () => {
   }, [refreshQueue]);
 
   // A pending IsoDep request swallows every BoltCard tap app-wide (see
-  // docs/13-cashu-card.md) — leaving this screen mid-read must cancel it.
+  // docs/13-cashu-card.md) — leaving this screen mid-read must cancel it,
+  // and as the stack lets it go, not at unmount (ENG-704).
+  useCardSessionRelease({
+    navigation,
+    onRelease: () => {
+      cancelledRef.current = true;
+    },
+  });
   useEffect(
     () => () => {
       cancelledRef.current = true;
-      cancelCardSession();
     },
     [],
   );

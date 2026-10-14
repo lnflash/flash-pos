@@ -6,6 +6,7 @@ import {NfcError} from 'react-native-nfc-manager';
 import CashuCardDebug from '../../src/screens/CashuCardDebug';
 import {CardError, type CardSummary} from '../../src/services/cashuCard';
 import {getCardBridge, setCardBridge} from '../../src/services/cardBridge';
+import {navigationStub} from '../support/navigationStub';
 
 const mockCancelCardSession = jest.fn();
 const mockIsCardReadingSupported = jest.fn();
@@ -73,9 +74,12 @@ beforeEach(() => {
 
 /** Renders and drains the `isCardReadingSupported` effect. */
 async function renderScreen() {
-  const utils = render(<CashuCardDebug />);
+  const navigation = navigationStub();
+  const utils = render(
+    <CashuCardDebug navigation={navigation as never} route={{} as never} />,
+  );
   await act(async () => {});
-  return utils;
+  return {...utils, navigation};
 }
 
 describe('CashuCardDebug session lifecycle', () => {
@@ -216,6 +220,35 @@ describe('CashuCardDebug session lifecycle', () => {
     fireEvent.press(getByText('Read card'));
 
     await waitFor(() => expect(getByText('NFC is turned off')).toBeTruthy());
+  });
+
+  // ENG-704: the unmount lands at the end of the close transition, when the
+  // screen underneath (the keypad) may have armed its own request and be
+  // mid-read. The cancel must happen as the stack lets this screen go.
+  it('cancels an in-flight read as the stack lets the screen go, and not again at unmount', async () => {
+    const pending = deferred<CardSummary>();
+    mockReadCardOverNfc.mockReturnValue(pending.promise);
+
+    const {getByText, queryByText, navigation, unmount} = await renderScreen();
+    fireEvent.press(getByText('Read card'));
+    await act(async () => {});
+
+    expect(navigation.emitBeforeRemove()).toBe(false);
+    expect(mockCancelCardSession).toHaveBeenCalledTimes(1);
+
+    // The cut read surfaces as a transceive error, not UserCancel: still the
+    // merchant's own doing, never a red box on the way out.
+    const cut = new Error('transceive failed: tag connection lost');
+    await act(async () => {
+      pending.reject(cut);
+    });
+    const {describeCardFailure} = jest.requireActual(
+      '../../src/services/cashuCardNfc',
+    );
+    expect(queryByText(describeCardFailure(cut))).toBeNull();
+
+    unmount();
+    expect(mockCancelCardSession).toHaveBeenCalledTimes(1);
   });
 
   it('cancels once on unmount even when no read was ever started', async () => {

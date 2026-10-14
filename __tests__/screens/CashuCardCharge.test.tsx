@@ -1174,6 +1174,19 @@ describe('CashuCardCharge', () => {
         expect(navigation.emitBeforeRemove('RESET')).toBe(false);
       });
 
+      it("releases only on Done's own reset, never on the pop it refused, and not again at unmount (ENG-704)", async () => {
+        const {navigation, unmount} = await settleViaRouter();
+        const before = mockCancelCardSession.mock.calls.length;
+        await act(async () => {
+          expect(navigation.emitBeforeRemove('POP')).toBe(true);
+        });
+        expect(mockCancelCardSession).toHaveBeenCalledTimes(before);
+        expect(navigation.emitBeforeRemove('RESET')).toBe(false);
+        expect(mockCancelCardSession).toHaveBeenCalledTimes(before + 1);
+        unmount();
+        expect(mockCancelCardSession).toHaveBeenCalledTimes(before + 1);
+      });
+
       it('before the swap, Back is still a plain pop', async () => {
         jest.useFakeTimers(FAKE_TIMERS);
         mockExecuteCharge.mockRejectedValue(
@@ -1690,6 +1703,21 @@ describe('CashuCardCharge', () => {
       }
     });
 
+    it('a refused pop releases nothing: the charge keeps its session', async () => {
+      const {navigation, ctl, navigatorBack} = await inFlight();
+      try {
+        mockCancelCardSession.mockClear();
+        expect(navigation.emitBeforeRemove('POP')).toBe(true);
+        expect(mockCancelCardSession).not.toHaveBeenCalled();
+        await act(async () => {
+          ctl.succeed();
+        });
+        await expectHandedOffToSuccess(navigation);
+      } finally {
+        navigatorBack.remove();
+      }
+    });
+
     it('a failure after the burn that is NOT paid releases the hold: Back leaves as before', async () => {
       const utils = await inFlight();
       const {getByTestId, getByText, navigation, ctl, navigatorBack} = utils;
@@ -1707,6 +1735,38 @@ describe('CashuCardCharge', () => {
         navigatorBack.remove();
       }
     });
+  });
+
+  // ENG-704: the unmount lands at the end of the close transition, when the
+  // keypad underneath has re-armed and a card may be mid-read there; a cancel
+  // at unmount would close the keypad's tag and toast a card failure.
+  it('a pop before the burn releases the session as the stack lets it go, quietly, and the unmount cancels nothing more', async () => {
+    let cut: (error: Error) => void = () => {};
+    mockWithCardSession.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          cut = reject;
+        }),
+    );
+    const {getByText, queryByTestId, navigation, unmount} =
+      await renderScreen();
+    await act(async () => {
+      fireEvent.press(getByText('Tap card to charge'));
+    });
+    expect(mockCancelCardSession).not.toHaveBeenCalled();
+
+    expect(navigation.emitBeforeRemove('POP')).toBe(false);
+    expect(mockCancelCardSession).toHaveBeenCalledTimes(1);
+
+    // The cancel cuts the read mid-APDU: a transceive error, not UserCancel.
+    // Still the merchant's own doing, never an error on the way out.
+    await act(async () => {
+      cut(new Error('transceive failed: tag connection lost'));
+    });
+    expect(queryByTestId('error-pill')).toBeNull();
+
+    unmount();
+    expect(mockCancelCardSession).toHaveBeenCalledTimes(1);
   });
 
   it('cancels the NFC session on Cancel and on unmount', async () => {

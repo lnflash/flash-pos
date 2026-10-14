@@ -26,6 +26,7 @@ import {
   resetTestMint,
   type TestMint,
 } from '../support/cardProtocol2';
+import {navigationStub} from '../support/navigationStub';
 
 const mockStore: Record<string, string> = {};
 
@@ -112,7 +113,12 @@ async function needsCardPayment(card: FakeCard2) {
 }
 
 async function pressRecover() {
-  const utils = render(<CashuCardSpend />);
+  const utils = render(
+    <CashuCardSpend
+      navigation={navigationStub() as never}
+      route={{} as never}
+    />,
+  );
   await act(async () => {});
   await act(async () => {
     fireEvent.press(utils.getByText(RECOVER));
@@ -178,5 +184,28 @@ describe('CashuCardSpend needs-card recovery', () => {
         message: 'eCash: recovered 1 of 1 settlement(s)',
       }),
     );
+  });
+});
+
+describe('CashuCardSpend session release (ENG-704)', () => {
+  // The unmount lands at the end of the close transition, when the keypad
+  // underneath may have armed and be mid-read: the cancel must happen as the
+  // stack lets this screen go, and only then.
+  it('cancels as the stack lets the screen go, and not again at unmount', async () => {
+    const {cancelCardSession} = jest.requireMock(
+      '../../src/services/cashuCardNfc',
+    ) as {cancelCardSession: jest.Mock};
+    const navigation = navigationStub();
+    const {unmount} = render(
+      <CashuCardSpend navigation={navigation as never} route={{} as never} />,
+    );
+    await act(async () => {});
+    cancelCardSession.mockClear();
+
+    expect(navigation.emitBeforeRemove()).toBe(false);
+    expect(cancelCardSession).toHaveBeenCalledTimes(1);
+
+    unmount();
+    expect(cancelCardSession).toHaveBeenCalledTimes(1);
   });
 });
