@@ -528,6 +528,46 @@ describe('useKeypadCardReader on Android', () => {
     expect(pendingRequest()).toBeDefined();
   });
 
+  it('a focus right after a card screen leaves never toasts', async () => {
+    // Native-faithful for this test only: a request while another is pending
+    // is refused with ERR_MULTI_REQ (NfcManager.java:130-145).
+    mockNfc.requestTechnology.mockImplementation(() => {
+      if (pendingRequest()) {
+        return Promise.reject(new NfcError.NfcErrorBase(MULTI_REQUEST_MESSAGE));
+      }
+      const request = deferred<void>();
+      requests.push(request);
+      return request.promise;
+    });
+    // The charge screen's request, still pending: it cancels only on
+    // unmount, after its close transition, so the keypad regains focus first.
+    mockNfc.requestTechnology(['IsoDep']).catch(() => {});
+
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+
+    // The keypad flushed the stray request before arming its own.
+    const firstCancel =
+      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
+    const keypadArm = mockNfc.requestTechnology.mock.invocationCallOrder[1];
+    expect(firstCancel).toBeDefined();
+    expect(keypadArm).toBeDefined();
+    expect(firstCancel).toBeLessThan(keypadArm);
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2);
+    expect(pendingRequest()).toBeDefined();
+    expect(mockToastShow).not.toHaveBeenCalled();
+
+    // The charge screen's late unmount cleanup cancels whatever is pending,
+    // which is now the keypad's request: silent, and re-armed at once.
+    await act(() => actualNfc.cancelCardSession());
+    await flush();
+
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(3);
+    expect(pendingRequest()).toBeDefined();
+    expect(mockToastShow).not.toHaveBeenCalled();
+  });
+
   it('never arms twice while one request is pending', async () => {
     const {result} = renderHook(() => useKeypadCardReader());
     focus();
@@ -774,11 +814,17 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
       summary: after,
       changeAddedSat: 2,
     });
-    // The write happened before the session closed.
+    // The write happened before the session closed. The session's close is
+    // the first cancel after the keypad armed; the one before it is the
+    // focus flush of any stray request (ENG-704).
+    const armOrder = mockNfc.requestTechnology.mock.invocationCallOrder[0];
     const writeOrder = mockWriteOwedChange.mock.invocationCallOrder[0];
     const cancelOrder =
-      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
-    expect(writeOrder).toBeLessThan(cancelOrder);
+      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder.find(
+        order => order > armOrder,
+      );
+    expect(cancelOrder).toBeDefined();
+    expect(writeOrder).toBeLessThan(cancelOrder!);
   });
 
   it('a write the store cut short before any LOAD claims nothing added: the screen opens with all of it still waiting', async () => {

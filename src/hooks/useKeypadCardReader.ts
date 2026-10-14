@@ -350,9 +350,18 @@ export function useKeypadCardReader() {
     useCallback(() => {
       const gen = ++focusGenRef.current;
       if (Platform.OS === 'android') {
-        loopRef.current = loopRef.current.then(() =>
-          gen === focusGenRef.current ? armLoop(gen) : undefined,
-        );
+        // ENG-704: flush any request still pending before the first arm. A
+        // popped card screen (CashuCardCharge, CashuCardSpend, ...) cancels
+        // its own request only on unmount, after its close transition, so
+        // on the JS stack this focus lands while that request is live and
+        // our arm would hit ERR_MULTI_REQ. The previous loop has ended by
+        // now (the blur cancelled our own request), so this never cancels
+        // the keypad's own request; with nothing pending it is a no-op.
+        loopRef.current = loopRef.current
+          .then(() =>
+            gen === focusGenRef.current ? cancelCardSession() : undefined,
+          )
+          .then(() => (gen === focusGenRef.current ? armLoop(gen) : undefined));
       }
       return () => {
         focusGenRef.current++;
