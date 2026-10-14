@@ -32,7 +32,6 @@ import {
   meltSettledProofs,
   mintReachable,
   prepareChargeOutputs,
-  rebalanceTill,
   RECONCILE_MIN_INTERVAL_MS,
   reconcileTill,
   refreshKeysets,
@@ -260,6 +259,14 @@ describe('terminal-made card change is gone (decision 13)', () => {
     expect(mod.makeChangeOnTill).toBeUndefined();
     expect(mod.mintChargeChange).toBeUndefined();
   });
+
+  // ENG-696: in 2.0 the card makes its own change, so the till keeps no
+  // float and nothing maintains one.
+  it('exports no till change-maker or float maintainer', () => {
+    const mod = mintModule as Record<string, unknown>;
+    expect(mod.selectChangeFromTill).toBeUndefined();
+    expect(mod.rebalanceTill).toBeUndefined();
+  });
 });
 
 describe('swap', () => {
@@ -339,9 +346,9 @@ describe('swap', () => {
   });
 
   it('retries the swap once after retryAfterMs when the mint answers 429', async () => {
-    // The settlement path shares withRateLimitRetry with the rebalance: a
-    // throttle mid-burst is re-sent after the mint's own retryAfterMs, not
-    // parked as a permanent failure.
+    // The settlement path goes through withRateLimitRetry: a throttle
+    // mid-burst is re-sent after the mint's own retryAfterMs, not parked as
+    // a permanent failure.
     jest.useFakeTimers(FAKE_TIMERS);
     const adapter = createSettlementAdapter();
     walletMocks.completeSwap
@@ -362,6 +369,20 @@ describe('swap', () => {
       mockStore['@cashu_settlement_swap:' + entryWith().id],
     ).toBeUndefined();
     await expect(listSettledProofs()).resolves.toEqual(SETTLED);
+  });
+
+  it('does not retry a mint operation error — that is the verdict, not a throttle', async () => {
+    // Moved here from the retired rebalanceTill (ENG-696): the settlement
+    // swap is withRateLimitRetry's caller now.
+    const adapter = createSettlementAdapter();
+    walletMocks.completeSwap.mockRejectedValue(
+      new cashu.MintOperationError(11001, 'Token already spent'),
+    );
+
+    await expect(adapter.swap(entryWith())).rejects.toBeInstanceOf(
+      ProofAlreadySpentError,
+    );
+    expect(walletMocks.completeSwap).toHaveBeenCalledTimes(1);
   });
 
   it('passes a 5xx through unchanged — the outcome is unknown, not failed', async () => {
@@ -929,57 +950,6 @@ describe('reconcileTill', () => {
     );
     await expect(reconcileTill(MINT_URL, {now: T0})).resolves.toBe(0);
     await expect(listSettledProofs()).resolves.toHaveLength(2);
-  });
-});
-
-describe('rebalanceTill — the rate-limit retry', () => {
-  const tillProof = (amount: number, secret: string) => ({
-    id: KEYSET_ID,
-    amount,
-    secret,
-    C: TEST_CARD_PUBKEY,
-    mintUrl: MINT_URL,
-  });
-
-  beforeEach(() => {
-    mockStore['@cashu_settled_proofs'] = JSON.stringify([tillProof(16, 'big')]);
-    walletMocks.completeSwap.mockResolvedValue({
-      keep: [tillProof(8, 'half-a')],
-      send: [tillProof(8, 'half-b')],
-    });
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('retries once after retryAfterMs when the mint answers a real 429', async () => {
-    jest.useFakeTimers(FAKE_TIMERS);
-    walletMocks.prepareSwapToSend
-      .mockRejectedValueOnce(
-        new cashu.RateLimitError('429 Too Many Requests', 2500),
-      )
-      .mockResolvedValueOnce(PREVIEW);
-
-    const pending = rebalanceTill(MINT_URL);
-    await jest.advanceTimersByTimeAsync(2499);
-    expect(walletMocks.prepareSwapToSend).toHaveBeenCalledTimes(1);
-    await jest.advanceTimersByTimeAsync(1);
-
-    await expect(pending).resolves.toBe(2);
-    expect(walletMocks.prepareSwapToSend).toHaveBeenCalledTimes(2);
-    expect(walletMocks.completeSwap).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not retry a mint operation error — that is the verdict, not a throttle', async () => {
-    walletMocks.prepareSwapToSend.mockRejectedValue(
-      new cashu.MintOperationError(11001, 'Token already spent'),
-    );
-
-    await expect(rebalanceTill(MINT_URL)).rejects.toBeInstanceOf(
-      cashu.MintOperationError,
-    );
-    expect(walletMocks.prepareSwapToSend).toHaveBeenCalledTimes(1);
   });
 });
 

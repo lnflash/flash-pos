@@ -1134,103 +1134,6 @@ export async function meltSettledProofs({
   };
 }
 
-// ── the till: change-making and float maintenance ──────────────────────────
-
-/**
- * Select settled proofs summing EXACTLY to `changeSat`, smallest first.
- * Returns [] for 0, null when the till cannot make exact change.
- *
- * Exactness matters: the till proofs are bearer money — overpaying change
- * would give the customer more than they are owed, and underpaying steals
- * from them.
- */
-export function selectChangeFromTill(
-  proofs: SettledProof[],
-  changeSat: number,
-): SettledProof[] | null {
-  if (changeSat === 0) {
-    return [];
-  }
-  // Small first — spend small denominations before breaking big ones.
-  const sorted = [...proofs].sort((a, b) => a.amount - b.amount);
-  let remaining = changeSat;
-  const chosen: SettledProof[] = [];
-  for (const p of sorted) {
-    if (p.amount <= remaining) {
-      chosen.push(p);
-      remaining -= p.amount;
-    }
-  }
-  return remaining === 0 ? chosen : null;
-}
-
-/**
- * Break the till's largest proof into smaller denominations so change can be
- * made later. A self-swap: the till proofs are the merchant's own unlocked
- * bearer proofs, so no witness and no external invoice — just a NUT-03 swap
- * with chosen outputs. One proof per call; the auto-pipeline runs this while
- * ONLINE so purchases never need the network for change.
- */
-export async function rebalanceTill(
-  mintUrl: string,
-  needSat?: number,
-): Promise<number> {
-  const proofs = await listSettledProofs();
-  if (proofs.length === 0) {
-    return 0;
-  }
-  const sortedDesc = [...proofs].sort((a, b) => b.amount - a.amount);
-  let target = sortedDesc[0];
-  let swapAmount = Math.floor(target.amount / 2);
-  if (needSat && needSat > 0) {
-    // Break the SMALLEST proof that covers the need — preserves bigger
-    // denominations. No single proof covers it: the purchase plan already
-    // reported that, so this call is a no-op.
-    const sufficient = [...proofs]
-      .sort((a, b) => a.amount - b.amount)
-      .find(p => p.amount >= needSat);
-    if (!sufficient) {
-      return 0;
-    }
-    target = sufficient;
-    swapAmount = needSat;
-  } else if (target.amount < 2) {
-    return 0;
-  }
-  const wallet = await getWallet(mintUrl);
-  // Send the needed amount; completeSwap returns the rest as `keep`. The
-  // keep/send union is the whole reborn proof set (see the settlement comment).
-  const preview = await withRateLimitRetry(() =>
-    wallet.prepareSwapToSend(swapAmount, [
-      {
-        id: target.id,
-        amount: target.amount,
-        secret: target.secret,
-        C: target.C,
-      },
-    ]),
-  );
-  const {keep, send} = await withRateLimitRetry(() =>
-    wallet.completeSwap(preview),
-  );
-  const reborn = [...keep, ...send].map(p => ({
-    id: p.id,
-    amount: Number(p.amount),
-    secret: p.secret,
-    C: p.C,
-    mintUrl,
-  }));
-  const swappedSecret = new Set([target.secret]);
-  const remaining = (await listSettledProofs()).filter(
-    p => !swappedSecret.has(p.secret),
-  );
-  await setSecure(
-    SETTLED_PROOFS_KEY,
-    JSON.stringify([...remaining, ...reborn]),
-  );
-  return reborn.length;
-}
-
 /**
  * The mint said "slow down": cashu-ts raises `RateLimitError` (an
  * `HttpResponseError` with status 429) for a literal 429; older paths and
@@ -1419,11 +1322,11 @@ export async function sweepSettledProofs(opts: {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /**
- * Forge rate-limits bursts, and a charge is a burst: settle + rebalance +
- * change-swap inside one session. One retry after the mint's own
- * retryAfterMs (or 2.5s) clears the routine throttle. Only a throttle is
- * retried: a mint operation error (11001 and friends) is the mint's verdict
- * and re-sending the same request would only repeat it.
+ * Forge rate-limits bursts, and a charge is a burst: settle + change-swap
+ * inside one session. One retry after the mint's own retryAfterMs (or 2.5s)
+ * clears the routine throttle. Only a throttle is retried: a mint operation
+ * error (11001 and friends) is the mint's verdict and re-sending the same
+ * request would only repeat it.
  */
 async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
