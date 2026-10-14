@@ -20,6 +20,7 @@ import {
   type CardSummary,
 } from '../../src/services/cashuCard';
 import {BRIDGE_TAG, setCardBridge} from '../../src/services/cardBridge';
+import {MULTI_REQUEST_MESSAGE} from '../../src/services/cashuCardNfc';
 
 const actualNfc = jest.requireActual('../../src/services/cashuCardNfc');
 
@@ -410,6 +411,29 @@ describe('useKeypadCardReader on Android', () => {
     );
   });
 
+  it('ERR_MULTI_REQ on arm is not a card failure: no toast, re-arms after a breather', async () => {
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+
+    // Another screen's request was still pending when the keypad armed: the
+    // native module refuses with its bare ERR_MULTI_REQ string.
+    await act(async () => {
+      pendingRequest()!.reject(
+        new NfcError.NfcErrorBase(MULTI_REQUEST_MESSAGE),
+      );
+    });
+    await flush();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockSetNfcBusy).toHaveBeenLastCalledWith(false);
+    await waitFor(
+      () => expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2),
+      {timeout: REARM_AFTER_ERROR_MS * 4},
+    );
+    expect(mockToastShow).not.toHaveBeenCalled();
+  });
+
   it('says quietly that a card without the applet is not a Flash card, and re-arms', async () => {
     mockReadCard.mockRejectedValue(new CardError(0x6a82, 'SELECT'));
     renderHook(() => useKeypadCardReader());
@@ -502,6 +526,91 @@ describe('useKeypadCardReader on Android', () => {
 
     expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2);
     expect(pendingRequest()).toBeDefined();
+  });
+
+  it('a focus that lands on a stray request flushes it and arms without a toast', async () => {
+    // Native-faithful for this test only: a request while another is pending
+    // is refused with ERR_MULTI_REQ (NfcManager.java:130-145).
+    mockNfc.requestTechnology.mockImplementation(() => {
+      if (pendingRequest()) {
+        return Promise.reject(new NfcError.NfcErrorBase(MULTI_REQUEST_MESSAGE));
+      }
+      const request = deferred<void>();
+      requests.push(request);
+      return request.promise;
+    });
+    // A card screen's request, still pending as the keypad regains focus:
+    // one removed without a `beforeRemove` (card screens release there,
+    // see useCardSessionRelease) cancels only on unmount, after its close
+    // transition.
+    mockNfc.requestTechnology(['IsoDep']).catch(() => {});
+
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+
+    // The keypad flushed the stray request before arming its own.
+    const firstCancel =
+      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
+    const keypadArm = mockNfc.requestTechnology.mock.invocationCallOrder[1];
+    expect(firstCancel).toBeDefined();
+    expect(keypadArm).toBeDefined();
+    expect(firstCancel).toBeLessThan(keypadArm);
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(2);
+    expect(pendingRequest()).toBeDefined();
+    expect(mockToastShow).not.toHaveBeenCalled();
+
+    // That screen's late unmount cleanup cancels whatever is pending, which
+    // is now the keypad's request. While no card is in the field it is
+    // silent, and re-armed at once.
+    await act(() => actualNfc.cancelCardSession());
+    await flush();
+
+    expect(mockNfc.requestTechnology).toHaveBeenCalledTimes(3);
+    expect(pendingRequest()).toBeDefined();
+    expect(mockToastShow).not.toHaveBeenCalled();
+  });
+
+  it('a foreign cancel that cuts a read mid-flight is reported as a failed read', async () => {
+    // Decided (ENG-704): the keypad cannot tell another screen's late cancel
+    // from a card that left the field. Both close the tag under the
+    // transceive, so the merchant sees the read failed and taps again. Card
+    // screens release from `beforeRemove` so this cannot come from them.
+    const read = deferred<CardSummary>();
+    mockReadCard.mockReturnValue(read.promise);
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+    expect(mockReadCard).toHaveBeenCalledTimes(1);
+
+    // Native: cancelTechnologyRequest closes the connected tag, and the
+    // in-flight transceive fails with an I/O error, not UserCancel.
+    await act(() => actualNfc.cancelCardSession());
+    const cut = new Error('transceive failed: tag connection lost');
+    await act(async () => {
+      read.reject(cut);
+    });
+    await flush();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockToastShow).toHaveBeenCalledTimes(1);
+    expect(mockToastShow).toHaveBeenCalledWith({
+      message: actualNfc.describeCardFailure(cut),
+      type: 'error',
+    });
+    // Then it re-arms after the breather, ready for the next tap.
+    const arms = mockNfc.requestTechnology.mock.calls.length;
+    await waitFor(
+      () =>
+        expect(mockNfc.requestTechnology.mock.calls.length).toBeGreaterThan(
+          arms,
+        ),
+      {timeout: REARM_AFTER_ERROR_MS * 4},
+    );
+    blur();
+    await flush();
   });
 
   it('never arms twice while one request is pending', async () => {
@@ -750,11 +859,17 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
       summary: after,
       changeAddedSat: 2,
     });
-    // The write happened before the session closed.
+    // The write happened before the session closed. The session's close is
+    // the first cancel after the keypad armed; the one before it is the
+    // focus flush of any stray request (ENG-704).
+    const armOrder = mockNfc.requestTechnology.mock.invocationCallOrder[0];
     const writeOrder = mockWriteOwedChange.mock.invocationCallOrder[0];
     const cancelOrder =
-      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder[0];
-    expect(writeOrder).toBeLessThan(cancelOrder);
+      mockNfc.cancelTechnologyRequest.mock.invocationCallOrder.find(
+        order => order > armOrder,
+      );
+    expect(cancelOrder).toBeDefined();
+    expect(writeOrder).toBeLessThan(cancelOrder!);
   });
 
   it('a write the store cut short before any LOAD claims nothing added: the screen opens with all of it still waiting', async () => {

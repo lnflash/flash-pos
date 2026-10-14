@@ -26,6 +26,7 @@ import {
   cancelCardSession,
   describeCardFailure,
   isCardReadingSupported,
+  isMultiRequestError,
   isUserCancel,
   openCardSession,
   usingCardBridge,
@@ -297,6 +298,12 @@ export function useKeypadCardReader() {
         if (isUserCancel(error) || gen !== focusGenRef.current) {
           return 'cancelled';
         }
+        // Another screen's request is still pending (ERR_MULTI_REQ): not a
+        // card failure, nothing to tell the merchant. Re-arm after the
+        // breather; the finally below clears the stray request.
+        if (isMultiRequestError(error)) {
+          return 'busy';
+        }
         // A 0.x card: refused before anything is written or spent, and said
         // so plainly (decision 8) — never as "Not a Flash card".
         if (isCardNeedsUpdate(error)) {
@@ -343,9 +350,19 @@ export function useKeypadCardReader() {
     useCallback(() => {
       const gen = ++focusGenRef.current;
       if (Platform.OS === 'android') {
-        loopRef.current = loopRef.current.then(() =>
-          gen === focusGenRef.current ? armLoop(gen) : undefined,
-        );
+        // ENG-704: flush any request still pending before the first arm.
+        // Card screens release their own request from `beforeRemove`
+        // (useCardSessionRelease), before this focus lands; this is the
+        // backstop for one that did not (a screen removed without the
+        // event, a session opened in the gap), whose request would make our
+        // arm hit ERR_MULTI_REQ. The previous loop has ended by now (the
+        // blur cancelled our own request), so this never cancels the
+        // keypad's own request; with nothing pending it is a no-op.
+        loopRef.current = loopRef.current
+          .then(() =>
+            gen === focusGenRef.current ? cancelCardSession() : undefined,
+          )
+          .then(() => (gen === focusGenRef.current ? armLoop(gen) : undefined));
       }
       return () => {
         focusGenRef.current++;

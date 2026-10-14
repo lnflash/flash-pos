@@ -40,6 +40,7 @@ import {
   type StageState,
 } from '../components/cashu/charge/phaseToStation';
 import {useStallTimer} from '../components/cashu/charge/useStallTimer';
+import {useCardSessionRelease} from '../hooks/useCardSessionRelease';
 
 // utils
 import {formatSatAmount} from '../utils/satCurrency';
@@ -191,12 +192,15 @@ const CashuCardCharge = ({navigation, route}: Props) => {
   }, []);
 
   // A pending IsoDep request swallows every BoltCard tap app-wide (see
-  // docs/13-cashu-card.md) — leaving mid-read must cancel it.
+  // docs/13-cashu-card.md) — leaving mid-read must cancel it. The
+  // `beforeRemove` listener below releases it as the stack lets the screen
+  // go, before the keypad underneath re-arms (ENG-704); the hook's unmount
+  // cleanup covers a removal that never asked.
+  const releaseCardSession = useCardSessionRelease();
   useEffect(
     () => () => {
       cancelledRef.current = true;
       unmountedRef.current = true;
-      cancelCardSession();
     },
     [],
   );
@@ -588,6 +592,7 @@ const CashuCardCharge = ({navigation, route}: Props) => {
     () =>
       navigation.addListener('beforeRemove', e => {
         if (leavingRef.current) {
+          releaseCardSession();
           return;
         }
         if (settledRef.current) {
@@ -597,9 +602,14 @@ const CashuCardCharge = ({navigation, route}: Props) => {
         }
         if (holdingRef.current) {
           e.preventDefault();
+          return;
         }
+        // A plain pop before the burn: the read it cuts is the merchant's
+        // own doing, not a card failure to paint on the way out.
+        cancelledRef.current = true;
+        releaseCardSession();
       }),
-    [navigation, onDone],
+    [navigation, onDone, releaseCardSession],
   );
 
   // The header arrow: Done once paid, nothing while the charge is in flight

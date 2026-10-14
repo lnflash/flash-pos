@@ -5,6 +5,8 @@ import {configureStore} from '@reduxjs/toolkit';
 import Toast from 'react-native-toast-message';
 import Invoice from '../../src/screens/Invoice';
 import rootReducer from '../../src/store/reducers';
+import NfcManager from 'react-native-nfc-manager';
+import {navigationStub} from '../support/navigationStub';
 
 const mockUseSubscription = jest.fn();
 const mockUseLazyQuery = jest.fn();
@@ -193,10 +195,10 @@ const renderInvoice = ({reward}: RenderOptions = {}) => {
       },
     } as any,
   });
-  const navigation = {
+  const navigation = navigationStub({
     replace: jest.fn(),
     goBack: jest.fn(),
-  };
+  });
 
   const tree = () => (
     <Provider store={store}>
@@ -539,6 +541,30 @@ describe('Invoice screen Flashcard withdraw callback', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  // ENG-704: the unmount lands at the end of the close transition, when the
+  // keypad underneath may have armed its own request and be mid-read. The
+  // router session is released as the stack lets the Invoice go instead.
+  it('releases the card session as the stack lets the screen go, and not again at unmount', () => {
+    const cancel = NfcManager.cancelTechnologyRequest as jest.Mock;
+    const {navigation, unmount} = renderInvoice();
+    cancel.mockClear();
+
+    expect(navigation.emitBeforeRemove()).toBe(false);
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    unmount();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('still cancels the card session at unmount when no beforeRemove came first', () => {
+    const cancel = NfcManager.cancelTechnologyRequest as jest.Mock;
+    const {unmount} = renderInvoice();
+    cancel.mockClear();
+
+    unmount();
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   describe('card state after the callback', () => {

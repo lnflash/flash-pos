@@ -74,8 +74,16 @@ Two defences, both required:
   `cancelCardSession()`. This covers the read completing or failing.
 - `cancelCardSession()` is also exported for callers to invoke directly, because
   that `finally` **cannot run** while the request is still pending. Any screen
-  that can start a session must cancel it on unmount (`CashuCardDebug` does) and
-  should offer a visible Cancel control while a read is in flight.
+  that can start a session must cancel it when it leaves, and should offer a
+  visible Cancel control while a read is in flight. Use
+  `useCardSessionRelease` (`src/hooks/useCardSessionRelease.ts`): it cancels
+  from `beforeRemove`, as the stack lets the screen go, and falls back to an
+  unmount cancel only when no `beforeRemove` came first. An unmount cancel
+  alone runs too late: the stack unmounts a popped screen at the end of its
+  close transition, after the keypad underneath has armed its own request, so
+  the cancel would close the keypad's tag mid-read (ENG-704). A screen with its
+  own `beforeRemove` listener that can refuse the pop (`CashuCardCharge`) calls
+  the returned `release` from its let-through branches only.
 
 Note we are **not** in Android reader mode. `FlashcardProvider` already calls
 `registerTagEvent()` with no options at app start, so `isReaderModeEnabled` is

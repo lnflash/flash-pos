@@ -361,6 +361,21 @@ export function isUserCancel(error: unknown): boolean {
   return typeof cls === 'function' && error instanceof cls;
 }
 
+/**
+ * react-native-nfc-manager's Android `ERR_MULTI_REQ` (NfcManager.java:61):
+ * `requestTechnology` refuses while another request is still pending. The JS
+ * wrapper hands it over as a bare `NfcErrorBase` carrying this literal string.
+ */
+export const MULTI_REQUEST_MESSAGE = 'You can only issue one request at a time';
+
+/**
+ * True when a request was refused because another screen's request is still
+ * pending (ENG-704). Not a card failure: there is nothing to tell a merchant.
+ */
+export function isMultiRequestError(error: unknown): boolean {
+  return error instanceof Error && error.message === MULTI_REQUEST_MESSAGE;
+}
+
 /** Turns any thrown value into something worth showing a merchant. */
 export function describeCardFailure(error: unknown): string {
   if (error instanceof CardError) {

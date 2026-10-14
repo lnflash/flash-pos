@@ -21,6 +21,7 @@ import {ActivityIndicator} from '../contexts/ActivityIndicator';
 // hooks
 import {useCardPaymentRouter} from '../hooks/useCardPaymentRouter';
 import {useFlashcard} from '../hooks';
+import {useCardSessionRelease} from '../hooks/useCardSessionRelease';
 import {cancelCardSession} from '../services/cashuCardNfc';
 import CardTapSheet from '../components/cashu/CardTapSheet';
 import {useAppDispatch, useAppSelector} from '../store/hooks';
@@ -96,13 +97,9 @@ const Invoice: React.FC<Props> = ({navigation}) => {
   const {routeCardPayment, isScanning} = useCardPaymentRouter();
 
   // A router session left armed when the merchant leaves this screen swallows
-  // every later BoltCard tap app-wide — end it with the screen.
-  useEffect(
-    () => () => {
-      cancelCardSession();
-    },
-    [],
-  );
+  // every later BoltCard tap app-wide — end it as the stack lets the screen
+  // go, before the keypad underneath re-arms (ENG-704).
+  useCardSessionRelease({navigation});
 
   useEffect(() => {
     // Reset on every mount, not only the first: StrictMode and Fast Refresh
