@@ -27,6 +27,7 @@ import {useMutation} from '@apollo/client';
 
 // gql
 import {LnUsdInvoiceCreateOnBehalfOfRecipient} from '../graphql/mutations';
+import {NO_RETRY_CONTEXT} from '../graphql/retryPolicy';
 
 // store
 import {setInvoice} from '../store/slices/invoiceSlice';
@@ -38,7 +39,8 @@ import {
 
 // utils
 import {toastShow} from '../utils/toast';
-import {validateInvoiceAmount} from '../utils/amounts';
+import {PRICE_LOADING_MESSAGE, validateInvoiceAmount} from '../utils/amounts';
+import {isApiUnreachable} from '../utils/apolloErrors';
 import {isRewardsEnabled} from '../utils/featureFlags';
 import {POS_INVOICE_EXPIRATION_MINUTES} from '../constants/invoice';
 
@@ -62,6 +64,10 @@ const nextButtonWithRewardsStyle = {
   marginLeft: 8,
   paddingVertical: 15,
 };
+
+// ENG-703: the invoice API could not be reached (offline, or a server error),
+// so the sale goes to the Flashcard charge, which needs no API.
+const CARD_ONLY_MESSAGE = "Can't reach Flash: card payments only";
 
 type Props = StackNavigationProp<RootStackType, 'Home'>;
 
@@ -175,6 +181,12 @@ const Keypad = () => {
         isSatEntry && Number(satAmount) * usdPerSat * 100 < 1;
 
       if (subCentSat) {
+        // With no price at all (the refetch above could not reach the API),
+        // every SAT amount lands here. The card still takes it; say why the
+        // invoice was skipped.
+        if (!(usdPerSat > 0)) {
+          toastShow({message: CARD_ONLY_MESSAGE, type: 'info'});
+        }
         dispatch(setSatAmount(String(Number(satAmount))));
         dispatch(setDisplayAmount(String(Number(displayAmount))));
         navigation.navigate('CashuCardCharge');
@@ -188,6 +200,15 @@ const Keypad = () => {
         Number(satAmount) > 0
           ? Number(satAmount)
           : currencyToSats(numericAmount).convertedCurrencyAmount;
+      // No local-currency price yet: the conversion is NaN. Say so, rather
+      // than "Please enter a valid amount.", and never store NaN sats.
+      if (
+        !isSatEntry &&
+        !(Number.isFinite(satAmountSafe) && satAmountSafe > 0)
+      ) {
+        toastShow({message: PRICE_LOADING_MESSAGE, type: 'error'});
+        return;
+      }
       dispatch(setSatAmount(String(Math.round(satAmountSafe))));
 
       const invoiceAmount = validateInvoiceAmount(usdPerSat, satAmountSafe);
@@ -235,6 +256,8 @@ const Keypad = () => {
             memo,
           },
         },
+        // Sent once: offline, the retries would only delay the card offer.
+        context: NO_RETRY_CONTEXT,
       });
 
       if (result.data?.lnUsdInvoiceCreateOnBehalfOfRecipient?.invoice) {
@@ -255,6 +278,15 @@ const Keypad = () => {
       }
     } catch (err: any) {
       console.error('Invoice creation error:', err);
+
+      // The API is unreachable, so no invoice can be made. The card charge is
+      // sat-native and offline-capable, and satAmount is already in the store.
+      if (isApiUnreachable(err)) {
+        toastShow({message: CARD_ONLY_MESSAGE, type: 'info'});
+        navigation.navigate('CashuCardCharge');
+        return;
+      }
+
       let errorMessage = 'Unable to create invoice. Please try again.';
 
       if (err.message?.includes('amount')) {

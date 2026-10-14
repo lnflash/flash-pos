@@ -1,5 +1,8 @@
 const MAX_INVOICE_CENTS = 99_999_999;
 
+export const PRICE_LOADING_MESSAGE =
+  'Bitcoin price is still loading. Please try again in a moment.';
+
 export const validateInvoiceAmount = (
   satPrice: number,
   sats: number,
@@ -7,7 +10,7 @@ export const validateInvoiceAmount = (
   if (!Number.isFinite(satPrice) || satPrice <= 0) {
     return {
       valid: false,
-      error: 'Bitcoin price is still loading. Please try again in a moment.',
+      error: PRICE_LOADING_MESSAGE,
     };
   }
 
