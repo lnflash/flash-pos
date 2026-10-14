@@ -124,6 +124,7 @@ function PinSheet({
       </View>
       <Animated.View
         pointerEvents="none"
+        testID="pin-error-slot"
         style={[styles.errorSlot, styles.center, {opacity: n.errHelper}]}>
         <Text
           testID="pin-error-text"
@@ -134,7 +135,9 @@ function PinSheet({
           {errorText ?? ''}
         </Text>
       </Animated.View>
-      <View style={[styles.pad, {height: L.pin.rowHeight * 4}]}>
+      <View
+        style={[styles.pad, {height: L.pin.rowHeight * 4}]}
+        testID="pin-pad">
         <PinPad
           tone="ink"
           rowHeight={L.pin.rowHeight}
@@ -199,7 +202,8 @@ const styles = StyleSheet.create({
   },
   center: {alignItems: 'center', justifyContent: 'center'},
   chargeNow: {fontFamily: 'Outfit-SemiBold', color: COLOR.ink},
-  errorText: {color: COLOR.red},
+  /** A wrapped line centres under the centred sheet, like StatusBlock's. */
+  errorText: {color: COLOR.red, textAlign: 'center'},
   pad: {position: 'absolute', left: 24, right: 24, top: PAD_TOP},
 });
 

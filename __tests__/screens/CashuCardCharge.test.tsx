@@ -1391,6 +1391,11 @@ describe('CashuCardCharge', () => {
       expect(line.props.children).toBe(PIN_CHANGE_NEEDS_CONNECTION_TEXT);
       expect(line.props.numberOfLines).toBe(2);
       expect(line.props.textBreakStrategy).toBe('balanced');
+      expect(line.props.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({textAlign: 'center'}),
+        ]),
+      );
       expect(queryByText(CHANGE_NEEDS_MINT, all)).toBeNull();
 
       await enterPin(getByLabelText);
