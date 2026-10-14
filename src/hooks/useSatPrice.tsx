@@ -3,6 +3,7 @@ import {useSubscription} from '@apollo/client';
 import {PriceSubscription} from '../graphql/subscriptions';
 import {useQuery} from '@apollo/client';
 import {RealtimePrice} from '../graphql/queries';
+import {NO_RETRY_CONTEXT} from '../graphql/retryPolicy';
 
 const useSatPrice = () => {
   const [price, setPrice] = React.useState<number>(0);
@@ -11,13 +12,15 @@ const useSatPrice = () => {
   // expose the websocket endpoint the PriceSubscription needs (every path
   // rejects the upgrade), so polling is what actually delivers the price —
   // the subscription below stays as a live-update bonus when a WS exists.
-  const {
-    data: rtData,
-    refetch: refetchQuery,
-  } = useQuery(RealtimePrice, {
+  const {data: rtData, refetch: refetchQuery} = useQuery(RealtimePrice, {
     variables: {currency: 'USD'},
     pollInterval: 20000,
     notifyOnNetworkStatusChange: true,
+    // One request per fetch (ENG-703). The 20 s poll is its own retry, and
+    // refetchPrice reuses these options: through the shared RetryLink, a
+    // cold-start keypad tap with no network would wait out 5 attempts
+    // (up to ~9 s) with no spinner before the card is offered.
+    context: NO_RETRY_CONTEXT,
   });
 
   React.useEffect(() => {
