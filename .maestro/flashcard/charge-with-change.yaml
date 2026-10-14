@@ -1,5 +1,8 @@
 # A PIN card pays a 3-sat bill from its 8-sat proof: read → PIN → burn →
-# swap → change 4 + 1 written back. The balance and the card both show 5.
+# swap → change written back. The balance and the card both show 5.
+# ENG-701: the 5 of change refills the card's covering ladder (2 + 1 + 1 + 1,
+# splitChangeForLadder(5, [])), not the fewest pieces (4 + 1); the EXPECT
+# below is checked against that function by __tests__/scripts/e2eLib.test.ts.
 appId: com.flash.pos
 name: 'eCash card: charge with change'
 tags:
@@ -18,7 +21,7 @@ tags:
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4,1],"spentLabels":["P8"]}'
+      EXPECT: '{"unspent":[2,1,1,1],"spentLabels":["P8"]}'
 - tapOn: 'Done'
 - runFlow:
     file: common/balance.yaml

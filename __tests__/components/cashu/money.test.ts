@@ -80,6 +80,37 @@ describe('changePieces', () => {
   });
 });
 
+describe('changePieces: the plan’s own split (ENG-701)', () => {
+  it('animates the pieces the card is told to make', () => {
+    expect(changePieces(5, [2, 1, 1, 1])).toEqual([2, 1, 1, 1]);
+    expect(changePieces(6, [2, 2, 1, 1])).toEqual([2, 2, 1, 1]);
+  });
+
+  it('falls back to the fewest when the plan names none', () => {
+    expect(changePieces(5, undefined)).toEqual(splitPow2(5));
+    expect(changePieces(5, [])).toEqual(splitPow2(5));
+    expect(changePieces(0, [1])).toEqual([]);
+  });
+
+  it("the stage's plan shape carries the same slips the card writes", () => {
+    const {
+      planShape,
+    } = require('../../../src/components/cashu/charge/ChargeView');
+    const plan = {
+      notes: [8],
+      burnSlots: [8],
+      changeSat: 5,
+      changePieces: [2, 1, 1, 1],
+      last4: null,
+      pinRequired: true,
+    };
+    expect(planShape(plan, 3).pieces).toEqual([2, 1, 1, 1]);
+    expect(planShape({...plan, changePieces: undefined}, 3).pieces).toEqual([
+      4, 1,
+    ]);
+  });
+});
+
 describe('runningTotals', () => {
   it('runs the FROM CARD total burn by burn', () => {
     expect(runningTotals([16, 8])).toEqual([16, 24]);

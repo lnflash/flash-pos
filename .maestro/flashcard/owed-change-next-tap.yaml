@@ -4,8 +4,8 @@
 # 6A84, and the mint's half of the 5 sats of change is kept on the terminal
 # (the card keeps its own half: the change openings). On the next charge
 # (the same card, its spent slots freed and P4 loaded on top: FIXTURE_AFTER)
-# the owed 4 + 1 are finished from the card's openings and go on first, then
-# P4 pays the 4-sat bill exactly.
+# the owed pieces (ENG-701's split of the 5: 2 + 1 + 1 + 1) are finished from
+# the card's openings and go on first, then P4 pays the 4-sat bill exactly.
 appId: com.flash.pos
 name: 'eCash card: owed change is written on the next tap'
 tags:
@@ -73,7 +73,7 @@ tags:
 - runScript:
     file: scripts/assert-state.js
     env:
-      EXPECT: '{"unspent":[4,1],"spentLabels":["P4"]}'
+      EXPECT: '{"unspent":[2,1,1,1],"spentLabels":["P4"]}'
 - tapOn: 'Done'
 - runFlow:
     file: common/balance.yaml

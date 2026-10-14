@@ -53,6 +53,7 @@ import {
   listOwedChange,
   listSettlements,
 } from '../../src/services/cashuSettlement';
+import {splitChangeForLadder, splitPow2} from '../../src/utils/denominations';
 
 const CARDSIM = process.env.CARD_E2E_CARDSIM;
 const MINT_URL = process.env.CARD_E2E_MINT;
@@ -159,6 +160,8 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
 
   it('a PIN card pays 10 from a 16: one SIG_ALL swap the mint accepts, the change back on the card', async () => {
     const {pieces} = await mintToCard(cardKey, [16, 4]);
+    // ENG-701: the 6 of change refills the card's ladder beside the kept 4.
+    const change = splitChangeForLadder(6, [4]);
     await bridge('/fixture', {
       pin: '1234',
       mint: MINT_URL,
@@ -176,15 +179,32 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
     // Nothing kept yet on a fresh terminal: the mint checks it in the tap.
     expect(preRead.requiresOnline).toBe(true);
 
+    expect(preRead.plan.changePieces).toEqual(change);
+    // What the ladder costs in the tap: one SPEND_ALL_CHANGE and one LOAD per
+    // piece, against the fewest pieces before ENG-701 (logged for the PR).
+    const counted: Record<number, number> = {};
+    const counting: Transceiver = async apdu => {
+      counted[apdu[1]] = (counted[apdu[1]] ?? 0) + 1;
+      return transceive(apdu);
+    };
     const result = await executeCharge({
       ...preRead,
-      transceive,
+      transceive: counting,
       amountSat: 10,
       pin: '1234',
       mintUrl: MINT_URL!,
     });
+    console.log(
+      `[ENG-701] 16 pays 10 beside a 4: SPEND_ALL_CHANGE ${
+        counted[0x26] ?? 0
+      } + LOAD ${counted[0x30] ?? 0} (power-of-two change: ${
+        splitPow2(6).length
+      } + ${splitPow2(6).length})`,
+    );
+    expect(counted[0x26]).toBe(change.length);
+    expect(counted[0x30]).toBe(change.length);
 
-    expect(result.changeLoaded).toBe(2);
+    expect(result.changeLoaded).toBe(change.length);
     expect(await getBalance(transceive)).toBe(4 + 6);
     const [entry] = await listSettlements();
     expect(entry.status).toBe('settled');
@@ -215,7 +235,11 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
       slots: {status: string; amount: number; dleq?: unknown}[];
     };
     const unspent = state.slots.filter(s => s.status === 'unspent');
-    expect(unspent.map(s => s.amount).sort((a, b) => a - b)).toEqual([2, 4, 4]);
+    // The kept 4 and the change: [1, 1, 2, 2, 4], a covering ladder (it was
+    // [2, 4, 4] with power-of-two change).
+    expect(unspent.map(s => s.amount).sort((a, b) => a - b)).toEqual(
+      [4, ...change].sort((a, b) => a - b),
+    );
     expect(unspent.every(s => s.dleq)).toBe(true);
     expect((await listOwedChange()).every(e => e.status === 'written')).toBe(
       true,
@@ -261,7 +285,7 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
       mintUrl: MINT_URL!,
     });
 
-    expect(result.changeLoaded).toBe(1);
+    expect(result.changeLoaded).toBe(splitChangeForLadder(4, []).length);
     expect(await getBalance(transceive)).toBe(4);
   });
 
@@ -437,8 +461,10 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
   // The simulator e2e's lost-load-answer flow, card side: the answer to the
   // first change LOAD is lost, then the keypad's balance tap (the tap after
   // a payment) finishes the rest under the change grant, with no PIN.
-  it('a lost change LOAD answer, then the balance tap: the 4 once, the 1 under the change grant', async () => {
+  it('a lost change LOAD answer, then the balance tap: the first piece once, the rest under the change grant', async () => {
     const {pieces} = await mintToCard(cardKey, [8]);
+    // ENG-701: 8 pays 3, and the 5 of change is split for the ladder.
+    const [first, ...rest] = splitChangeForLadder(5, []);
     await bridge('/fixture', {
       pin: '1234',
       mint: MINT_URL,
@@ -466,7 +492,7 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
       mintUrl: MINT_URL!,
     }).catch(e => e);
     expect(isPaidFailure(failure)).toBe(true);
-    expect(await getBalance(transceive)).toBe(4);
+    expect(await getBalance(transceive)).toBe(first);
 
     // The balance tap: a fresh SELECT, GET_INFO says the change may go on.
     const summary = await readCard(transceive);
@@ -479,9 +505,9 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
       mintUrl: MINT_URL,
       now: Date.now(),
     });
-    expect(owed.map(e => e.amount)).toEqual([1]);
+    expect(owed.map(e => e.amount)).toEqual(rest);
     const written = await writeOwedChange({transceive, owed, now: Date.now()});
-    expect(written.map(e => e.amount)).toEqual([1]);
+    expect(written.map(e => e.amount)).toEqual(rest);
     expect(await getBalance(transceive)).toBe(5);
     const state = (await bridge('/state')) as {
       slots: {status: string; nonce?: string}[];
@@ -495,7 +521,8 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
   // The simulator e2e's owed-change-next-tap flow, card side: the change
   // LOAD answers 6A84 on a full card; the card's spent slots are freed and a
   // 4 loaded on top (no reset: the openings stay); the next charge finishes
-  // the owed 4 + 1 from the card's openings, then the 4 pays exactly.
+  // the owed change (ENG-701's split of the 5) from the card's openings,
+  // then the 4 pays exactly.
   it("change owed on a full card is finished from the card's openings on the next charge", async () => {
     const fillers = Array.from({length: 127}, () => 1);
     const {pieces} = await mintToCard(cardKey, [8, ...fillers]);
@@ -545,7 +572,9 @@ run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
       amountSat: 4,
       mintUrl: MINT_URL,
     });
-    expect(next.owedChange.map(e => e.amount)).toEqual([4, 1]);
+    expect(next.owedChange.map(e => e.amount)).toEqual(
+      splitChangeForLadder(5, []),
+    );
     await executeCharge({
       ...next,
       transceive,

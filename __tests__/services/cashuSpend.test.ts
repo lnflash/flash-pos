@@ -15,6 +15,7 @@ import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
 import {
   CardAuthError,
   CardError,
+  CardProtocolError,
   proveCardKey,
   type ProvenCardKey,
   type Transceiver,
@@ -358,6 +359,68 @@ describe('spendAll', () => {
       expect(entry.witness).toBe(good);
       expect(signed).not.toBeNull();
     });
+  });
+});
+
+describe('spendAll: the change pieces it is told (ENG-701)', () => {
+  /** SPEND_ALL_CHANGE's amounts, in the order the card was asked for them. */
+  const changeAsked = (card: FakeCard2) =>
+    card.sent.filter(a => a[1] === 0x26).map(a => a[8]);
+
+  it('a card holding only 8 that pays 3 makes its change in the pieces the plan names', async () => {
+    const card = cardWithPieces([8]);
+    const {entry, signed} = await spendAll({
+      ...paymentArgs(card, [0], 3),
+      changePieces: [2, 2, 1],
+    });
+
+    expect(changeAsked(card)).toEqual([2, 2, 1]);
+    expect(
+      entry.outputs.slice(entry.cardChangeIndex).map(o => o.amount),
+    ).toEqual([2, 2, 1]);
+    expect(signed).not.toBeNull();
+    // The mint takes the swap with those outputs, as the card signed them.
+    expect(() =>
+      mint.swap({
+        inputs: entry.inputs.map((i, k) => ({
+          id: i.keysetId,
+          amount: i.amount,
+          secret: i.secret,
+          C: i.C,
+          ...(k === 0
+            ? {witness: JSON.stringify({signatures: [entry.witness]})}
+            : {}),
+        })),
+        outputs: entry.outputs.map(o => ({
+          amount: o.amount,
+          id: o.keysetId,
+          B_: o.B_,
+        })),
+      }),
+    ).not.toThrow();
+  });
+
+  it('names no pieces: the fewest, as before', async () => {
+    const card = cardWithPieces([8]);
+    await spendAll(paymentArgs(card, [0], 3));
+    expect(changeAsked(card)).toEqual([4, 1]);
+  });
+
+  it.each([
+    ['a list that does not sum to the change', [4, 2], 5],
+    ['a piece that is not a power of two', [3, 2], 5],
+    ['change pieces on an exact bill', [1], 0],
+    ['no pieces for change that is due', [], 5],
+  ])('refuses %s before any APDU', async (_label, changePieces, changeSat) => {
+    const card = cardWithPieces([8]);
+    const failure = await spendAll({
+      ...paymentArgs(card, [0], 8 - (changeSat as number)),
+      changePieces: changePieces as number[],
+    }).catch(e => e);
+    expect(failure).toBeInstanceOf(CardProtocolError);
+    expect(card.sent).toEqual([]);
+    expect(card.burnCount).toBe(0);
+    await expect(listSettlements()).resolves.toEqual([]);
   });
 });
 
