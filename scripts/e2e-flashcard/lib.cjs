@@ -287,7 +287,7 @@ function headerVectorsPath(clientPath) {
 }
 
 /**
- * Where the cardsim client lives in a lnflash/cashu-javacard checkout. The
+ * Where the cardsim client lives in a cashucard/javacard checkout. The
  * runner talks to the bridge only through that client (tools/cardsim/
  * client.cjs at the pinned ref): its 5 s per-request deadline is what turns
  * a bridge wedged on its single card thread into a failed flow instead of a

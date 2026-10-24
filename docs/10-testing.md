@@ -423,7 +423,7 @@ for the hardware and the money:
 
 | Piece | What it is | Where |
 |---|---|---|
-| Card | The real cashu-javacard applet (protocol 2.0) in jCardSim, served over HTTP (`cardsim`) | `lnflash/cashu-javacard` `tools/cardsim`, port 9876 |
+| Card | The real cashu-javacard applet (protocol 2.0) in jCardSim, served over HTTP (`cardsim`) | `cashucard/javacard` `tools/cardsim`, port 9876 |
 | Mint | Nutshell 0.20.3 on FakeWallet: quotes pay themselves, no fees | port 3338 |
 | Block headers | A stub the runner serves on an ephemeral port: the tip is the newest of the applet's `spec/vectors/headers.json` | `scripts/e2e-flashcard.mjs` |
 | App | A Debug build with the JS bundle embedded, driven by Maestro | `.maestro/flashcard/` |

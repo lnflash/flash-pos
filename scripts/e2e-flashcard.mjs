@@ -3,7 +3,7 @@
  * Simulator e2e for the eCash card (ENG-634): real proofs, a real applet,
  * the production UI.
  *
- *   cardsim  (lnflash/cashu-javacard tools/cardsim) — the applet in jCardSim
+ *   cardsim  (cashucard/javacard tools/cardsim) — the applet in jCardSim
  *            on http://127.0.0.1:9876; the app reaches it through the dev
  *            card bridge (src/services/cardBridge.ts).
  *   mint     a local Nutshell on FakeWallet (http://127.0.0.1:3338): proofs
@@ -48,7 +48,7 @@ const USAGE = `usage: node scripts/e2e-flashcard.mjs [options]
   --mint <url>        FakeWallet mint (default http://127.0.0.1:3338)
   --device <id>       simulator for Maestro (when more than one is booted)
   --cardsim-client <path>
-                      lnflash/cashu-javacard tools/cardsim/client.cjs (or
+                      cashucard/javacard tools/cardsim/client.cjs (or
                       CARDSIM_CLIENT; default: ./cardsim/ or ../cashu-javacard/)
   --dry-run           print the plan with placeholder proofs; no network, no Maestro
   --help`;
@@ -139,7 +139,7 @@ function cardSimClientPath(opts) {
 
 /**
  * The bridge's CardSim, through the merged reference client
- * (lnflash/cashu-javacard tools/cardsim/client.cjs): every request has its
+ * (cashucard/javacard tools/cardsim/client.cjs): every request has its
  * 5 s deadline, a fixture is validated locally before it is posted, and a
  * 409 (a fixture step the applet refused) arrives as its CardSimError naming
  * the step. Returned with the client module it came from: the module's

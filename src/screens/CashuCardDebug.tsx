@@ -30,7 +30,7 @@ const pubkeyLabelStyle = {marginTop: 12};
 const bridgeButtonStyle = {marginTop: 8, marginRight: 16};
 const bridgeLabelStyle = {marginTop: 32};
 
-/** Where `tools/cardsim` listens by default (lnflash/cashu-javacard). */
+/** Where `tools/cardsim` listens by default (cashucard/javacard). */
 const BRIDGE_PLACEHOLDER = 'http://127.0.0.1:9876';
 
 /**
