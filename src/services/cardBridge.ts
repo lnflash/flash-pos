@@ -2,7 +2,7 @@
  * The simulator's "card": every APDU goes to a cardsim bridge over HTTP
  * instead of the NFC radio (ENG-634).
  *
- * cardsim (lnflash/cashu-javacard, `tools/cardsim`) runs the real applet in
+ * cardsim (cashucard/javacard, `tools/cardsim`) runs the real applet in
  * jCardSim and serves it on loopback: `POST /apdu {hex}` answers
  * `{hex, sw}`, the applet's data‖SW. The iOS simulator has no NFC, so this is
  * how the Maestro flows (`.maestro/flashcard/`) drive the production charge,

@@ -1,6 +1,6 @@
 /**
  * The 2.0 card layer against the REAL applet and a REAL mint: cardsim
- * (lnflash/cashu-javacard tools/cardsim, the applet in jCardSim over HTTP)
+ * (cashucard/javacard tools/cardsim, the applet in jCardSim over HTTP)
  * and a Nutshell 0.20.3 on FakeWallet (decision 6). The production
  * readAndPlan → executeCharge path pays with one SIG_ALL signature the
  * applet makes, the swap is the mint's to accept or refuse, and the change

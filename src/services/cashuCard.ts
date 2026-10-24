@@ -3,7 +3,7 @@
 /**
  * Cashu NFC card — APDU protocol layer, shared card protocol 2.0.
  *
- * Talks to the cashu-javacard applet (https://github.com/lnflash/cashu-javacard),
+ * Talks to the cashu-javacard applet (https://github.com/cashucard/javacard),
  * protocol 2.0: an offline bearer card that holds format-4 SIG_ALL pieces
  * locked to its own key and pays with ONE BIP-340 signature over a whole
  * NUT-11 SIG_ALL swap (the pieces it burns, the till's outputs and its own

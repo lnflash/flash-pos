@@ -1,7 +1,7 @@
 name: E2E Flashcard (iOS simulator)
 
 # The eCash card flows end to end on an iOS simulator (ENG-634): the real
-# applet in jCardSim (cardsim, lnflash/cashu-javacard), a local Nutshell
+# applet in jCardSim (cardsim, cashucard/javacard), a local Nutshell
 # mint on FakeWallet, and the production charge/balance UI driven by
 # Maestro through the Debug-only card bridge. Run book: docs/10-testing.md.
 #
@@ -55,7 +55,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # lnflash/cashu-javacard main at #35 (ENG-681): the 2.0 applet, and a cardsim
+  # cashucard/javacard main at #35 (ENG-681): the 2.0 applet, and a cardsim
   # that puts a package-AID SELECT on the opener, as the J3R180 does.
   CASHU_JAVACARD_REF: bced1c41726ef23e733cb228fd46f6fba568467d
   # The public release nearest forge's 0.20.3.1 (decision 6): its SIG_ALL
@@ -96,7 +96,7 @@ jobs:
       - name: Checkout cashu-javacard (cardsim)
         uses: actions/checkout@v4
         with:
-          repository: lnflash/cashu-javacard
+          repository: cashucard/javacard
           ref: ${{ env.CASHU_JAVACARD_REF }}
           path: cardsim
 

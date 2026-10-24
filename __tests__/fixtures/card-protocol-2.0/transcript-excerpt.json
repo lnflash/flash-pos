@@ -1,6 +1,6 @@
 {
  "about": "Steps of cashu-javacard's own applet transcript (spec/vectors/transcript.json) that this terminal's APDU codec is held to: the command bytes it must build and the answers it must parse. 'index' is the step's position in the full transcript.",
- "source": "lnflash/cashu-javacard spec/vectors/transcript.json at 9574bc7df7709fd17145ff85465783cfbe4c37be (main, v2.0.0-rc.1; ENG-673, protocol 2.0)",
+ "source": "cashucard/javacard spec/vectors/transcript.json at 9574bc7df7709fd17145ff85465783cfbe4c37be (main, v2.0.0-rc.1; ENG-673, protocol 2.0)",
  "steps": [
   {
    "name": "select",

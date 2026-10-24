@@ -33,10 +33,10 @@ This is a different thing from the existing Flashcard/BoltCard path in
 
 Related repos:
 
-- [`lnflash/cashu-javacard`](https://github.com/lnflash/cashu-javacard) — the
+- [`cashucard/javacard`](https://github.com/cashucard/javacard) — the
   applet, the APDU spec (`spec/APDU.md`), and `tools/cardctl` (the Python
   reference driver this module mirrors).
-- [`lnflash/cashu-client`](https://github.com/lnflash/cashu-client) — mint
+- [`cashucard/client`](https://github.com/cashucard/client) — mint
   protocol in TypeScript: swap, melt, P2PK witnesses, DLEQ.
 
 ## Layout
@@ -132,7 +132,7 @@ is written and no proof is spent, so it is safe against a loaded card.
 
 Below the read button, **Card bridge** routes every card APDU (this screen's
 read and the production charge and balance paths) to a `cardsim` bridge
-instead of NFC: the real applet in jCardSim, from `lnflash/cashu-javacard`
+instead of NFC: the real applet in jCardSim, from `cashucard/javacard`
 `tools/cardsim`, on `http://127.0.0.1:9876`. Save sets it, Clear goes back to
 NFC, and a restart forgets it. Dev builds only: `getCardBridge()` answers
 `null` in a release build whatever was set. The Maestro flows set the same
