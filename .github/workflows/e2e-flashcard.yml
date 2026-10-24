@@ -134,11 +134,12 @@ jobs:
       - name: Install and start the FakeWallet mint
         run: |
           python -m venv "$RUNNER_TEMP/nutshell"
-          # Nutshell's own lockfile, but the breez-sdk-spark release it pins
-          # (gone from PyPI): see the header of the constraints file.
+          # Nutshell's own lockfile, but breez-sdk-spark: its Spark backend's
+          # import is met by a stand-in, see the header of the constraints file.
           "$RUNNER_TEMP/nutshell/bin/pip" install -q \
             -r scripts/e2e-flashcard/nutshell-constraints.txt
-          "$RUNNER_TEMP/nutshell/bin/pip" install -q breez-sdk-spark==0.17.0
+          cp scripts/e2e-flashcard/breez_sdk_spark.py "$("$RUNNER_TEMP/nutshell/bin/python" \
+            -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/"
           "$RUNNER_TEMP/nutshell/bin/pip" install -q --no-deps \
             "cashu==$NUTSHELL_VERSION"
           mkdir -p "$RUNNER_TEMP/mint"

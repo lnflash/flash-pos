@@ -2,12 +2,15 @@
 # nearest forge's 0.20.3.1): every [[package]] in poetry.lock at the
 # cashubtc/nutshell 0.20.3 tag, but breez-sdk-spark. pip install cashu==0.20.3
 # alone resolves today's marshmallow 4 and limits 5, which break the mint at
-# import; and the 0.15.0 breez-sdk-spark it pins is no longer on PyPI, so the
-# Spark backend's import is satisfied by the oldest release PyPI still has
-# (0.17.0), which the FakeWallet mint never calls (verified 2026-10-12).
+# import. Nutshell pins breez-sdk-spark 0.15.0, which PyPI no longer has, and
+# Breez keeps removing old releases (0.17.0, which stood in for it, went on
+# 2026-10-23). The FakeWallet mint never calls the Spark backend, so its import
+# is met by the stand-in module breez_sdk_spark.py, copied into the
+# environment's site-packages (verified 2026-10-23: the mint starts, serves its
+# keysets and issues a bolt11 mint quote).
 # Use (see .github/workflows/e2e-flashcard.yml):
 #   pip install -r scripts/e2e-flashcard/nutshell-constraints.txt
-#   pip install breez-sdk-spark==0.17.0
+#   cp scripts/e2e-flashcard/breez_sdk_spark.py "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/"
 #   pip install --no-deps cashu==0.20.3
 aiosqlite==0.20.0
 annotated-types==0.7.0
