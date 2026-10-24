@@ -36,7 +36,7 @@ Related repos:
 - [`cashucard/javacard`](https://github.com/cashucard/javacard) — the
   applet, the APDU spec (`spec/APDU.md`), and `tools/cardctl` (the Python
   reference driver this module mirrors).
-- [`lnflash/cashu-client`](https://github.com/lnflash/cashu-client) — mint
+- [`cashucard/client`](https://github.com/cashucard/client) — mint
   protocol in TypeScript: swap, melt, P2PK witnesses, DLEQ.
 
 ## Layout
