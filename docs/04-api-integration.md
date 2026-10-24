@@ -44,7 +44,7 @@ FLASH_GRAPHQL_URI=https://your-api.example.com/graphql
 FLASH_GRAPHQL_WS_URI=wss://ws.your-api.example.com/graphql
 ```
 
-The websocket endpoint is the `ws.` host, not `api.` — see [ENVIRONMENT.md](ENVIRONMENT.md) for the real hosts per environment.
+The websocket endpoint is the `ws.` host (the `api.` host refuses it). See [ENVIRONMENT.md](ENVIRONMENT.md) for the real hosts per environment.
 
 ### GraphQL Operations
 
