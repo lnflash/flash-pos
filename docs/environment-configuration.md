@@ -82,7 +82,7 @@ EVENT_SHOW_PROGRESS=true              # Show progress bars in Event Settings
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `FLASH_GRAPHQL_URI` | GraphQL API endpoint | `https://api.example.com/graphql` |
-| `FLASH_GRAPHQL_WS_URI` | WebSocket endpoint for subscriptions — the `ws.` host, not `api.` (`wss://ws.flashapp.me/graphql` in production, `wss://ws.test.flashapp.me/graphql` on test) | `wss://ws.example.com/graphql` |
+| `FLASH_GRAPHQL_WS_URI` | WebSocket endpoint for subscriptions, served by the `ws.` host and refused by `api.` (`wss://ws.flashapp.me/graphql` in production, `wss://ws.test.flashapp.me/graphql` on test) | `wss://ws.example.com/graphql` |
 | `FLASH_LN_ADDRESS_URL` | Lightning address server | `https://ln.example.com` |
 | `FLASH_LN_ADDRESS` | Domain for Lightning addresses | `example.com` |
 | `BTC_PAY_SERVER` | BTCPay Server instance URL | `https://btcpay.example.com` |

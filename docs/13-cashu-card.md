@@ -3,8 +3,8 @@
 ## Status
 
 > **2026-09-26: this document's settlement and NFC sections are superseded by
-> [`14-cashu-card-milestone-2026-09-26.md`](./14-cashu-card-milestone-2026-09-26.md)**
-> — the first end-to-end customer payment ran on Android, and the charge flow,
+> [`14-cashu-card-milestone-2026-09-26.md`](./14-cashu-card-milestone-2026-09-26.md)**.
+> The first end-to-end customer payment ran on Android, and the charge flow,
 > settlement pipeline, and every field-found defect are documented there.
 
 **Hardware-validated on iOS (2026-09-23).** A dev build on an iPhone 13 Pro Max
@@ -33,36 +33,36 @@ This is a different thing from the existing Flashcard/BoltCard path in
 
 Related repos:
 
-- [`lnflash/cashu-javacard`](https://github.com/lnflash/cashu-javacard) — the
+- [`lnflash/cashu-javacard`](https://github.com/lnflash/cashu-javacard): the
   applet, the APDU spec (`spec/APDU.md`), and `tools/cardctl` (the Python
   reference driver this module mirrors).
-- [`lnflash/cashu-client`](https://github.com/lnflash/cashu-client) — mint
+- [`lnflash/cashu-client`](https://github.com/lnflash/cashu-client): mint
   protocol in TypeScript: swap, melt, P2PK witnesses, DLEQ.
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `src/services/cashuCard.ts` | APDU protocol. **Transport-agnostic** — no NFC import, so it is testable anywhere. |
+| `src/services/cashuCard.ts` | APDU protocol. **Transport-agnostic**: no NFC import, so it is testable anywhere. |
 | `src/services/cashuCardNfc.ts` | `react-native-nfc-manager` IsoDep transport + session lifecycle. |
 | `src/screens/CashuCardDebug.tsx` | Bring-up harness. Dev builds only. |
 
 The split is deliberate: every byte of protocol logic is exercised in CI with a
 fake transceiver, and only the thin transport needs hardware.
 
-## A stranded session breaks BoltCard payments — read this before extending
+## A stranded session breaks BoltCard payments: read this before extending
 
-An open IsoDep session does not just leak: it silently swallows taps on the live
+An open IsoDep session leaks and also silently swallows taps on the live
 payment path. The mechanism:
 
 1. `NfcManager.requestTechnology(NfcTech.IsoDep)` sets a pending `techRequest`
-   in the native module. On Android it **never times out** — it stays pending
+   in the native module. On Android it **never times out**; it stays pending
    until a tag enters the field.
 2. While it is pending, the native `parseNfcIntent` claims every discovered tag
    for that session and returns early *without* emitting
    `NfcManagerDiscoverTag`.
 3. `FlashcardProvider` (`src/contexts/Flashcard.tsx`, mounted around the whole
-   tree in `App.tsx`) listens on exactly that event. No event, no `handleTag` —
+   tree in `App.tsx`) listens on exactly that event. No event, no `handleTag`:
    the merchant's BoltCard tap does nothing, anywhere in the app.
 
 So: start a read on the bring-up screen, don't tap, navigate away, and card
@@ -87,13 +87,13 @@ Two defences, both required:
 
 Note we are **not** in Android reader mode. `FlashcardProvider` already calls
 `registerTagEvent()` with no options at app start, so `isReaderModeEnabled` is
-false and `NfcManagerAndroid.requestTechnology` skips its own registration —
+false and `NfcManagerAndroid.requestTechnology` skips its own registration, so
 `enableReaderMode` is never called. The tap suppression above comes from the
 pending `techRequest`, not from reader mode.
 
 That distinction matters if Flash POS ever also wants to accept taps from Cashu
 *phone* wallets (HCE/NDEF, as [Numo](https://github.com/cashubtc/Numo) does):
-true reader mode and Host Card Emulation genuinely are mutually exclusive on
+true reader mode and Host Card Emulation are mutually exclusive on
 Android, so adopting reader mode later would add a second, separate constraint
 on top of this one.
 
@@ -106,7 +106,7 @@ on top of this one.
    gp -install applet/target/cashu-javacard-0.1.0.cap
    ```
 
-2. Confirm the card answers over a contact/PC-SC reader first — it isolates card
+2. Confirm the card answers over a contact/PC-SC reader first. It isolates card
    problems from phone problems:
 
    ```bash
@@ -152,23 +152,23 @@ first hardware session. An unmapped class falls back to its own name rather than
 a generic sentence.
 
 A cancel shows no error at all, on either platform, but for two different
-reasons — and both are needed:
+reasons, and both are needed:
 
-- **Android** — the in-app **Cancel read** button sets a flag the screen checks
+- **Android**: the in-app **Cancel read** button sets a flag the screen checks
   before painting the box.
-- **iOS** — that button is unreachable. `requestTechnology` presents a modal
+- **iOS**: that button is unreachable. `requestTechnology` presents a modal
   system scanning sheet over the app, so the only cancel available is the
   sheet's own, which rejects with `UserCancel` without touching the screen's
   flag. `isUserCancel(err)` catches that path.
 
-Suppressing on the flag alone leaves a false "Read cancelled" failure on iOS —
+Suppressing on the flag alone leaves a false "Read cancelled" failure on iOS,
 the exact platform where the operator has no other way to cancel.
 
 ## Platform requirements
 
-**Android** — nothing extra; IsoDep needs no manifest entry.
+**Android**: nothing extra; IsoDep needs no manifest entry.
 
-**iOS** — ISO 7816 requires the AID to be declared up front:
+**iOS**: ISO 7816 requires the AID to be declared up front:
 
 ```xml
 <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
@@ -183,8 +183,8 @@ the exact platform where the operator has no other way to cancel.
 ```
 
 Already added to `ios/flash_pos/Info.plist`. iOS will only `SELECT` identifiers
-on this list — an unlisted AID fails at `requestTechnology`, not at SELECT, so
-the error will not look like a card problem.
+on this list; an unlisted AID fails at `requestTechnology` instead of at SELECT,
+so the error will not look like a card problem.
 
 Both forms of each AID are declared because `selectApplet()` tries the full
 applet AID first (`F0 CASHUCARD 01`, the one Foxy's wallet selects) and falls
@@ -202,13 +202,13 @@ update".
 **Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
 protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 applet AID is tried
 first. Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"),
-any answer to it but `02xx 9000` or `6A82` — another version, an empty body, a
-`6E00` or `6999` — is **"This card needs an update"**. A card where neither
+any answer to it but `02xx 9000` or `6A82` (another version, an empty body, a
+`6E00` or `6999`) is **"This card needs an update"**. A card where neither
 2.0 AID reaches the applet (the full AID answers `6A82`, the package AID
 `6A82` or a `9000` with an empty body) is asked for the old AIDs (0.x, and Foxy's 1.x
 `F0 46 4F 58 59 43 41 52 44`, which `spec/APDU.md` also names); one that
 answers is an old card, and the terminal says **"This card needs an update"**
-and sends nothing else — no PIN pad, no write, no spend
+and sends nothing else: no PIN pad, no write, no spend
 (`CardNeedsUpdateError`). The old AIDs stay in the list for exactly that:
 dropping them would hide an old card from CoreNFC instead of telling its
 holder. A card that answers `6A82` to all of them is not an eCash card, and
@@ -217,7 +217,7 @@ operator (a release precondition), never by this app.
 
 Before anything is planned, `readAndPlan` refuses a card its owner has
 locked (`LOCK_CARD`, GET_INFO byte 10: "This card is locked and can't be used
-to pay." — it loads nothing more, so a payment's change could never go back
+to pay."). It loads nothing more, so a payment's change could never go back
 on), a card whose pieces are not format 4 (GET_INFO byte 8, GET_CARD byte 0:
 needs an update) and a card whose unit is not sat (GET_CARD byte 2). It plans
 from the short listing (`GET_PIECES` P2 = 3, `spec/APDU.md` "Payment Flow")
@@ -238,13 +238,13 @@ A charge is never a success without a signature that verifies against the
 payment: a SIGN answer that was lost (`needs-card`) or one that does not
 verify (`failed`) ends the charge as "Not confirmed yet", never "Paid", and
 never offers a re-charge. A swap the mint refuses outright after the card
-signed ends as "Not paid — the mint refused it" with Done only: the card has
+signed ends as "Not paid — the mint refused it" with Done only; the card has
 burned, so "Tap card again" would burn it a second time. Whenever the mint
 answers, the cached keysets and fees are refreshed before the card signs,
 exact bills included.
 
 > ✅ **Verified on iOS (2026-09-23).** The entitlement and AID list worked
-> against a real card on the first hardware session — both SELECT identifiers
+> against a real card on the first hardware session: both SELECT identifiers
 > resolved and the four read APDUs completed over CoreNFC. App Store
 > submission is still unexercised.
 
@@ -253,7 +253,7 @@ exact bills included.
 A charge's swap mints the customer's change as P2PK proofs locked to their
 card and writes them with `LOAD_PROOF`, one slot per power-of-two piece.
 Between the swap and the last load the change exists only in the terminal's
-memory — a `6A84` (no free slot) on the second piece, a tag lost mid-write or
+memory. A `6A84` (no free slot) on the second piece, a tag lost mid-write or
 a killed app would strand mint-signed proofs that only that card can spend.
 Two things stand in that window (`src/services/cashuCharge.ts`,
 `src/services/cashuSettlement.ts`):
@@ -261,7 +261,7 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
 - **Slot pre-flight, before the burn.** `readAndPlan` counts the card's empty
   slots and takes the first plan (cheapest change first) whose change fits
   (`selectFittingPlan`). Change still owed from an earlier charge is counted
-  first — as much of it as the card has room for — but the bill wins: when
+  first (as much of it as the card has room for), but the bill wins: when
   no plan fits beside the owed pieces, the bill takes the empties and only
   the owed pieces with room left are written this tap; the rest stays `owed`
   on disk for a later tap and never refuses a charge the card can physically
@@ -269,39 +269,39 @@ Two things stand in that window (`src/services/cashuCharge.ts`,
   ENG-630 came from must be able to pay again). `executeCharge` re-checks
   the store before writing owed change, and any piece the store says was
   already attempted is reconciled against the card first (`GET_CHANGE`,
-  `reconcileOwedChange`) — a LOAD whose answer was lost leaves the piece on
-  the card and still `owed` on disk — so a PIN-flow retry never re-sends a
+  `reconcileOwedChange`). A LOAD whose answer was lost leaves the piece on
+  the card and still `owed` on disk, so a PIN-flow retry never re-sends a
   piece the first attempt landed, whether the store heard the answer or not
   (and a 2.0 card answers a LOAD of a piece it already holds with `6A94`,
   which the terminal reads as landed). A first attempt skips the re-read. A
   card with no room for the plan's change is refused with "this card is
   full: …" before it is asked to sign, and the screen says
-  nothing was taken — and nothing else: a spend leaves its slot `spent`, not
+  nothing was taken, and nothing else: a spend leaves its slot `spent`, not
   free, and nothing in the app clears spent slots yet (ENG-631).
 - **The owed-change store** (`@cashu_owed_change`, a `{v, entries}` envelope
   separate from the settlement queue; v2 since protocol 2.0). On a 2.0 card
   the change is the card's own (`SPEND_ALL_CHANGE`): `executeCharge` records
-  the mint's half of every change piece — the blinded message `B_`, the blind
-  signature `C_` and its DLEQ — as `owed` **before** the first `LOAD_PROOF`,
+  the mint's half of every change piece (the blinded message `B_`, the blind
+  signature `C_` and its DLEQ) as `owed` **before** the first `LOAD_PROOF`,
   then finishes each piece from the card's opening (`GET_CHANGE`: nonce, r,
   date) and loads it with the mint's proof, marking each `written` as the
   card answers. Whatever is still `owed` is finished on the card's next tap:
-  `reconcileOwedChange` reads the card's openings — a piece whose opening is
+  `reconcileOwedChange` reads the card's openings. A piece whose opening is
   gone is on the card (the card lets an opening go only once its piece
   lands) and is marked written; the rest are opened (C = C_ − r·K, with the
-  mint keys kept on the terminal) — then `writeOwedChange` loads them,
+  mint keys kept on the terminal), then `writeOwedChange` loads them,
   counting each attempt (`markOwedChangeSending`) BEFORE its `LOAD_PROOF`
   goes out. In a charge that happens after the PIN verify and before the
   burn; on the keypad's balance read a PIN-less card, or one whose GET_INFO
   says the change may go on with no PIN (the tap after a payment), takes it
   in the same session, and any other PIN card is told what is waiting
-  (`CashuCardBalance`) — a LOAD the card would refuse for want of the PIN is
+  (`CashuCardBalance`). A LOAD the card would refuse for want of the PIN is
   never sent. The balance tap is a read: a refused or lost write there never
   vetoes it, the screen opens with what is still waiting. 0.x change
   (terminal-made SIG_INPUTS pieces) is kept on record and never written to a
   2.0 card.
 - **When the record itself did not land** (the keychain refused the write),
-  the loads still run — the card is the only home left — and a load that
+  the loads still run (the card is the only home left), and a load that
   then fails is thrown under `writing change to card (unrecorded)`, so the
   screen shows the card's reason and never claims the change is saved.
 
@@ -310,7 +310,7 @@ The store is the customer's money, not the merchant's: `pendingExposure`,
 unreadable store throws rather than answering "nothing owed"; corrupt bytes
 are quarantined under `@cashu_owed_change_corrupt:<hash>` and the reader then
 answers with the entries that parsed (a store that could not be quarantined
-throws) — one bad element must not refuse every Flashcard charge on the
+throws). One bad element must not refuse every Flashcard charge on the
 terminal. Only `written` entries are ever evicted, and unknown fields from a
 newer build ride through a write untouched. P2PK change for a card that never
 returns stays in the store; nothing else can spend it.

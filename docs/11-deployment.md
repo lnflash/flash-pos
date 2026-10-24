@@ -38,7 +38,7 @@ NODE_ENV=staging
 DEBUG=true
 ```
 
-`FLASH_GRAPHQL_WS_URI` must point at the `ws.` host, not `api.` — the `api.` host refuses the websocket handshake and Lightning payment subscriptions never fire. Real hosts per environment are listed in [ENVIRONMENT.md](ENVIRONMENT.md).
+`FLASH_GRAPHQL_WS_URI` must point at the `ws.` host. The `api.` host refuses the websocket handshake and Lightning payment subscriptions never fire. Real hosts per environment are listed in [ENVIRONMENT.md](ENVIRONMENT.md).
 
 ### Build Scripts
 
