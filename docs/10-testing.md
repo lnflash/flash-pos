@@ -518,10 +518,10 @@ mvn -B -f tools/cardsim/pom.xml package -DskipTests
 java -jar tools/cardsim/target/cardsim.jar --port 9876
 
 # 2. The mint (Python 3.10+; the constraints pin Nutshell's own lockfile, but
-#    the breez-sdk-spark release it pins, which PyPI no longer has)
+#    breez-sdk-spark, whose import a stand-in meets: see the constraints file)
 python3 -m venv /tmp/nutshell && \
   /tmp/nutshell/bin/pip install -r scripts/e2e-flashcard/nutshell-constraints.txt && \
-  /tmp/nutshell/bin/pip install breez-sdk-spark==0.17.0 && \
+  cp scripts/e2e-flashcard/breez_sdk_spark.py "$(/tmp/nutshell/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/" && \
   /tmp/nutshell/bin/pip install --no-deps cashu==0.20.3
 mkdir -p /tmp/mint && cd /tmp/mint && cat > .env <<'ENV'
 MINT_LISTEN_PORT=3338
