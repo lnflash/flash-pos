@@ -37,6 +37,7 @@ import {
   listSettlements,
   type SettlementInput,
 } from '../../src/services/cashuSettlement';
+import {setSecure} from '../../src/services/secureStorage';
 import {
   FakeCard2,
   KEYSET_ID,
@@ -123,6 +124,101 @@ function paymentArgs(
 }
 
 describe('spendAll', () => {
+  it('persists the exact merchant recovery intent before SIGN can consume any input', async () => {
+    const card = cardWithPieces([8, 4]);
+    const args = paymentArgs(card, [0, 1], 10);
+    const tx = args.transceive;
+    args.transceive = async apdu => {
+      if (apdu[1] === 0x24) {
+        const [saved] = await listSettlements();
+        expect(saved).toMatchObject({
+          status: 'prepared',
+          inputs: args.inputs,
+          merchantBlinding: args.merchant.blinding,
+        });
+        expect(saved.outputs).toHaveLength(3);
+        expect(saved.message).toBe(
+          bytesToHex(sigAllMessage(saved.inputs, saved.outputs)),
+        );
+        expect(saved.witness).toBeUndefined();
+      }
+      return tx(apdu);
+    };
+    const result = await spendAll(args);
+    expect(result.entry.status).toBe('pending');
+    await expect(listSettlements()).resolves.toHaveLength(1);
+  });
+
+  it('a refused intent write prevents SIGN and leaves every card input unspent', async () => {
+    const card = cardWithPieces([8]);
+    jest
+      .mocked(setSecure)
+      .mockRejectedValueOnce(new Error('intent write denied'));
+    await expect(spendAll(paymentArgs(card, [0], 8))).rejects.toThrow(
+      'intent write denied',
+    );
+    expect(card.insSent).not.toContain(0x24);
+    expect(card.burnCount).toBe(0);
+  });
+
+  it('keeps a preparation after consumption if saving the witness fails, then recovers the same payment', async () => {
+    const card = cardWithPieces([8]);
+    const args = paymentArgs(card, [0], 8);
+    args.onSign = () => {
+      jest
+        .mocked(setSecure)
+        .mockRejectedValueOnce(new Error('witness write denied'));
+    };
+    await expect(spendAll(args)).rejects.toThrow('witness write denied');
+    expect(card.burnCount).toBe(1);
+    const [prepared] = await listSettlements();
+    expect(prepared.status).toBe('prepared');
+    expect(prepared.merchantBlinding).toEqual(args.merchant.blinding);
+    await expect(hasUnsettledForCard(card.pubkey)).resolves.toBe(true);
+    const recovered = await recoverNeedsCard({
+      transceive: card.transceive,
+      cardKey: await proven(card),
+    });
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      id: prepared.id,
+      status: 'pending',
+      outputs: prepared.outputs,
+    });
+    expect(card.burnCount).toBe(1);
+  });
+
+  it('reconciles an unchanged unspent preparation after stopping before SIGN', async () => {
+    const card = cardWithPieces([8]);
+    await expect(
+      spendAll({
+        ...paymentArgs(card, [0], 8),
+        onSign: () => {
+          throw new Error('stopped');
+        },
+      }),
+    ).rejects.toThrow('stopped');
+    expect((await listSettlements())[0].status).toBe('prepared');
+    await recoverNeedsCard({
+      transceive: card.transceive,
+      cardKey: await proven(card),
+    });
+    await expect(listSettlements()).resolves.toEqual([]);
+    expect(card.insSent).not.toContain(0x24);
+    await expect(spendAll(paymentArgs(card, [0], 8))).resolves.toMatchObject({
+      entry: {status: 'pending'},
+    });
+    expect(card.burnCount).toBe(1);
+  });
+
+  it('rejects merchant recovery material that cannot open its output before touching the card', async () => {
+    const card = cardWithPieces([8]);
+    const args = paymentArgs(card, [0], 8);
+    args.merchant.blinding[0].secret = 'different secret';
+    await expect(spendAll(args)).rejects.toThrow('does not match');
+    expect(card.sent).toHaveLength(0);
+  });
+
   it("pays with one signature over every piece, the merchant's outputs and the card's change, and records ONE pending entry", async () => {
     const card = cardWithPieces([8, 16, 4]);
     const args = paymentArgs(card, [0, 1], 19);

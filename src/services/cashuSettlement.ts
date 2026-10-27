@@ -135,7 +135,8 @@ export const MAX_QUEUE_ENTRIES = 200;
  * entries lacking the v2 field under a v2 tag, and the v2 validator drops them
  * as corrupt, which is worse.)
  */
-export const QUEUE_SCHEMA_VERSION = 2;
+// v3 adds pre-SIGN preparations; v0/v1/v2 records retain their existing fields.
+export const QUEUE_SCHEMA_VERSION = 3;
 
 /**
  * Stand-in `mintUrl` for a `v0` entry, which predates the field.
@@ -175,6 +176,8 @@ export function __setPersistDelay(
 }
 
 export type SettlementStatus =
+  /** Frozen before SIGN; it may have consumed value if the process stopped. */
+  | 'prepared'
   /** Witness held; the mint has not confirmed. Retries on its own. */
   | 'pending'
   /**
@@ -564,6 +567,7 @@ interface QueueRead {
 }
 
 const SETTLEMENT_STATUSES: ReadonlySet<string> = new Set<SettlementStatus>([
+  'prepared',
   'pending',
   'submitting',
   'needs-card',
@@ -610,7 +614,9 @@ function isSettlementEntry(value: unknown): value is SettlementEntry {
   // A SIG_ALL witness is bound to its outputs and its message: an entry
   // without them could never be resubmitted, nor its witness checked.
   return (
-    e.sigflag === 'SIG_INPUTS' || (e.outputs.length > 0 && isText(e.message))
+    (e.status !== 'prepared' ||
+      (e.sigflag === 'SIG_ALL' && e.witness === undefined)) &&
+    (e.sigflag === 'SIG_INPUTS' || (e.outputs.length > 0 && isText(e.message)))
   );
 }
 
@@ -1029,6 +1035,7 @@ export async function listSettlements(): Promise<SettlementEntry[]> {
 
 /** Entries still owed to the merchant — what `pendingExposure` totals. */
 export const isOutstanding = (e: SettlementEntry): boolean =>
+  e.status === 'prepared' ||
   e.status === 'pending' ||
   e.status === 'submitting' ||
   e.status === 'needs-card';
@@ -1099,6 +1106,25 @@ export async function recordSpend(
   record: SpendRecord,
   now: number,
 ): Promise<SettlementEntry> {
+  return saveSpend(record, now, record.witness ? 'pending' : 'needs-card');
+}
+
+/** Save the exact recovery material before SIGN; an existing intent needs reconciliation. */
+export async function prepareSpend(
+  record: SpendRecord,
+  now: number,
+): Promise<SettlementEntry> {
+  if (record.sigflag !== 'SIG_ALL' || record.witness !== undefined) {
+    throw new Error('only an unsigned SIG_ALL payment may be prepared');
+  }
+  return saveSpend(record, now, 'prepared');
+}
+
+async function saveSpend(
+  record: SpendRecord,
+  now: number,
+  status: 'prepared' | 'pending' | 'needs-card',
+): Promise<SettlementEntry> {
   if (!record.secret) {
     // Without the secret there is nothing to submit and nothing to re-sign.
     // Refusing here means the payment is declined instead of silently
@@ -1125,6 +1151,7 @@ export async function recordSpend(
       );
     }
   }
+  record = JSON.parse(JSON.stringify(record)) as SpendRecord;
   const id = settlementId(record);
   const entry: SettlementEntry = {
     ...record,
@@ -1142,8 +1169,8 @@ export async function recordSpend(
     outputs: record.outputs ?? [],
     merchantBlinding: record.merchantBlinding ?? [],
     id,
-    // No witness means the card burned the payment without returning a signature.
-    status: record.witness ? 'pending' : 'needs-card',
+    // A preparation is uncertain until SIGN or same-card reconciliation.
+    status,
     createdAt: now,
     updatedAt: now,
     attempts: 0,
@@ -1152,6 +1179,11 @@ export async function recordSpend(
   return withQueue(async ({entries}) => {
     const existing = entries.find(e => e.id === id);
     if (existing) {
+      if (status === 'prepared') {
+        throw new Error(
+          'this saved payment must be reconciled before another signing attempt',
+        );
+      }
       // Already durably recorded — that is the postcondition this function
       // promises, so hand back what is on disk rather than writing a twin
       // (`update` patches only the first, so the second would stay pending
@@ -1163,6 +1195,40 @@ export async function recordSpend(
     await writeQueue(evict(next));
     return entry;
   });
+}
+
+/** Only a known, unconsumed preparation may be discarded by its caller. */
+export async function discardPreparedSpend(id: string): Promise<void> {
+  return withQueue(async ({entries}) => {
+    await writeQueue(
+      entries.filter(e => e.id !== id || e.status !== 'prepared'),
+    );
+  });
+}
+
+/** Commit the observed SIGN result without ever replacing its frozen recovery data. */
+export async function completePreparedSpend(
+  id: string,
+  witness: string | undefined,
+  now: number,
+): Promise<SettlementEntry> {
+  const result = await update(id, e => {
+    if (e.status !== 'prepared') {
+      throw new Error(
+        'payment preparation changed before its SIGN result was saved',
+      );
+    }
+    return {
+      ...e,
+      witness,
+      status: witness ? 'pending' : 'needs-card',
+      updatedAt: now,
+    };
+  });
+  if (!result) {
+    throw new Error('payment preparation is missing');
+  }
+  return result;
 }
 
 async function update(
@@ -1273,7 +1339,10 @@ export async function attachRecoveredWitness(
   return withQueue(async ({entries}) => {
     const idx = entries.findIndex(e => e.id === id);
     // `update()` cannot express a refusal, so the branch has to live above it.
-    if (idx === -1 || entries[idx].status !== 'needs-card') {
+    if (
+      idx === -1 ||
+      !['prepared', 'needs-card'].includes(entries[idx].status)
+    ) {
       return null;
     }
     const next: SettlementEntry = {
@@ -1351,7 +1420,9 @@ export async function pendingExposure(): Promise<Exposure> {
   return {
     totals,
     count: outstanding.length,
-    needsCard: entries.filter(e => e.status === 'needs-card').length,
+    needsCard: entries.filter(
+      e => e.status === 'needs-card' || e.status === 'prepared',
+    ).length,
     failed: entries.filter(e => e.status === 'failed' && !e.acknowledgedAt)
       .length,
     failedSat: entries
@@ -1408,7 +1479,9 @@ export async function recoverableForCard(
     );
   }
   return entries.filter(
-    e => e.cardPubkey === cardPubkey && e.status === 'needs-card',
+    e =>
+      e.cardPubkey === cardPubkey &&
+      (e.status === 'needs-card' || e.status === 'prepared'),
   );
 }
 
