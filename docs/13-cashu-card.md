@@ -2,6 +2,23 @@
 
 ## Status
 
+### Pre-sign recovery preparation (2026-10-27)
+
+The SIG_ALL charge stores its exact inputs, outputs, message and merchant-private
+openings before `SPEND_ALL_SIGN`. A failed preparation write prevents signing.
+The queue's schema 3 adds `prepared`: the payment may have consumed value if the
+process stopped, so it stays visible and blocks unsafe cleanup until reconciled.
+The merchant approves only after a verified witness is durably attached.
+
+On a later tap of the same AUTH-proven card, recovery discards a preparation only
+when every original input is unchanged and unspent. Otherwise it attempts the
+existing last-signature recovery without signing another payment. Definite card
+refusals abandon only the unconsumed preparation. Older queue records retain
+their existing data and recovery behavior.
+
+This changes merchant persistence ordering; it does not enable card-carried relay
+or claim merchant proceeds have been recovered from the mint.
+
 > **2026-09-26: this document's settlement and NFC sections are superseded by
 > [`14-cashu-card-milestone-2026-09-26.md`](./14-cashu-card-milestone-2026-09-26.md)**.
 > The first end-to-end customer payment ran on Android, and the charge flow,

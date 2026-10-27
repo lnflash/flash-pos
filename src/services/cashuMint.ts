@@ -513,6 +513,35 @@ export interface ChargeOutputs {
   blinding: MerchantBlinding[];
 }
 
+/** Validate that the private recovery material actually opens each merchant output. */
+export function validateChargeOutputs(merchant: ChargeOutputs): void {
+  if (
+    !merchant.outputs.length ||
+    merchant.outputs.length !== merchant.blinding.length
+  ) {
+    throw new Error('merchant outputs are missing their recovery openings');
+  }
+  for (let i = 0; i < merchant.outputs.length; i++) {
+    const output = merchant.outputs[i];
+    const opening = merchant.blinding[i];
+    if (
+      !/^[0-9a-f]{64}$/i.test(opening.r) ||
+      !opening.secret ||
+      !Number.isSafeInteger(output.amount) ||
+      output.amount <= 0
+    ) {
+      throw new Error('merchant recovery opening is invalid');
+    }
+    const {B_} = blindMessage(
+      utf8ToBytes(opening.secret),
+      BigInt('0x' + opening.r),
+    );
+    if (bytesToHex(B_.toBytes(true)) !== output.B_.toLowerCase()) {
+      throw new Error('merchant recovery opening does not match its output');
+    }
+  }
+}
+
 /**
  * The merchant's outputs for a charge, blinded locally (no network): one
  * random-secret output per power-of-two piece of `merchantSat`, in

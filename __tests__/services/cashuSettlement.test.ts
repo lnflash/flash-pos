@@ -2076,7 +2076,7 @@ describe('schema v2: a payment under one SIG_ALL witness', () => {
       message: 'ee'.repeat(32),
     });
     expect(stored()[0].outputs).toHaveLength(3);
-    expect(JSON.parse(mockStore[QUEUE_KEY]).v).toBe(2);
+    expect(JSON.parse(mockStore[QUEUE_KEY]).v).toBe(QUEUE_SCHEMA_VERSION);
   });
 
   it('refuses a SIG_ALL record without the outputs or the message its witness signs', async () => {
@@ -2294,12 +2294,12 @@ describe('schema v2 migration (v1 → v2)', () => {
     expect(JSON.parse(mockStore[QUEUE_KEY]).v).toBe(1);
   });
 
-  it('the first write stamps v2 with every entry migrated', async () => {
+  it('the first write stamps the current schema with every entry migrated', async () => {
     const v1 = await v1Queue();
     storeRaw(v1, 1);
     await record({slot: 9, amount: 1});
     const blob = JSON.parse(mockStore[QUEUE_KEY]);
-    expect(blob.v).toBe(2);
+    expect(blob.v).toBe(QUEUE_SCHEMA_VERSION);
     expect(blob.entries).toHaveLength(v1.length + 1);
     expect(
       blob.entries.every((e: SettlementEntry) => Array.isArray(e.inputs)),

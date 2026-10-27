@@ -10,11 +10,10 @@
  *      gives the payment up
  *   2. SPEND_ALL_BEGIN (the places), SPEND_ALL_OUTPUTS (the merchant's),
  *      SPEND_ALL_CHANGE (the card's own change, one per power-of-two piece)
- *   3. the SIG_ALL message, rebuilt here from the same secrets and outputs
+ *   3. the exact SIG_ALL intent and merchant openings durably saved
  *   4. SPEND_ALL_SIGN — every place burned in the commit that releases the
  *      signature
- *   5. the signature verified against the message, then `recordSpend` once
- *      for the whole payment — the durable record that lets the UI say "paid"
+ *   5. the signature verified and attached to that same saved intent
  *
  * Step 4 is irreversible. If its answer is lost, the card is asked which
  * places are spent: none → nothing burned, the error surfaces; spent → the
@@ -24,8 +23,8 @@
  * card that ANSWERS its SIGN with a signature that does not verify (and
  * gives none that does again) has nothing to recover: that payment is
  * recorded `failed`, for a human.
- * Recording a `needs-card` entry for places that never burned would show the
- * merchant an exposure that does not exist.
+ * An interrupted preparation is uncertain until the same proven card is
+ * inspected. Unchanged, unspent inputs let recovery abandon that preparation.
  */
 import {bytesToHex} from '@noble/hashes/utils';
 
@@ -34,6 +33,7 @@ import {
   CardError,
   CardProtocolError,
   getSlotStatuses,
+  getProof,
   isProvenOver,
   setHeader,
   spendAllAgain,
@@ -48,6 +48,7 @@ import {
 } from './cashuCard';
 import {
   createSettlementAdapter,
+  validateChargeOutputs,
   sigAllMessage,
   verifyCardSignature,
   type ChargeOutputs,
@@ -55,9 +56,11 @@ import {
 } from './cashuMint';
 import {
   attachRecoveredWitness,
+  completePreparedSpend,
+  discardPreparedSpend,
   drainQueue,
   markFailed,
-  recordSpend,
+  prepareSpend,
   recoverableForCard,
   type DrainResult,
   type SettlementEntry,
@@ -147,17 +150,16 @@ export interface SpendAllResult {
   signatureInvalid: boolean;
 }
 
-/** Record the payment the card has burned; `witness` absent = `needs-card`. */
-function recordPayment(
+/** Freeze the exact submission and merchant openings before SIGN. */
+function preparePayment(
   args: SpendAllArgs,
   outputs: SettlementOutput[],
   cardChangeIndex: number | undefined,
   message: string,
-  witness: string | undefined,
   now: number,
 ): Promise<SettlementEntry> {
   const first = args.inputs[0];
-  return recordSpend(
+  return prepareSpend(
     {
       cardPubkey: args.cardPubkey,
       slot: first.slot,
@@ -174,7 +176,6 @@ function recordPayment(
       merchantBlinding: args.merchant.blinding,
       ...(cardChangeIndex === undefined ? {} : {cardChangeIndex}),
       message,
-      ...(witness ? {witness} : {}),
     },
     now,
   );
@@ -193,6 +194,7 @@ function recordPayment(
  */
 export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
   const {transceive, inputs, merchant, changeSat, cardPubkey} = args;
+  validateChargeOutputs(merchant);
   const now = args.now ?? Date.now();
   if (inputs.length === 0) {
     throw new CardProtocolError('a payment needs at least one piece');
@@ -229,11 +231,18 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
     outputs.push({amount, B_, keysetId: args.changeKeysetId});
   }
   const message = bytesToHex(sigAllMessage(inputs, outputs));
-  const signedSwap = (witness: string): SignedSwap => ({
-    inputs,
-    witness,
+  const prepared = await preparePayment(
+    args,
     outputs,
-    merchantBlinding: merchant.blinding,
+    cardChangeIndex,
+    message,
+    now,
+  );
+  const signedSwap = (witness: string): SignedSwap => ({
+    inputs: prepared.inputs,
+    witness,
+    outputs: prepared.outputs,
+    merchantBlinding: prepared.merchantBlinding,
     ...(cardChangeIndex === undefined ? {} : {cardChangeIndex}),
   });
 
@@ -255,10 +264,16 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
     // The card's own refusal is answered before anything is burned (the
     // commit is the last thing SIGN does). Only a lost answer is ambiguous.
     if (error instanceof CardError) {
+      // A definite card refusal precedes consumption. A failed discard keeps
+      // the conservative preparation for same-card reconciliation.
+      await discardPreparedSpend(prepared.id).catch(() => {});
       throw error;
     }
     const statuses = await getSlotStatuses(transceive).catch(() => null);
     if (!statuses || !slots.some(slot => statuses[slot] === 'spent')) {
+      if (statuses && (await preparedInputsUnspent(transceive, prepared))) {
+        await discardPreparedSpend(prepared.id).catch(() => {});
+      }
       throw error;
     }
   }
@@ -278,14 +293,7 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
       signature = null;
     }
   }
-  let entry = await recordPayment(
-    args,
-    outputs,
-    cardChangeIndex,
-    message,
-    signature ?? undefined,
-    now,
-  );
+  let entry = prepared;
   if (!signature && refusedSignature) {
     // Not `needs-card`: there is no lost answer to recover, only a card that
     // will not sign this payment. Kept for a human, never drained (it has no
@@ -299,12 +307,47 @@ export async function spendAll(args: SpendAllArgs): Promise<SpendAllResult> {
         error instanceof Error ? error.message : String(error),
       );
     }
+  } else {
+    entry = await completePreparedSpend(
+      prepared.id,
+      signature ?? undefined,
+      now,
+    );
   }
   return {
     entry,
     signed: signature ? signedSwap(signature) : null,
     signatureInvalid: !signature && refusedSignature,
   };
+}
+
+/** A preparation can be abandoned only after every original input is observed unchanged and unspent. */
+async function preparedInputsUnspent(
+  tx: Transceiver,
+  entry: SettlementEntry,
+): Promise<boolean> {
+  try {
+    for (const input of entry.inputs) {
+      const proof = await getProof(tx, input.slot);
+      const secret = JSON.parse(input.secret) as [string, {tags: string[][]}];
+      const locktime = secret[1].tags.find(tag => tag[0] === 'locktime');
+      const date = locktime ? Number(locktime[1]) : 0;
+      if (
+        proof.status !== 'unspent' ||
+        proof.nonce !== input.nonce ||
+        proof.C !== input.C ||
+        proof.amount !== input.amount ||
+        !Number.isSafeInteger(date) ||
+        proof.date !== date ||
+        proof.keysetId !== input.keysetId.slice(0, 16)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -355,6 +398,20 @@ export async function recoverNeedsCard({
     return [];
   }
   if (orphaned.length === 0) {
+    return [];
+  }
+  for (const entry of orphaned) {
+    if (
+      entry.status === 'prepared' &&
+      (await preparedInputsUnspent(transceive, entry))
+    ) {
+      await discardPreparedSpend(entry.id);
+    }
+  }
+  orphaned = (await recoverableForCard(cardPubkey)).filter(
+    e => e.sigflag === 'SIG_ALL' && e.message,
+  );
+  if (!orphaned.length) {
     return [];
   }
   let signature: string;
