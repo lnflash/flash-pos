@@ -44,6 +44,7 @@
  *    serialising promise chain, so a background drain and a fresh tap can never
  *    interleave read-modify-write and lose one of the two.
  */
+import {assertFreshTillSecrets} from './cashuTillStore';
 import {sha256} from '@noble/hashes/sha256';
 import {bytesToHex, utf8ToBytes} from '@noble/hashes/utils';
 
@@ -189,9 +190,9 @@ export type SettlementStatus =
    * the request is indistinguishable from one that never arrived. It does
    * **not** mean the mint saw the proof: the claim write lands first, so a
    * process killed here leaves an entry `submitting` that never reached the
-   * network at all. Only a `ProofAlreadySpentError` — the mint itself saying it
-   * holds this proof — or a `checkState` of `spent` turns that into a
-   * settlement. See `drainQueue`.
+   * network at all. An input-consumption report requires recovery of the
+   * original merchant outputs and durable accounting before completion.
+   * See `drainQueue`.
    */
   | 'submitting'
   /**
@@ -453,11 +454,8 @@ export class PermanentSettlementError extends Error {
  * a malformed proof, not a bad `C` from a flaky NFC read, not a rotated keyset,
  * not a generic 400.
  *
- * The distinction is load-bearing. For an entry found `submitting` on disk this
- * is the only signal that separates "the mint already took it" (money received,
- * settle) from "this proof was never valid" (money gone, fail). Raising it
- * loosely books money that left the card and reached no mint as received, and
- * `pendingExposure()` drops to zero over a loss the merchant is never shown.
+ * This identifies consumed inputs. The drain still requires successful output
+ * recovery before reporting merchant settlement.
  */
 export class ProofAlreadySpentError extends PermanentSettlementError {
   constructor(message: string) {
@@ -1117,6 +1115,12 @@ export async function prepareSpend(
   if (record.sigflag !== 'SIG_ALL' || record.witness !== undefined) {
     throw new Error('only an unsigned SIG_ALL payment may be prepared');
   }
+  await assertFreshTillSecrets(
+    record.merchantBlinding!.map(b => ({
+      secret: b.secret,
+      mintUrl: record.mintUrl,
+    })),
+  );
   return saveSpend(record, now, 'prepared');
 }
 
@@ -1190,6 +1194,19 @@ async function saveSpend(
       // forever and be submitted twice) or throwing, which the caller is
       // documented to read as "do not approve".
       return existing;
+    }
+    if (status === 'prepared') {
+      const secrets = new Set(entry.merchantBlinding.map(b => b.secret));
+      if (
+        secrets.size !== entry.merchantBlinding.length ||
+        entries.some(
+          e =>
+            e.mintUrl.replace(/\/$/, '') === entry.mintUrl.replace(/\/$/, '') &&
+            e.merchantBlinding.some(b => secrets.has(b.secret)),
+        )
+      ) {
+        throw new Error('merchant output secret has already been used');
+      }
     }
     const next = [...entries, entry];
     await writeQueue(evict(next));
@@ -1515,26 +1532,14 @@ export interface DrainResult {
   skipped: boolean;
 }
 
-/** Optional collaborators for a drain. */
+/** Collaborators for reconciling an already-consumed input set. */
 export interface DrainOptions {
-  /**
-   * NUT-07 `/v1/checkstate` on the proof's `Y`, if the caller can offer one.
-   *
-   * Consulted for every entry found `submitting` on disk, where the outcome of
-   * an earlier attempt is genuinely unknown — a killed process, a post-swap
-   * write that would not land, or any ambiguous rejection from `swap`. It is
-   * the honest way to resolve that: ask the mint whether it holds the proof
-   * instead of inferring it from the shape of a later rejection. Worth supplying
-   * for that reason: without it an entry that took a timeout stays `submitting`
-   * until the mint answers `11001` to a resubmission. `spent` settles the entry without
-   * submitting anything; `unspent` means the earlier run never reached the mint,
-   * so an ordinary submission follows and a permanent rejection of it is a real
-   * failure. Anything else — including a throw — leaves the outcome unknown and
-   * the entry is submitted with its `submitting` inference intact.
-   */
+  /** Checks every original input. Input state alone cannot book merchant funds. */
   checkState?: (
     entry: SettlementEntry,
   ) => Promise<'spent' | 'unspent' | 'unknown'>;
+  /** Resolves only after original outputs/change and replay-safe accounting are durable. */
+  recover?: (entry: SettlementEntry) => Promise<void>;
 }
 
 /**
@@ -1623,12 +1628,15 @@ async function settleConfirmed(
 /**
  * Try to settle every entry holding a witness.
  *
- * `swap` resolves on mint confirmation, and rejects otherwise. It receives the
+ * `swap` resolves after merchant inventory and owed change are durable, and
+ * rejects otherwise. It receives the
  * whole entry and must submit to `entry.mintUrl` — the configured mint can have
  * changed since the burn. Reject with a `PermanentSettlementError` to mark an
  * entry failed instead of retrying it forever, and with a
  * `ProofAlreadySpentError` — and only for a NUT-07 `SPENT` / `11001` response —
- * when the mint says it already holds the proof. Any *other* rejection leaves
+ * when the mint says it already holds the proof. Consumption invokes
+ * `options.recover`; missing or failed recovery retains unresolved work.
+ * Any *other* rejection leaves
  * the entry `submitting`, because the claim write lands before the call and the
  * outcome is therefore unknown by construction; reject with a
  * `TransportSettlementError` to say the request provably never left the device
@@ -1664,6 +1672,29 @@ export async function drainQueue(
     return result;
   }
   draining = true;
+  async function recoverConsumed(entry: SettlementEntry): Promise<void> {
+    try {
+      if (!options.recover) {
+        throw new Error('merchant output recovery is required');
+      }
+      await options.recover(entry);
+    } catch (error) {
+      const marked = await markAttemptFailed(
+        entry.id,
+        error instanceof Error ? error.message : String(error),
+        now,
+        'submitting',
+      );
+      if (marked) {
+        result.stillPending += 1;
+      } else {
+        result.lost += 1;
+      }
+      return;
+    }
+    mintConfirmed.add(entry.id);
+    await settleConfirmed(entry.id, now, result);
+  }
   try {
     const {entries} = await loadQueue();
 
@@ -1693,10 +1724,8 @@ export async function drainQueue(
 
       if (options.checkState) {
         // Ask the mint what actually happened rather than inferring it later.
-        // Pending entries get the same question: a proof settled out-of-band
-        // (an operator recovery, a second terminal) resubmits into a 11001
-        // that the pending path books as a failure — the check resolves it as
-        // the money-received outcome it is.
+        // Pending entries may already have been relayed elsewhere. A spent
+        // answer still requires the original outputs to be recovered and booked.
         let state: 'spent' | 'unspent' | 'unknown';
         try {
           state = await options.checkState(entry);
@@ -1704,9 +1733,11 @@ export async function drainQueue(
           state = 'unknown';
         }
         if (state === 'spent') {
-          mintConfirmed.add(entry.id);
-          await settleConfirmed(entry.id, now, result);
+          await recoverConsumed(entry);
           continue;
+        }
+        if (state === 'unknown') {
+          outcomeUnknown = true;
         }
         if (state === 'unspent') {
           // The mint never took it, so a permanent rejection of the submission
@@ -1739,15 +1770,22 @@ export async function drainQueue(
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         if (error instanceof PermanentSettlementError) {
-          if (outcomeUnknown && error instanceof ProofAlreadySpentError) {
-            // The mint has identified this proof and says it holds it. That is
-            // money received; markFailed would write off money the merchant
-            // actually got. Every *other* permanent rejection takes the failure
-            // branch below even here — a claim written before a process died
-            // may never have reached any mint, and a proof that is simply
-            // invalid must not be booked as settled.
-            mintConfirmed.add(entry.id);
-            await settleConfirmed(entry.id, now, result);
+          if (error instanceof ProofAlreadySpentError) {
+            await recoverConsumed(entry);
+            continue;
+          }
+          if (outcomeUnknown) {
+            const held = await markAttemptFailed(
+              entry.id,
+              reason,
+              now,
+              'submitting',
+            );
+            if (held) {
+              result.stillPending += 1;
+            } else {
+              result.lost += 1;
+            }
             continue;
           }
           const marked = await markFailed(entry.id, reason, now);
@@ -1762,10 +1800,8 @@ export async function drainQueue(
           // the swap POST looks the same whether the mint processed it or never
           // saw it. Reverting to 'pending' asserts the mint never saw the proof,
           // and the next drain would then read the `11001 Token already spent`
-          // it gets back as a real failure — writing off money the mint holds
-          // and the merchant was paid. So the entry stays 'submitting' and
-          // `options.checkState` or a later `ProofAlreadySpentError` resolves
-          // it. The one exception is an adapter that can *prove* the request
+          // it gets back without its recovery context. Keep 'submitting'; a
+          // later consumption report must still recover merchant outputs. The one exception is an adapter that can *prove* the request
           // never left the device, and only if the outcome was not already
           // unknown from an earlier attempt.
           const provablyUnsent =

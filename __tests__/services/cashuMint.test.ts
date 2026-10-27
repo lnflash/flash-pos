@@ -19,6 +19,7 @@ import {utf8ToBytes} from '@noble/hashes/utils';
 import {
   __resetReconcileThrottle,
   __resetWalletCache,
+  appendSettledProofsTill,
   buildCardP2PKSecret,
   buildCardSigAllSecret,
   cachedKeysets,
@@ -76,6 +77,7 @@ jest.mock('../../src/services/secureStorage', () => ({
 type WalletMocks = {
   loadMint: jest.Mock;
   mintSwap: jest.Mock;
+  mintRestore: jest.Mock;
   getKeysets: jest.Mock;
   ensureKeysetKeys: jest.Mock;
   prepareSwapToSend: jest.Mock;
@@ -91,6 +93,7 @@ jest.mock('@cashu/cashu-ts', () => {
   const mocks: WalletMocks = {
     loadMint: jest.fn(),
     mintSwap: jest.fn(),
+    mintRestore: jest.fn(),
     getKeysets: jest.fn(() => []),
     ensureKeysetKeys: jest.fn(async () => undefined),
     prepareSwapToSend: jest.fn(),
@@ -102,7 +105,7 @@ jest.mock('@cashu/cashu-ts', () => {
   };
   class MockWallet {
     loadMint = mocks.loadMint;
-    mint = {swap: mocks.mintSwap};
+    mint = {swap: mocks.mintSwap, restore: mocks.mintRestore};
     keyChain = {
       getKeysets: mocks.getKeysets,
       ensureKeysetKeys: mocks.ensureKeysetKeys,
@@ -554,7 +557,7 @@ describe('meltSettledProofs', () => {
     });
 
     // the melted proofs left the store, the change entered it
-    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    const store = await listSettledProofs();
     expect(store).toHaveLength(1);
     expect(store[0].secret).toBe('change-secret');
     expect(
@@ -571,7 +574,7 @@ describe('meltSettledProofs', () => {
     await expect(
       meltSettledProofs({mintUrl: MINT_URL, bolt11: 'lnbc-invoice'}),
     ).rejects.toThrow(/fee reserve.*16 sat/);
-    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    const store = await listSettledProofs();
     expect(store).toHaveLength(1);
   });
 
@@ -622,7 +625,7 @@ describe('meltSettledProofs', () => {
     await expect(
       meltSettledProofs({mintUrl: MINT_URL, bolt11: 'lnbc-invoice'}),
     ).rejects.toThrow('did not settle');
-    const store = JSON.parse(mockStore['@cashu_settled_proofs']);
+    const store = await listSettledProofs();
     expect(store[0].secret).toBe('settled-secret');
     expect(
       Object.keys(mockStore).some(k => k.startsWith('@cashu_settled_payout')),
@@ -645,7 +648,7 @@ describe('meltSettledProofs', () => {
     expect(walletMocks.meltProofsBolt11.mock.calls[0][1]).toEqual([a]);
     // The proof outside the subset stays; the melted one leaves; the change
     // joins.
-    const store = JSON.parse(mockStore['@cashu_settled_proofs']) as {
+    const store = (await listSettledProofs()) as {
       secret: string;
     }[];
     expect(store.map(p => p.secret)).toEqual(['subset-b', 'change-secret']);
@@ -1102,7 +1105,7 @@ describe('sweepSettledProofs', () => {
           walletMocks.meltProofsBolt11.mock.calls[1][1] as {secret: string}[]
         ).map(p => p.secret),
       ).toEqual(['live-a']);
-      const store = JSON.parse(mockStore['@cashu_settled_proofs']) as {
+      const store = (await listSettledProofs()) as {
         secret: string;
       }[];
       expect(store.map(p => p.secret)).not.toContain('gone');
@@ -1681,37 +1684,37 @@ describe('swapSigned', () => {
   });
 });
 
-describe('swap — a 2.0 payment (SIG_ALL)', () => {
-  async function sigAllEntry(mint: TestMint) {
-    const {signed, card} = await signedPayment(mint);
-    const message = bytesToHex(sigAllMessage(signed.inputs, signed.outputs));
-    const first = signed.inputs[0];
-    const entry: SettlementEntry = {
-      id: `${card.pubkey}:${first.slot}:${first.nonce}`,
-      cardPubkey: card.pubkey,
-      slot: first.slot,
-      keysetId: KEYSET_ID,
-      mintUrl: MINT_URL,
-      unit: 'sat',
-      amount: 24,
-      nonce: first.nonce,
-      secret: first.secret,
-      C: first.C,
-      witness: signed.witness,
-      status: 'pending',
-      createdAt: 0,
-      updatedAt: 0,
-      attempts: 0,
-      sigflag: 'SIG_ALL',
-      inputs: signed.inputs,
-      outputs: signed.outputs,
-      merchantBlinding: signed.merchantBlinding,
-      cardChangeIndex: signed.cardChangeIndex,
-      message,
-    };
-    return entry;
-  }
+async function sigAllEntry(mint: TestMint, changeSat = 4) {
+  const {signed, card} = await signedPayment(mint, changeSat);
+  const message = bytesToHex(sigAllMessage(signed.inputs, signed.outputs));
+  const first = signed.inputs[0];
+  const entry: SettlementEntry = {
+    id: `${card.pubkey}:${first.slot}:${first.nonce}`,
+    cardPubkey: card.pubkey,
+    slot: first.slot,
+    keysetId: KEYSET_ID,
+    mintUrl: MINT_URL,
+    unit: 'sat',
+    amount: 24,
+    nonce: first.nonce,
+    secret: first.secret,
+    C: first.C,
+    witness: signed.witness,
+    status: 'pending',
+    createdAt: 0,
+    updatedAt: 0,
+    attempts: 0,
+    sigflag: 'SIG_ALL',
+    inputs: signed.inputs,
+    outputs: signed.outputs,
+    merchantBlinding: signed.merchantBlinding,
+    cardChangeIndex: signed.cardChangeIndex,
+    message,
+  };
+  return entry;
+}
 
+describe('swap — a 2.0 payment (SIG_ALL)', () => {
   it("resubmits the stored outputs, keeps the till and records the card's change owed", async () => {
     const mint = new TestMint();
     walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
@@ -1821,4 +1824,167 @@ describe('mintReachable', () => {
     await expect(mintReachable(MINT_URL, 100, fetchDown)).resolves.toBe(false);
     await expect(mintReachable(MINT_URL, 100, fetch500)).resolves.toBe(false);
   });
+});
+
+describe('exact-output merchant recovery', () => {
+  async function relayedPayment() {
+    const mint = new TestMint();
+    const entry = await sigAllEntry(mint, 0);
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const outputs = entry.outputs.map(o => ({
+      id: o.keysetId,
+      amount: o.amount,
+      B_: o.B_,
+    }));
+    const response = mint.swap({
+      inputs: entry.inputs.map((p, i) => ({
+        id: p.keysetId,
+        amount: p.amount,
+        secret: p.secret,
+        C: p.C,
+        ...(i ? {} : {witness: JSON.stringify({signatures: [entry.witness]})}),
+      })),
+      outputs,
+    });
+    walletMocks.mintRestore.mockResolvedValue({
+      outputs: [...outputs].reverse(),
+      signatures: [...response.signatures].reverse(),
+    });
+    walletMocks.checkProofsStates.mockImplementation(async proofs =>
+      proofs.map((p: {secret: string}) => ({
+        state: mint.spent.has(p.secret) ? 'SPENT' : 'UNSPENT',
+      })),
+    );
+    return {mint, entry};
+  }
+
+  it('recovers a relayed/lost-response payment from original outputs and credits once', async () => {
+    const {mint, entry} = await relayedPayment();
+    await createSettlementAdapter().recover(entry);
+    await createSettlementAdapter().recover(entry);
+    const proofs = await listSettledProofs();
+    expect(proofs.reduce((sum, p) => sum + p.amount, 0)).toBe(24);
+    expect(proofs).toHaveLength(entry.outputs.length);
+    for (const p of proofs) {
+      expect(mint.verifyProof(p.secret, p.C, p.amount)).toBe(true);
+    }
+    expect(walletMocks.mintSwap).not.toHaveBeenCalled();
+    expect(walletMocks.mintRestore).toHaveBeenCalledWith({
+      outputs: entry.outputs.map(o => ({
+        id: o.keysetId,
+        amount: o.amount,
+        B_: o.B_,
+      })),
+    });
+  });
+  it('restore after payout cannot credit already-spent merchant outputs again', async () => {
+    const {mint, entry} = await relayedPayment();
+    await createSettlementAdapter().recover(entry);
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      quote: 'recovery-payout',
+      amount: 24,
+      fee_reserve: 0,
+    });
+    walletMocks.meltProofsBolt11.mockResolvedValue({
+      quote: {state: 'PAID'},
+      change: [],
+    });
+    const paid = await listSettledProofs();
+    await meltSettledProofs({mintUrl: MINT_URL, bolt11: 'test-invoice'});
+    for (const p of paid) {
+      mint.spent.add(p.secret);
+    }
+    await createSettlementAdapter().recover(entry);
+    await createSettlementAdapter().recover(entry);
+    expect(await listSettledProofs()).toEqual([]);
+  });
+  it('does not report settlement from already-spent outputs without a recorded payout', async () => {
+    const {mint, entry} = await relayedPayment();
+    await createSettlementAdapter().recover(entry);
+    for (const p of await listSettledProofs()) {
+      mint.spent.add(p.secret);
+    }
+    await expect(createSettlementAdapter().recover(entry)).rejects.toThrow(
+      'payout',
+    );
+    expect(await listSettledProofs()).toEqual([]);
+  });
+  it('checks all original inputs and refuses mixed or incomplete consumption evidence', async () => {
+    const {entry} = await relayedPayment();
+    walletMocks.checkProofsStates.mockResolvedValue([
+      {state: 'SPENT'},
+      {state: 'UNSPENT'},
+    ]);
+    expect(await createSettlementAdapter().checkState(entry)).toBe('unknown');
+    expect(walletMocks.checkProofsStates.mock.calls[0][0]).toHaveLength(
+      entry.inputs.length,
+    );
+    await expect(createSettlementAdapter().recover(entry)).rejects.toThrow(
+      'every original input',
+    );
+    walletMocks.checkProofsStates.mockResolvedValue([{state: 'SPENT'}]);
+    expect(await createSettlementAdapter().checkState(entry)).toBe('unknown');
+    expect(walletMocks.mintRestore).not.toHaveBeenCalled();
+  });
+  it.each(['missing', 'duplicate', 'amount', 'keyset', 'dleq'])(
+    'preserves unresolved work when restore evidence has %s damage',
+    async damage => {
+      const {entry} = await relayedPayment();
+      const response = await walletMocks.mintRestore();
+      if (damage === 'missing') {
+        response.outputs.pop();
+      }
+      if (damage === 'duplicate') {
+        response.outputs[1] = response.outputs[0];
+      }
+      if (damage === 'amount') {
+        response.signatures[0].amount = 1;
+      }
+      if (damage === 'keyset') {
+        response.signatures[0].id = 'other';
+      }
+      if (damage === 'dleq') {
+        response.signatures[0].dleq.s = '00'.repeat(32);
+      }
+      await expect(createSettlementAdapter().recover(entry)).rejects.toThrow();
+      expect(await listSettledProofs()).toEqual([]);
+    },
+  );
+  it('withholds completion if recovered inventory cannot be persisted', async () => {
+    const {entry} = await relayedPayment();
+    const {setSecure} = jest.requireMock('../../src/services/secureStorage');
+    const original = setSecure.getMockImplementation();
+    setSecure.mockImplementation(async (key: string, value: string) => {
+      if (key === '@cashu_settled_proofs') {
+        throw new Error('locked');
+      }
+      return original(key, value);
+    });
+    await expect(createSettlementAdapter().recover(entry)).rejects.toThrow(
+      'locked',
+    );
+    expect(await listSettledProofs()).toEqual([]);
+    setSecure.mockImplementation(original);
+    await createSettlementAdapter().recover(entry);
+    expect(await listSettledProofs()).toHaveLength(entry.outputs.length);
+  });
+});
+
+it('duplicate and concurrent merchant credits preserve one inventory entry per output', async () => {
+  const p = {
+    id: KEYSET_ID,
+    secret: 'duplicate-output',
+    C: TEST_CARD_PUBKEY,
+    amount: 8,
+    mintUrl: MINT_URL,
+  };
+  await Promise.all([
+    appendSettledProofsTill([p]),
+    appendSettledProofsTill([p, {...p, secret: 'other-output'}]),
+  ]);
+  await appendSettledProofsTill([p]);
+  expect(await listSettledProofs()).toEqual([
+    p,
+    {...p, secret: 'other-output'},
+  ]);
 });

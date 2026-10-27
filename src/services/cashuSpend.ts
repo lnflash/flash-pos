@@ -453,5 +453,8 @@ export async function recoverNeedsCard({
  */
 export async function settlePending(now = Date.now()): Promise<DrainResult> {
   const adapter = createSettlementAdapter();
-  return drainQueue(adapter.swap, now, {checkState: adapter.checkState});
+  return drainQueue(adapter.swap, now, {
+    checkState: adapter.checkState,
+    recover: adapter.recover,
+  });
 }

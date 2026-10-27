@@ -1,7 +1,10 @@
 import * as Keychain from 'react-native-keychain';
 
 export async function setSecure(key: string, value: string): Promise<void> {
-  await Keychain.setGenericPassword(key, value, {service: key});
+  const saved = await Keychain.setGenericPassword(key, value, {service: key});
+  if (saved === false) {
+    throw new Error('secure value was not saved');
+  }
 }
 
 /**

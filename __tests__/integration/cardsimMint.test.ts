@@ -1,6 +1,7 @@
+import {installLocalFetch} from '../support/localFetch';
 /**
- * The 2.0 card layer against the REAL applet and a REAL mint: cardsim
- * (lnflash/cashu-javacard tools/cardsim, the applet in jCardSim over HTTP)
+ * The 2.1 card layer against the REAL applet and a REAL mint: cardsim
+ * (cashucard/cashucard tools/cardsim, the applet in jCardSim over HTTP)
  * and a Nutshell 0.20.3 on FakeWallet (decision 6). The production
  * readAndPlan → executeCharge path pays with one SIG_ALL signature the
  * applet makes, the swap is the mint's to accept or refuse, and the change
@@ -146,7 +147,14 @@ async function mintToCard(cardKey: string, amounts: number[]) {
   };
 }
 
-run('the 2.0 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
+run('the 2.1 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
+  let restoreFetch: (() => void) | undefined;
+  beforeAll(() => {
+    restoreFetch = installLocalFetch([CARDSIM!, MINT_URL!]);
+  });
+  afterAll(() => {
+    restoreFetch?.();
+  });
   let cardKey: string;
 
   beforeEach(async () => {

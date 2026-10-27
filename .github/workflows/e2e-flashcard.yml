@@ -1,7 +1,7 @@
 name: E2E Flashcard (iOS simulator)
 
 # The eCash card flows end to end on an iOS simulator (ENG-634): the real
-# applet in jCardSim (cardsim, lnflash/cashu-javacard), a local Nutshell
+# applet in jCardSim (cardsim, cashucard/cashucard), a local Nutshell
 # mint on FakeWallet, and the production charge/balance UI driven by
 # Maestro through the Debug-only card bridge. Run book: docs/10-testing.md.
 #
@@ -55,11 +55,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # lnflash/cashu-javacard main at #35 (ENG-681): the 2.0 applet, and a cardsim
-  # that puts a package-AID SELECT on the opener, as the J3R180 does.
-  CASHU_JAVACARD_REF: bced1c41726ef23e733cb228fd46f6fba568467d
+  # cashucard/cashucard #188: current 2.1 applet and the isolated assisted
+  # settlement rehearsal. The production wire is unchanged by that PR.
+  CASHU_JAVACARD_REF: f435f1f9362341cfe8963c0192e4c08f5b2413a6
   # The public release nearest forge's 0.20.3.1 (decision 6): its SIG_ALL
-  # message is the unframed one the 2.0 card signs. A fresh 0.20.3 keyset
+  # message is the unframed one the card signs. A fresh 0.20.3 keyset
   # has a 33-byte (v2) id, which a card stores by its first 8 bytes and the
   # app expands back against the mint's keysets.
   NUTSHELL_VERSION: '0.20.3'
@@ -93,10 +93,10 @@ jobs:
         uses: actions/checkout@v4
 
       # ---- the card: cardsim ------------------------------------------------
-      - name: Checkout cashu-javacard (cardsim)
+      - name: Checkout Cashu Card (cardsim)
         uses: actions/checkout@v4
         with:
-          repository: lnflash/cashu-javacard
+          repository: cashucard/cashucard
           ref: ${{ env.CASHU_JAVACARD_REF }}
           path: cardsim
 
@@ -163,6 +163,7 @@ jobs:
           FAKEWALLET_DELAY_OUTGOING_PAYMENT=0
           ENV
           nohup "$RUNNER_TEMP/nutshell/bin/mint" > "$RUNNER_TEMP/mint.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/mint.pid"
           for i in $(seq 1 60); do
             curl -sf "$MINT_URL/v1/info" > /dev/null && break
             sleep 1
@@ -201,6 +202,29 @@ jobs:
           # The flows start from a clean card.
           curl -sf -X POST -H 'content-type: application/json' -d '{}' \
             "$CARDSIM_URL/reset" > /dev/null
+
+      - name: Recover an assisted payment through the real SDK after mint restart
+        run: |
+          journal="$RUNNER_TEMP/assisted-sdk"
+          node cardsim/tools/cardsim/assisted-settlement.cjs capture "$journal" "$MINT_URL" "$CARDSIM_URL"
+          node cardsim/tools/cardsim/assisted-settlement.cjs relay "$journal"
+          old_pid=$(cat "$RUNNER_TEMP/mint.pid")
+          kill "$old_pid"
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$old_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if kill -0 "$old_pid" 2>/dev/null; then echo "local mint did not stop"; exit 1; fi
+          cd "$RUNNER_TEMP/mint"
+          nohup "$RUNNER_TEMP/nutshell/bin/mint" >> "$RUNNER_TEMP/mint.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/mint.pid"
+          cd "$GITHUB_WORKSPACE"
+          for _ in $(seq 1 60); do
+            if curl -sf "$MINT_URL/v1/keysets" > /dev/null; then break; fi
+            sleep 1
+          done
+          LOCAL_ASSISTED_JOURNAL="$journal" yarn jest __tests__/integration/assistedSettlement.test.ts --selectProjects ios --ci --runInBand
+          curl -sf -X POST -H 'content-type: application/json' -d '{}' "$CARDSIM_URL/reset" > /dev/null
 
       # ---- the app: a Debug build with its JS bundle embedded ----------------
       - name: Set up Ruby
