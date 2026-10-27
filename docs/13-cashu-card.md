@@ -29,6 +29,15 @@ supervised recovery with their original records; automatic restoration initially
 supports exact payments. Card-carried relay remains behind the protocol and chip
 gates.
 
+The optional `__tests__/integration/assistedSettlement.test.ts` test uses the
+real Cashu SDK and HTTP mint with secure storage injected at the platform
+boundary. Prepare a fresh journal with the shared rehearsal's capture/relay
+commands, restart that isolated mint, then run Jest with
+`LOCAL_ASSISTED_JOURNAL=/path/to/journal`. It checks recovery, duplicate credit
+and unknown spent outputs. The iOS card-flow CI runs this before the native build
+against the pinned current 2.1 simulator. Network requests stay within the
+explicit loopback mint boundary.
+
 ### Pre-sign recovery preparation (2026-10-27)
 
 The SIG_ALL charge stores its exact inputs, outputs, message and merchant-private
