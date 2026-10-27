@@ -850,7 +850,9 @@ describe('an unresolved submission survives a relaunch', () => {
     const rejectSwap = jest.fn(async () => {
       throw new ProofAlreadySpentError('proof already spent');
     });
-    const result = await drainQueue(rejectSwap, T0 + 1);
+    const result = await drainQueue(rejectSwap, T0 + 1, {
+      recover: async () => {},
+    });
 
     expect(rejectSwap).toHaveBeenCalledTimes(1);
     expect(result).toEqual(drained({settled: 1}));
@@ -863,7 +865,7 @@ describe('an unresolved submission survives a relaunch', () => {
   // anything: the claim write happens before the swap. A proof that is simply
   // invalid — a bad C from a flaky NFC read, a rotated keyset — must not be
   // booked as money received just because the process died before submitting.
-  it('fails, not settles, when an unresolved entry is rejected as invalid', async () => {
+  it('retains an unresolved entry when a retry rejects it without input-state evidence', async () => {
     await killedMidSubmission({amount: 40});
     expect((await listSettlements())[0].status).toBe('submitting');
 
@@ -871,22 +873,26 @@ describe('an unresolved submission survives a relaunch', () => {
       throw new PermanentSettlementError('invalid proof: bad signature');
     }, T0 + 1);
 
-    expect(result).toEqual(drained({failed: 1}));
+    expect(result).toEqual(drained({stillPending: 1}));
     const [entry] = await listSettlements();
-    expect(entry.status).toBe('failed');
+    expect(entry.status).toBe('submitting');
     expect(entry.lastError).toMatch(/bad signature/);
     // Money that left the card and reached no mint is not booked as received.
     const exposure = await pendingExposure();
-    expect(exposure.failed).toBe(1);
-    expect(exposure.totals).toEqual({});
+    expect(exposure.failed).toBe(0);
+    expect(exposure.totals).toEqual({sat: {amount: 40, count: 1}});
   });
 
   it('settles an unresolved entry only on an already-spent response', async () => {
     await killedMidSubmission();
 
-    const result = await drainQueue(async () => {
-      throw new ProofAlreadySpentError('11001: Token already spent');
-    }, T0 + 1);
+    const result = await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('11001: Token already spent');
+      },
+      T0 + 1,
+      {recover: async () => {}},
+    );
 
     expect(result).toEqual(drained({settled: 1}));
     expect((await listSettlements())[0].status).toBe('settled');
@@ -918,7 +924,7 @@ describe('an unresolved submission survives a relaunch', () => {
   // entry: this drain is the first thing that ever claimed it and no earlier
   // attempt left an unknown outcome behind, so the mint is talking about a
   // proof someone else got.
-  it('an already-spent response on a genuinely un-submitted entry is a failure', async () => {
+  it('an already-spent response on a fresh entry preserves unresolved recovery', async () => {
     await record();
     expect((await listSettlements())[0].status).toBe('pending');
 
@@ -926,8 +932,8 @@ describe('an unresolved submission survives a relaunch', () => {
       throw new ProofAlreadySpentError('proof already spent');
     }, T0);
 
-    expect(result).toEqual(drained({failed: 1}));
-    expect((await listSettlements())[0].status).toBe('failed');
+    expect(result).toEqual(drained({stillPending: 1}));
+    expect((await listSettlements())[0].status).toBe('submitting');
   });
 
   // The canonical ambiguous failure: the request reaches the mint, the mint
@@ -943,9 +949,13 @@ describe('an unresolved submission survives a relaunch', () => {
     expect(timeout).toEqual(drained({stillPending: 1}));
     expect((await listSettlements())[0].status).toBe('submitting');
 
-    const next = await drainQueue(async () => {
-      throw new ProofAlreadySpentError('11001: Token already spent');
-    }, T0 + 1);
+    const next = await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('11001: Token already spent');
+      },
+      T0 + 1,
+      {recover: async () => {}},
+    );
 
     expect(next).toEqual(drained({settled: 1}));
     const exposure = await pendingExposure();
@@ -963,9 +973,13 @@ describe('an unresolved submission survives a relaunch', () => {
     relaunch();
 
     expect((await listSettlements())[0].status).toBe('submitting');
-    await drainQueue(async () => {
-      throw new ProofAlreadySpentError('proof already spent');
-    }, T0 + 1);
+    await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 1,
+      {recover: async () => {}},
+    );
     expect((await listSettlements())[0].status).toBe('settled');
   });
 
@@ -979,7 +993,10 @@ describe('an unresolved submission survives a relaunch', () => {
 
     const checkState = jest.fn(async () => 'spent' as const);
     const swap = jest.fn();
-    const result = await drainQueue(swap, T0 + 1, {checkState});
+    const result = await drainQueue(swap, T0 + 1, {
+      checkState,
+      recover: async () => {},
+    });
 
     expect(checkState).toHaveBeenCalledTimes(1);
     // Resolved without resubmitting anything.
@@ -997,7 +1014,7 @@ describe('an unresolved submission survives a relaunch', () => {
 
     const result = await drainQueue(
       async () => {
-        throw new ProofAlreadySpentError('proof already spent');
+        throw new PermanentSettlementError('invalid proof');
       },
       T0 + 1,
       {checkState: async () => 'unspent'},
@@ -1018,12 +1035,12 @@ describe('an unresolved submission survives a relaunch', () => {
     expect(result).toEqual(drained({stillPending: 1}));
     expect((await listSettlements())[0].status).toBe('pending');
 
-    // And because nothing was submitted, an already-spent response next time is
-    // still somebody else's spend.
+    // Another relay may consume it meanwhile. Consumption alone retains the
+    // recovery record even though this device's earlier request was unsent.
     const next = await drainQueue(async () => {
       throw new ProofAlreadySpentError('proof already spent');
     }, T0 + 1);
-    expect(next).toEqual(drained({failed: 1}));
+    expect(next).toEqual(drained({stillPending: 1}));
   });
 
   // A provably-unsent attempt cannot clear an *earlier* attempt's unknown
@@ -1032,14 +1049,22 @@ describe('an unresolved submission survives a relaunch', () => {
     await killedMidSubmission();
     expect((await listSettlements())[0].status).toBe('submitting');
 
-    await drainQueue(async () => {
-      throw new TransportSettlementError('offline: no network interface');
-    }, T0 + 1);
+    await drainQueue(
+      async () => {
+        throw new TransportSettlementError('offline: no network interface');
+      },
+      T0 + 1,
+      {recover: async () => {}},
+    );
     expect((await listSettlements())[0].status).toBe('submitting');
 
-    await drainQueue(async () => {
-      throw new ProofAlreadySpentError('proof already spent');
-    }, T0 + 2);
+    await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 2,
+      {recover: async () => {}},
+    );
     expect((await listSettlements())[0].status).toBe('settled');
   });
 
@@ -1054,15 +1079,23 @@ describe('an unresolved submission survives a relaunch', () => {
 
     // Offline now: reverting to 'pending' here would let the *next*
     // already-spent response be misread as a real failure.
-    await drainQueue(async () => {
-      throw new Error('network unreachable');
-    }, T0 + 1);
+    await drainQueue(
+      async () => {
+        throw new Error('network unreachable');
+      },
+      T0 + 1,
+      {recover: async () => {}},
+    );
     expect((await listSettlements())[0].status).toBe('submitting');
 
     relaunch();
-    await drainQueue(async () => {
-      throw new ProofAlreadySpentError('proof already spent');
-    }, T0 + 2);
+    await drainQueue(
+      async () => {
+        throw new ProofAlreadySpentError('proof already spent');
+      },
+      T0 + 2,
+      {recover: async () => {}},
+    );
     expect((await listSettlements())[0].status).toBe('settled');
   });
 
@@ -1090,6 +1123,7 @@ describe('resolving an unknown outcome with a state check', () => {
     const swap = jest.fn();
     const result = await drainQueue(swap, T0 + 1, {
       checkState: async () => 'spent',
+      recover: async () => {},
     });
 
     expect(swap).not.toHaveBeenCalled();
@@ -1102,7 +1136,7 @@ describe('resolving an unknown outcome with a state check', () => {
 
     const result = await drainQueue(
       async () => {
-        throw new ProofAlreadySpentError('proof already spent');
+        throw new PermanentSettlementError('invalid proof');
       },
       T0 + 1,
       {checkState: async () => 'unspent'},
@@ -1123,6 +1157,7 @@ describe('resolving an unknown outcome with a state check', () => {
       },
       T0 + 1,
       {
+        recover: async () => {},
         checkState: async () => {
           throw new Error('offline');
         },
@@ -1149,7 +1184,10 @@ describe('resolving an unknown outcome with a state check', () => {
   it('settles a pending entry the mint already holds', async () => {
     await record();
     const checkState = jest.fn(async () => 'spent' as const);
-    const result = await drainQueue(async () => {}, T0, {checkState});
+    const result = await drainQueue(async () => {}, T0, {
+      checkState,
+      recover: async () => {},
+    });
     expect(result.settled).toBe(1);
     const [entry] = await listSettlements();
     expect(entry?.status).toBe('settled');
@@ -2507,4 +2545,52 @@ describe("owed change, 2.0: the card's own change", () => {
     mockStore[OWED_CHANGE_KEY] = JSON.stringify({v: 2, entries: [broken]});
     expect(await listOwedChange()).toEqual([]);
   });
+});
+
+it('input SPENT cannot book merchant settlement without output recovery', async () => {
+  await record();
+  const swap = jest.fn();
+  const recover = jest.fn(async () => {
+    throw new Error('outputs unavailable');
+  });
+  const result = await drainQueue(swap, T0, {
+    checkState: async () => 'spent',
+    recover,
+  });
+  expect(result.settled).toBe(0);
+  expect(result.stillPending).toBe(1);
+  expect((await listSettlements())[0].status).toBe('submitting');
+  expect(swap).not.toHaveBeenCalled();
+});
+
+it('a duplicate swap stays unresolved until merchant output recovery succeeds', async () => {
+  await record();
+  const swap = jest.fn(async () => {
+    throw new ProofAlreadySpentError('11001');
+  });
+  const unavailable = jest.fn(async () => {
+    throw new Error('outputs unavailable');
+  });
+  const first = await drainQueue(swap, T0, {recover: unavailable});
+  expect(first.settled).toBe(0);
+  expect(first.failed).toBe(0);
+  expect((await listSettlements())[0].status).toBe('submitting');
+  const recovered = jest.fn(async () => undefined);
+  const second = await drainQueue(swap, T0 + 1, {recover: recovered});
+  expect(recovered).toHaveBeenCalledTimes(1);
+  expect(second.settled).toBe(1);
+});
+
+it('retains an ambiguous original request when a later retry rejects an inactive keyset', async () => {
+  await killedMidSubmission();
+  const result = await drainQueue(
+    async () => {
+      throw new PermanentSettlementError('inactive keyset');
+    },
+    T0 + 1,
+    {checkState: async () => 'unknown'},
+  );
+  expect(result.failed).toBe(0);
+  expect(result.stillPending).toBe(1);
+  expect((await listSettlements())[0].status).toBe('submitting');
 });

@@ -2,6 +2,33 @@
 
 ## Status
 
+### Merchant output recovery (2026-10-27)
+
+The settlement drain checks every original input. A mint `SPENT` result or
+`11001` response invokes output recovery before completion. For exact sat
+SIG*ALL payments it restores the original outputs, maps returned pairs by
+`B*`, verifies their keyset, amount and DLEQ, and unblinds them with the saved
+merchant openings. Partial, substituted, missing-DLEQ or pending evidence keeps
+the payment unresolved. Input consumption alone cannot mark it settled.
+
+Merchant inventory now uses one versioned secure-store ledger with a serialized
+writer. Original array inventories migrate on the first write. Duplicate output
+insertion credits once. Successful payouts atomically replace their inputs with
+change and hashed retirement records. A later restore cannot reinsert retired
+outputs. Consumed outputs without a recorded successful payout remain unresolved
+for reconciliation; observing their mint state preserves an unknown retirement
+record. Retirement fingerprints remain until a separately reviewed compaction
+policy can prove they are no longer needed. Older app versions cannot read this
+ledger format, so preserve the current app and its data during recovery.
+
+New merchant output secrets must be fresh against the queue, available funds and
+retired history before SIGN. Secure storage rejects an explicit keychain write
+refusal. Existing successful change payments keep their normal path. Ambiguous
+payments containing card change and legacy SIG_INPUTS submissions require
+supervised recovery with their original records; automatic restoration initially
+supports exact payments. Card-carried relay remains behind the protocol and chip
+gates.
+
 ### Pre-sign recovery preparation (2026-10-27)
 
 The SIG_ALL charge stores its exact inputs, outputs, message and merchant-private

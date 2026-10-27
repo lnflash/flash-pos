@@ -158,7 +158,8 @@ const insOf = (apdu: number[]) => apdu[1];
 const PAYMENT_INS = [0x22, 0x23, 0x24, 0x25, 0x26];
 
 const tillProofs = () =>
-  JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]') as {
+  (JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]').available ??
+    JSON.parse(mockStore['@cashu_settled_proofs'] ?? '[]')) as {
     secret: string;
     amount: number;
     C: string;

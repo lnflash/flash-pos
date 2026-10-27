@@ -733,3 +733,15 @@ describe('settlePending', () => {
     expect(mockAdapter.swap).not.toHaveBeenCalled();
   });
 });
+
+it('refuses reused merchant output secrets before a second card can sign', async () => {
+  const first = cardWithPieces([8]);
+  const args = paymentArgs(first, [0], 8);
+  await spendAll(args);
+  const second = cardWithPieces([8], {privateKey: '33'.repeat(32)});
+  await expect(
+    spendAll(paymentArgs(second, [0], 8, {merchant: args.merchant})),
+  ).rejects.toThrow('already been used');
+  expect(second.burnCount).toBe(0);
+  expect(second.insSent).not.toContain(0x24);
+});

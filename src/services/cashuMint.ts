@@ -39,6 +39,7 @@ import {
   serializeSwapPreview,
   unblindSignature,
   verifyDLEQProof_reblind,
+  verifyDLEQProof,
   Wallet,
   type Proof,
   type ProofLike,
@@ -65,18 +66,13 @@ import {
   type SettlementInput,
   type SettlementOutput,
 } from './cashuSettlement';
-import {
-  getSecure,
-  getSecureStrict,
-  removeSecure,
-  setSecure,
-} from './secureStorage';
+import {getSecure, removeSecure, setSecure} from './secureStorage';
 import {splitPow2} from '../utils/denominations';
+import {readTill, updateTill, recordedPayout} from './cashuTillStore';
 
 /** NUT-XX: the mint holds this exact proof already. */
 const TOKEN_ALREADY_SPENT = 11001;
 
-const SETTLED_PROOFS_KEY = '@cashu_settled_proofs';
 const pendingKey = (id: string) => `@cashu_settlement_swap:${id}`;
 
 /**
@@ -221,6 +217,7 @@ export interface SettlementAdapter {
   checkState: (
     entry: SettlementEntry,
   ) => Promise<'spent' | 'unspent' | 'unknown'>;
+  recover: (entry: SettlementEntry) => Promise<void>;
 }
 
 // One wallet per mint, shared by the settlement adapter and the payout melt.
@@ -642,19 +639,62 @@ export async function swapSigned(
       })) as never,
     }),
   );
-  const signatures = response.signatures;
-  if (signatures.length !== signed.outputs.length) {
-    throw new Error(
-      `the mint signed ${signatures.length} of ${signed.outputs.length} outputs`,
-    );
+  return decodePromises(mintUrl, signed, response.signatures, false);
+}
+
+type PromiseSignature = {
+  amount: unknown;
+  id: string;
+  C_: string;
+  dleq?: {e: string; s: string};
+};
+async function decodePromises(
+  mintUrl: string,
+  signed: SignedSwap,
+  signatures: PromiseSignature[],
+  requireDleq: boolean,
+): Promise<SwapSignedResult> {
+  if (signatures.length !== signed.outputs.length || !signatures.length) {
+    throw new Error('mint promises do not cover the original outputs');
   }
+  const changeAt = signed.cardChangeIndex ?? signed.outputs.length;
+  if (
+    changeAt < 0 ||
+    changeAt > signed.outputs.length ||
+    signed.merchantBlinding.length !== changeAt
+  ) {
+    throw new Error('invalid merchant output boundary');
+  }
+  validateChargeOutputs({
+    outputs: signed.outputs.slice(0, changeAt),
+    blinding: signed.merchantBlinding,
+  });
+
   const till: SettledProof[] = [];
   const cardChange: OwedCardChange[] = [];
-  const changeAt = signed.cardChangeIndex ?? signed.outputs.length;
   for (let i = 0; i < signatures.length; i++) {
     const sig = signatures[i];
     const output = signed.outputs[i];
     const amount = amountOf(sig.amount);
+    if (amount !== output.amount || sig.id !== output.keysetId) {
+      throw new Error('mint promise does not match the original amount/keyset');
+    }
+    const keyset = await keysetFor(mintUrl, output.keysetId);
+    const K = keyset.keys[String(amount)];
+    if (!K || (requireDleq && !sig.dleq)) {
+      throw new Error('mint promise is missing its verification key or DLEQ');
+    }
+    if (
+      sig.dleq &&
+      !verifyDLEQProof(
+        {e: hexToBytes(sig.dleq.e), s: hexToBytes(sig.dleq.s)},
+        pointFromHex(output.B_),
+        pointFromHex(sig.C_),
+        pointFromHex(K),
+      )
+    ) {
+      throw new Error('mint promise DLEQ does not verify');
+    }
     const dleq = sig.dleq
       ? {e: String(sig.dleq.e), s: String(sig.dleq.s)}
       : undefined;
@@ -671,11 +711,6 @@ export async function swapSigned(
     const blinding = signed.merchantBlinding[i];
     if (!blinding) {
       throw new Error(`no blinding kept for the merchant's output ${i}`);
-    }
-    const keyset = await keysetFor(mintUrl, output.keysetId);
-    const K = keyset.keys[String(amount)];
-    if (!K) {
-      throw new Error(`keyset ${keyset.id} has no key for ${amount}`);
     }
     till.push({
       id: output.keysetId,
@@ -845,21 +880,124 @@ export function createSettlementAdapter(): SettlementAdapter {
   const checkState = async (
     entry: SettlementEntry,
   ): Promise<'spent' | 'unspent' | 'unknown'> => {
+    const inputs =
+      entry.sigflag === 'SIG_ALL'
+        ? entry.inputs
+        : [{keysetId: entry.keysetId, secret: entry.secret}];
+    if (
+      !inputs.length ||
+      new Set(inputs.map(p => p.secret)).size !== inputs.length
+    ) {
+      return 'unknown';
+    }
     const wallet = await getWallet(entry.mintUrl);
-    const [state] = await wallet.checkProofsStates([
-      {id: entry.keysetId, secret: entry.secret},
-    ]);
-    switch (state.state) {
-      case 'SPENT':
-        return 'spent';
-      case 'UNSPENT':
-        return 'unspent';
-      default:
-        return 'unknown';
+    const states = await wallet.checkProofsStates(
+      inputs.map(p => ({id: p.keysetId, secret: p.secret})),
+    );
+    if (states.length !== inputs.length) {
+      return 'unknown';
+    }
+    if (states.every(s => s.state === 'SPENT')) {
+      return 'spent';
+    }
+    if (states.every(s => s.state === 'UNSPENT')) {
+      return 'unspent';
+    }
+    return 'unknown';
+  };
+
+  const recover = async (entry: SettlementEntry): Promise<void> => {
+    if (entry.sigflag !== 'SIG_ALL' || entry.unit !== 'sat') {
+      throw new Error(
+        'this payment requires supervised merchant output recovery',
+      );
+    }
+    toSigAllInputs(entry);
+    const message = bytesToHex(sigAllMessage(entry.inputs, entry.outputs));
+    if (
+      message !== entry.message?.toLowerCase() ||
+      !verifyCardSignature(entry.witness!, message, entry.cardPubkey)
+    ) {
+      throw new Error('stored payment signature does not verify');
+    }
+    // Initial recovery profile is exact payments. Change needs its own durable
+    // delivery/retirement fence before a restore can safely recreate an owed record.
+    if (
+      (entry.cardChangeIndex ?? entry.outputs.length) < entry.outputs.length
+    ) {
+      throw new Error(
+        'payment change requires supervised recovery; original records retained',
+      );
+    }
+    if ((await checkState(entry)) !== 'spent') {
+      throw new Error('every original input must be confirmed spent');
+    }
+    const wallet = await getWallet(entry.mintUrl);
+    const response = await wallet.mint.restore({
+      outputs: entry.outputs.map(o => ({
+        id: o.keysetId,
+        amount: o.amount,
+        B_: o.B_,
+      })) as never,
+    });
+    if (
+      response.outputs.length !== entry.outputs.length ||
+      response.signatures.length !== entry.outputs.length ||
+      new Set(entry.outputs.map(o => o.B_)).size !== entry.outputs.length
+    ) {
+      throw new Error('restore did not cover every distinct original output');
+    }
+    const paired = new Map<string, PromiseSignature>();
+    for (let i = 0; i < response.outputs.length; i++) {
+      const got = response.outputs[i];
+      const expected = entry.outputs.find(o => o.B_ === got.B_);
+      if (
+        !expected ||
+        paired.has(got.B_) ||
+        got.id !== expected.keysetId ||
+        amountOf(got.amount) !== expected.amount
+      ) {
+        throw new Error('restore substituted or duplicated an original output');
+      }
+      paired.set(got.B_, response.signatures[i]);
+    }
+    const result = await decodePromises(
+      entry.mintUrl,
+      {
+        inputs: entry.inputs,
+        witness: entry.witness!,
+        outputs: entry.outputs,
+        merchantBlinding: entry.merchantBlinding,
+        cardChangeIndex: entry.cardChangeIndex,
+      },
+      entry.outputs.map(o => paired.get(o.B_)!),
+      true,
+    );
+    const states = await wallet.checkProofsStates(
+      result.till as unknown as Proof[],
+    );
+    if (
+      states.length !== result.till.length ||
+      states.some(s => s.state !== 'UNSPENT' && s.state !== 'SPENT')
+    ) {
+      throw new Error(
+        'restored merchant inventory state is incomplete or pending',
+      );
+    }
+    // SPENT output promises prove issuance, not another credit. Persist both
+    // available outputs and consumed-output fences before completing the queue.
+    const consumed = result.till.filter((_, i) => states[i].state === 'SPENT');
+    const accounted = await recordedPayout(consumed);
+    await updateTill({
+      add: result.till.filter((_, i) => states[i].state === 'UNSPENT'),
+      retire: consumed,
+    });
+    if (!accounted) {
+      throw new Error('consumed merchant outputs need payout reconciliation');
     }
   };
 
-  return {swap, checkState};
+  return {swap, checkState, recover};
 }
 
 /**
@@ -919,30 +1057,14 @@ function isFetchNetworkError(error: unknown): boolean {
   return error instanceof TypeError;
 }
 
-/** Append merchant-take proofs to the till (the settled store). */
+/** Repeated recovery of the same output credits the inventory once. */
 export async function appendSettledProofsTill(
   proofs: SettledProof[],
 ): Promise<void> {
-  const existing = await listSettledProofs();
-  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...existing, ...proofs]));
+  await updateTill({add: proofs});
 }
-
-export async function listSettledProofs(): Promise<SettledProof[]> {
-  const raw = await getSecureStrict(SETTLED_PROOFS_KEY);
-  if (!raw) {
-    return [];
-  }
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error('settled proofs store is not an array');
-  }
-  return parsed as SettledProof[];
-}
-
-async function appendSettledProofs(proofs: SettledProof[]): Promise<void> {
-  const existing = await listSettledProofs();
-  await setSecure(SETTLED_PROOFS_KEY, JSON.stringify([...existing, ...proofs]));
-}
+export const listSettledProofs = readTill;
+const appendSettledProofs = appendSettledProofsTill;
 
 // ── payout: melt settled proofs to a bolt11 invoice or lightning address ──
 
@@ -1151,14 +1273,7 @@ export async function meltSettledProofs({
   }));
   // Only now does the money have a new home: drop the melted proofs, keep
   // any change.
-  const meltedSecrets = new Set(proofs.map(p => p.secret));
-  const remaining = (await listSettledProofs()).filter(
-    p => !meltedSecrets.has(p.secret),
-  );
-  await setSecure(
-    SETTLED_PROOFS_KEY,
-    JSON.stringify([...remaining, ...change]),
-  );
+  await updateTill({retire: proofs, add: change, disposition: 'paid'});
   await removeSecure(PENDING_PAYOUT_KEY);
 
   return {
@@ -1255,8 +1370,7 @@ export async function reconcileTill(
     if (spent.size === 0) {
       return 0;
     }
-    const remaining = proofs.filter(p => !spent.has(p.secret));
-    await setSecure(SETTLED_PROOFS_KEY, JSON.stringify(remaining));
+    await updateTill({retire: proofs.filter(p => spent.has(p.secret))});
     return spent.size;
   } catch (error) {
     if (isRateLimited(error)) {

@@ -88,3 +88,10 @@ describe('secureStorage', () => {
     });
   });
 });
+
+it('rejects an explicit keychain write refusal before callers can proceed', async () => {
+  mockedKeychain.setGenericPassword.mockResolvedValueOnce(false);
+  await expect(setSecure('test-key', 'test-value')).rejects.toThrow(
+    'not saved',
+  );
+});
