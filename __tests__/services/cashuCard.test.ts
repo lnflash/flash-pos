@@ -661,6 +661,30 @@ describe('selectApplet', () => {
     await expect(selectApplet(card.transceive)).resolves.toEqual([2, 7]);
   });
 
+  // ENG-821: the 2.2 applet (GET_OUTBOX) answers 02 02 9000. The gate reads
+  // only the major, so this held before 2.2 existed: it pins that 2.2 is
+  // taken exactly as 2.1 is, one SELECT and nothing else.
+  it.each([
+    ['2.1', [2, 1]],
+    ['2.2', [2, 2]],
+  ])('a %s card is accepted with its one SELECT', async (_, version) => {
+    const card = fakeCard({selectVersion: version});
+    await expect(selectApplet(card.transceive)).resolves.toEqual(version);
+    expect(card.sent).toHaveLength(1);
+    expect(card.sent[0].slice(5, 16)).toEqual(APPLET_AID);
+  });
+
+  it.each([
+    ['3.0', [3, 0]],
+    ['3.2', [3, 2]],
+  ])('a %s card still needs an update', async (_, version) => {
+    const card = fakeCard({selectVersion: version});
+    await expect(selectApplet(card.transceive)).rejects.toBeInstanceOf(
+      CardNeedsUpdateError,
+    );
+    expect(card.sent).toHaveLength(1);
+  });
+
   it("a Foxy 1.x card (F0 46 4F 58 59 43 41 52 44 answers) needs an update, not 'not a Flash card'", async () => {
     const FOXY = [0xf0, 0x46, 0x4f, 0x58, 0x59, 0x43, 0x41, 0x52, 0x44];
     expect(LEGACY_AIDS.map(toHex)).toContain(toHex(FOXY));
@@ -834,6 +858,31 @@ describe('getInfo', () => {
       allowance: 250,
       noPinSpent: 40,
     });
+  });
+
+  it('decodes a 2.2 card the same way, its minor reported', async () => {
+    const card = fakeCard({infoBody: [2, 2, ...INFO_BODY.slice(2)]});
+    const info = await getInfo(card.transceive);
+    expect(info).toMatchObject({version: '2.2', major: 2, minor: 2});
+    const {version, minor, ...rest} = info;
+    const {
+      version: v20,
+      minor: m20,
+      ...base
+    } = await getInfo(fakeCard().transceive);
+    expect([version, minor, v20, m20]).toEqual(['2.2', 2, '2.0', 0]);
+    expect(rest).toEqual(base);
+  });
+
+  it.each([
+    ['1.9', [1, 9]],
+    ['3.0', [3, 0]],
+    ['3.2', [3, 2]],
+  ])('a GET_INFO of version %s needs an update', async (_, version) => {
+    const card = fakeCard({infoBody: [...version, ...INFO_BODY.slice(2)]});
+    await expect(getInfo(card.transceive)).rejects.toBeInstanceOf(
+      CardNeedsUpdateError,
+    );
   });
 
   it('asks with P1 = 1 by default, and P1 = 0 for the 30-byte block', async () => {
