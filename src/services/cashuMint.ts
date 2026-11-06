@@ -72,6 +72,13 @@ import {readTill, updateTill, recordedPayout} from './cashuTillStore';
 
 /** NUT-XX: the mint holds this exact proof already. */
 const TOKEN_ALREADY_SPENT = 11001;
+/**
+ * NUT-00 (Nutshell's `ProofsArePendingError`): another swap of these inputs
+ * is in flight at the mint. For a 2.0 payment that can only be this same
+ * signed payment (SIG_ALL binds its outputs), submitted by someone else: the
+ * phone relaying it from the card's outbox (ENG-821).
+ */
+const PROOFS_PENDING = 11002;
 
 const pendingKey = (id: string) => `@cashu_settlement_swap:${id}`;
 
@@ -1015,6 +1022,13 @@ export function mapSwapError(error: unknown, entry: SettlementEntry): unknown {
       return new ProofAlreadySpentError(
         `settlement ${entry.id}: the mint already holds this proof`,
       );
+    }
+    if (error.code === PROOFS_PENDING && entry.sigflag === 'SIG_ALL') {
+      // Not a refusal: the other submission of this payment may land, and
+      // then these are the merchant's outputs. Outcome unknown, so the entry
+      // stays outstanding and the next drain asks the mint (checkState) and
+      // recovers them, instead of booking the payment as failed.
+      return error;
     }
     return new PermanentSettlementError(
       `settlement ${entry.id}: the mint rejected the proof (${error.code}: ${error.message})`,

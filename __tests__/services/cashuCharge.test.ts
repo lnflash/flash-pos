@@ -71,6 +71,7 @@ import {
   type OwedChangeEntry,
 } from '../../src/services/cashuSettlement';
 import {describeCardFailure} from '../../src/services/cashuCardNfc';
+import {settlePending} from '../../src/services/cashuSpend';
 import {isRefusedAfterBurn} from '../../src/services/phaseError';
 import {
   CARD_LOCKED_BODY,
@@ -697,6 +698,52 @@ describe('chargeCard', () => {
     }
   });
 
+  // ENG-821: a 2.2 card answers SELECT with 02 02. It writes its outbox
+  // record inside the SPEND_ALL_SIGN it already gets, so the till charges it
+  // exactly as it charges a 2.1 card: the same commands, in the same order,
+  // and the same settlement, with nothing new sent.
+  it('charges a 2.2 card exactly as a 2.1 card: the same commands, the same settlement', async () => {
+    const charge = async (version: [number, number]) => {
+      for (const k of Object.keys(mockStore)) {
+        delete mockStore[k];
+      }
+      // A fresh mint each time: the same pieces are spent at the first.
+      resetTestMint();
+      __resetWalletCache();
+      await saveKeysets(MINT_URL, [testMint().cachedKeyset()]);
+      await clearQueue();
+      const card = pinCard([16, 4, 1], {version});
+      const result = await chargeCard({
+        transceive: card.transceive,
+        amountSat: 10,
+        pin: '1234',
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      const [entry] = await listSettlements();
+      return {
+        ins: card.insSent,
+        selects: card.sent.filter(a => a[1] === 0xa4),
+        result: {
+          amountSat: result.amountSat,
+          changeSat: result.changeSat,
+          changeLoaded: result.changeLoaded,
+          inputs: result.burned[0].inputs.map(i => i.amount),
+        },
+        status: entry.status,
+        till: tillProofs().map(t => t.amount),
+        balance: card.loads.map(l => l.amount),
+      };
+    };
+    const v21 = await charge([2, 1]);
+    const v22 = await charge([2, 2]);
+    expect(v21.status).toBe('settled');
+    expect(v21.result.changeSat).toBeGreaterThan(0);
+    expect(v22).toEqual(v21);
+    // Nothing a 2.1 card would not have been sent: no GET_OUTBOX (1B).
+    expect(v22.ins).not.toContain(0x1b);
+  });
+
   it('charges a card whose package AID reaches the opener (ENG-681)', async () => {
     const card = pinCard([16, 4, 1], {opener: true});
 
@@ -735,6 +782,35 @@ describe('chargeCard', () => {
     const entries = await listSettlements();
     expect(entries.filter(e => e.status === 'pending')).toHaveLength(1);
     expect(tillProofs()).toHaveLength(0);
+  });
+
+  // ENG-821: the card's outbox lets a phone submit this same signed payment.
+  // A mint that has the phone's swap in flight answers the till's with 11002
+  // ("proofs are pending"): the payment may be landing, with the till's own
+  // outputs, so the charge is paid and deferred, never refused and failed.
+  it('an exact bill whose swap meets the same payment pending at the mint (11002) is deferred, not refused', async () => {
+    const card = pinCard([16, 4, 1]);
+    testMint().failNext = new (jest.requireActual(
+      '@cashu/cashu-ts',
+    ).MintOperationError)(11002, 'proofs are pending');
+
+    const result = await chargeCard({
+      transceive: card.transceive,
+      amountSat: 5,
+      pin: '1234',
+      mintUrl: MINT_URL,
+      now: 1000,
+    });
+
+    expect(result.changeSat).toBe(0);
+    const [entry] = await listSettlements();
+    expect(['pending', 'submitting']).toContain(entry.status);
+    expect(tillProofs()).toHaveLength(0);
+    // Here the other swap never landed: the drain finds the inputs unspent
+    // and submits the payment itself.
+    const drained = await settlePending(2000);
+    expect(drained).toMatchObject({settled: 1, failed: 0});
+    expect(tillProofs().map(t => t.amount)).toEqual([4, 1]);
   });
 
   it('makes change on the card and writes it back onto the card', async () => {
