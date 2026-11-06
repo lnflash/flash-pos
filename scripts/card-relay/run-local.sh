@@ -75,6 +75,12 @@ keysets="$(curl -sf "http://127.0.0.1:$mint_port/v1/keysets")"
 echo "mint keysets: $keysets"
 
 cd "$repo"
+if [[ ! -f .env ]]; then
+  # The babel env plugin needs a .env to load any module that imports @env;
+  # the tests read none of it (jest maps @env to __mocks__/@env.js).
+  echo "no .env: copying .env.example (as CI does)"
+  cp .env.example .env
+fi
 CARD_RELAY_CARDSIM="http://127.0.0.1:$cardsim_port" \
   CARD_RELAY_MINT="http://127.0.0.1:$mint_port" \
   CARD_RELAY_CASHU_CARD="$cashu_card" \
