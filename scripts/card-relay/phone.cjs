@@ -26,6 +26,7 @@ const path = require('node:path');
 
 const LOGICAL_MINT = 'https://cashucard-relay.invalid';
 const APPLET_SELECT = '00a404000bf04341534855434152440100';
+const GET_PUBKEY = 'b010000021';
 const BARRIER_MS = 30000;
 
 function loopback(value) {
@@ -110,12 +111,20 @@ async function main() {
     const card = cardOver(loopback(cardsim));
     // A new tap, with no PIN: what an owner's phone sends.
     const select = await card(APPLET_SELECT);
+    // The card key comes from the card (GET_PUBKEY on this same tap), never
+    // from the packet it is about to verify: a key read out of the packet
+    // would make decodePacket's signature check prove nothing.
+    const cardKey = Buffer.from(await card(GET_PUBKEY)).toString('hex');
+    if (cardKey.length !== 66) {
+      throw new Error('GET_PUBKEY: expected a 33-byte compressed key');
+    }
     // The installation is not read by any command but GET_OUTBOX; the phone
-    // pins it from this card's first page (the bridge's install draws it).
+    // pins it from this card's first page (the bridge's install draws it),
+    // as cardsim's outbox.test.cjs policyOf does.
     const head = await card(outboxPage(0, 72));
     const policy = {
       mint: LOGICAL_MINT,
-      cardKey: Buffer.from(head.slice(7, 40)).toString('hex'),
+      cardKey,
       installation: Buffer.from(head.slice(40, 72)).toString('hex'),
     };
     writePrivate(path.join(folder, 'policy.json'), policy);
@@ -140,6 +149,8 @@ async function main() {
     );
     writePrivate(path.join(folder, 'capture-result.json'), {
       select: Buffer.from(select).toString('hex'),
+      // The key the phone verified the packet against: GET_PUBKEY's answer.
+      policyCardKey: policy.cardKey,
       bytes: captured.packet.length / 2,
       packetId: packet.packetId,
       mint: packet.mint,
@@ -225,7 +236,12 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (!result || result.state !== 'outputs-confirmed') {
-    throw new Error('relay did not confirm the outputs: ' + result.state);
+    throw new Error(
+      'relay did not confirm the outputs: ' +
+        (result ? result.state : 'unresolved x' + unresolved.length) +
+        ' ' +
+        JSON.stringify(unresolved),
+    );
   }
   writePrivate(path.join(folder, mode + '-result.json'), {
     state: result.state,

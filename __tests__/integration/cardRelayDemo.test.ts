@@ -244,6 +244,9 @@ function expectPacketIsTheTillsPayment(
 ) {
   expect(captured.select).toBe('0202');
   expect(captured.mint).toBe(LOGICAL_MINT);
+  // The phone verifies against the card's GET_PUBKEY, not a key read out of
+  // the packet it is checking; the packet's key must then be that same key.
+  expect(captured.policyCardKey).toBe(entry.cardPubkey);
   expect(captured.cardKey).toBe(entry.cardPubkey);
   expect(captured.witness).toBe(entry.witness);
   expect(captured.paymentMessage).toBe(entry.message!.toLowerCase());

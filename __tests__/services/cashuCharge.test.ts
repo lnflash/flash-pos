@@ -804,7 +804,11 @@ describe('chargeCard', () => {
 
     expect(result.changeSat).toBe(0);
     const [entry] = await listSettlements();
-    expect(['pending', 'submitting']).toContain(entry.status);
+    // executeCharge never claims the entry ('submitting' is only the
+    // drain's claim, cashuSettlement.ts settlePending): the 11002 swap leaves
+    // it 'pending', and the drain's checkState decides spent/unspent from
+    // the mint before it submits anything.
+    expect(entry.status).toBe('pending');
     expect(tillProofs()).toHaveLength(0);
     // Here the other swap never landed: the drain finds the inputs unspent
     // and submits the payment itself.
