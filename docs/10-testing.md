@@ -611,6 +611,22 @@ Maestro's output and the cardsim and mint logs are uploaded as the
 - The card key is the same after every `/reset`, and the owed-change store is
   keyed by it: every flow starts with `clearState` and `clearKeychain`.
 
+## Card relay harness (2.2 applet)
+
+`__tests__/integration/cardRelayDemo.test.ts` charges the 2.2 applet in
+cardsim offline, has a separate phone process read the card's outbox and
+settle it, then checks the till's recovery. It skips unless
+`CARD_RELAY_CARDSIM`, `CARD_RELAY_MINT` and `CARD_RELAY_CASHU_CARD` are set.
+One command starts what it needs (Docker, JDK 17 and Maven) and runs it:
+
+```sh
+scripts/card-relay/run-local.sh /absolute/path/to/cashucard-checkout
+```
+
+CI: `.github/workflows/card-relay.yml`, on demand and on pull requests that
+touch `src/services/cashu*` or the harness. See
+[13-cashu-card.md](./13-cashu-card.md) for what it proves.
+
 ## Mock Implementations
 
 ### GraphQL Mocking
