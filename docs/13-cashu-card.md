@@ -119,7 +119,7 @@ or claim merchant proceeds have been recovered from the mint.
 (iOS 26.5) ran SELECT → GET_INFO → GET_PUBKEY → GET_BALANCE against a loaded
 JCOP4 J3R180 card over IsoDep, first session: applet version, balance and the
 card's public key all returned and matched the PC-SC reference driver
-(`cardctl` in cashu-javacard) read minutes earlier. The ISO-7816 entitlement
+(`cardctl` in cashucard/cashucard) read minutes earlier. The ISO-7816 entitlement
 and AID list work as declared. Spending and PIN are still unimplemented (see
 Known gaps), and Android is unexercised.
 
@@ -141,7 +141,7 @@ This is a different thing from the existing Flashcard/BoltCard path in
 
 Related repos:
 
-- [`lnflash/cashu-javacard`](https://github.com/lnflash/cashu-javacard): the
+- [`cashucard/cashucard`](https://github.com/cashucard/cashucard): the
   applet, the APDU spec (`spec/APDU.md`), and `tools/cardctl` (the Python
   reference driver this module mirrors).
 - [`lnflash/cashu-client`](https://github.com/lnflash/cashu-client): mint
@@ -207,7 +207,7 @@ on top of this one.
 
 ## Running it on hardware
 
-1. Build and install the applet (from the `cashu-javacard` checkout):
+1. Build and install the applet (from the `cashucard/cashucard` checkout):
 
    ```bash
    ant -f applet/build.xml cap
@@ -240,7 +240,7 @@ is written and no proof is spent, so it is safe against a loaded card.
 
 Below the read button, **Card bridge** routes every card APDU (this screen's
 read and the production charge and balance paths) to a `cardsim` bridge
-instead of NFC: the real applet in jCardSim, from `lnflash/cashu-javacard`
+instead of NFC: the real applet in jCardSim, from `cashucard/cashucard`
 `tools/cardsim`, on `http://127.0.0.1:9876`. Save sets it, Clear goes back to
 NFC, and a restart forgets it. Dev builds only: `getCardBridge()` answers
 `null` in a release build whatever was set. The Maestro flows set the same
@@ -308,7 +308,7 @@ is an applet running other software, and still reads as "This card needs an
 update".
 
 **Protocol 2.0 (ENG-674).** The terminal speaks the shared Cashu card
-protocol 2.0 (cashu-javacard `spec/APDU.md`): the 2.0 applet AID is tried
+protocol 2.0 (cashucard/cashucard `spec/APDU.md`): the 2.0 applet AID is tried
 first. Following cardsim's contract (`tools/cardsim/README.md`, "Old cards"),
 any answer to it but `02xx 9000` or `6A82` (another version, an empty body, a
 `6E00` or `6999`) is **"This card needs an update"**. A card where neither

@@ -423,7 +423,7 @@ for the hardware and the money:
 
 | Piece | What it is | Where |
 |---|---|---|
-| Card | The real cashu-javacard applet (protocol 2.0) in jCardSim, served over HTTP (`cardsim`) | `lnflash/cashu-javacard` `tools/cardsim`, port 9876 |
+| Card | The real Cashu Card applet (protocol 2.0) in jCardSim, served over HTTP (`cardsim`) | `cashucard/cashucard` `tools/cardsim`, port 9876 |
 | Mint | Nutshell 0.20.3 on FakeWallet: quotes pay themselves, no fees | port 3338 |
 | Block headers | A stub the runner serves on an ephemeral port: the tip is the newest of the applet's `spec/vectors/headers.json` | `scripts/e2e-flashcard.mjs` |
 | App | A Debug build with the JS bundle embedded, driven by Maestro | `.maestro/flashcard/` |
@@ -513,7 +513,7 @@ header arrow, hardware Back and `beforeRemove` on both paths.
 ### Running it locally
 
 ```bash
-# 1. The card (cashu-javacard checkout at the ref in .github/workflows/e2e-flashcard.yml)
+# 1. The card (cashucard/cashucard checkout at the ref in .github/workflows/e2e-flashcard.yml)
 mvn -B -f tools/cardsim/pom.xml package -DskipTests
 java -jar tools/cardsim/target/cardsim.jar --port 9876
 
@@ -547,7 +547,7 @@ xcodebuild -workspace ios/flash_pos.xcworkspace -scheme flash_pos \
 xcrun simctl install booted "ios/build/Build/Products/Debug-iphonesimulator/Flash POS.app"
 
 # 4. The flows (maestro 2.10.0 on PATH). The runner reaches cardsim only through
-#    its reference client, tools/cardsim/client.cjs: found in ../cashu-javacard
+#    its reference client, tools/cardsim/client.cjs: found in ../cashu-javacard (a cashucard/cashucard checkout)
 #    or ./cardsim, else pass --cardsim-client <path> (or CARDSIM_CLIENT).
 yarn e2e:flashcard --username <TEST merchant>             # all eight
 yarn e2e:flashcard --username <TEST merchant> --flow charge-with-change
@@ -572,7 +572,7 @@ fixture, and hands later fixtures to the flow (`FIXTURE_FULL`,
 left (no `/reset`, after a `CLEAR_SPENT`): a 2.0 card's change openings,
 the other half of the change it is owed, live on the card. Cards and their states are in `scripts/e2e-flashcard/lib.cjs`.
 The runner's own bridge calls (`/state`, `/reset` and the starting
-`/fixture`) go through cashu-javacard's `client.cjs`, with its 5 s deadline
+`/fixture`) go through cashucard/cashucard's `client.cjs`, with its 5 s deadline
 per request, so a wedged bridge fails the flow instead of hanging the run.
 Before anything is minted, the runner also checks every stage of every flow
 (`INITIAL`, `FULL`, `AFTER`) with the client's `validateFixture`, and checks
@@ -582,7 +582,7 @@ calls do not go through the client: `.maestro/flashcard/scripts/post-fixture.js`
 Maestro's `http`, which validates nothing. A malformed
 stage therefore fails in the runner, naming the flow and the stage, and never
 reaches the bridge as a bare 400 from inside Maestro. `--dry-run` runs the
-same check when it finds a cashu-javacard checkout.
+same check when it finds a sibling cashucard/cashucard checkout at ../cashu-javacard.
 
 ### CI
 
