@@ -2,6 +2,61 @@
 
 ## Status
 
+### Applet 2.2 and the phone relay (ENG-821, 2026-11-05)
+
+A 2.2 card answers SELECT with `02 02`. The till reads only the major, at SELECT
+and at GET_INFO, so it charges a 2.2 card exactly as a 2.1 card: the same
+commands in the same order, and nothing new. The card writes its outbox record
+inside the `SPEND_ALL_SIGN` the till already sends. A 3.x card still needs an
+update.
+
+What the till shows for an exact charge it could not swap (the till was
+offline, the card's pieces checked offline):
+
+1. Success, titled "Charged 12 sats — paid by eCash card" (the bill's amount).
+   The payment waits in the settlement queue with its recovery intent.
+2. Profile, the settlement banner: "⚠ 12 sat in the till" and "1 tapped
+   payment(s) settle automatically when online." with Settle now.
+3. After recovery. The settlement run (automatic on its cadence and on
+   foreground, or Settle now) finds the inputs spent, books the restored
+   outputs, and sweeps them in the same run when the merchant is signed in. A
+   sweep that pays shows the toast "eCash: paid out N sat to your wallet" (N is
+   what reached the wallet) and the banner hides. Until a sweep pays, the banner
+   reads "⚠ 12 sat in the till (12 sat to sweep)" and "12 sat settled at the
+   mint; it sweeps to your wallet when online." A Settle now that settles but
+   does not sweep shows "eCash: settled 1 tapped payment(s)", with the reason
+   when there is one. Under 10 sat it is the quiet line "N sat settled at the
+   mint; it sweeps to your wallet once the till reaches 10 sat."
+
+This is read from the screens' code; the harness proves the service layer
+under them, not the screens.
+
+If the till's own swap meets the phone's in flight, the mint answers 11002
+("proofs are pending"). For a SIG_ALL payment that is no longer a refusal: the
+entry stays outstanding (the banner's queue line, never "settlement(s)
+failed") and the next drain recovers it.
+
+`__tests__/integration/cardRelayDemo.test.ts` proves this against cashu-card's
+cardsim (the 2.2 applet) and a Nutshell 0.20.3 FakeWallet mint: the till's own
+`readAndPlan` and `executeCharge` with the swap kept from the mint, a separate
+phone process (`scripts/card-relay/phone.cjs`) that reads the packet with
+`GET_OUTBOX` and settles it with cashu-card's `relay.js`, then the till's drain.
+It checks that the till recovers its exact outputs and credits them once, that a
+second drain and repeated recovery change nothing, that the phone's replay
+submits nothing, that a concurrent phone and till converge in both orders, and
+that the mint shows every input spent and the till's proceeds unspent. One
+command runs it, with Docker, JDK 17 and Maven:
+
+```sh
+scripts/card-relay/run-local.sh /absolute/path/to/cashucard-checkout
+```
+
+`.github/workflows/card-relay.yml` runs the same on demand and on pull requests
+that touch `src/services/cashu*` or the harness. The mint is seeded with an
+8-byte keyset (forge's shape): a 2.2 packet names keysets by 8 bytes and the
+relay engine looks them up as given, so a mint whose keyset id is 33 bytes is
+out of its reach today.
+
 ### Merchant output recovery (2026-10-27)
 
 The settlement drain checks every original input. A mint `SPENT` result or

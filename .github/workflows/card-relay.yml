@@ -1,0 +1,74 @@
+name: Card relay (2.2 outbox)
+
+# ENG-821: an offline charge on the 2.2 applet, relayed by a phone process
+# from the card's outbox (GET_OUTBOX) and recovered by the till's drain:
+# __tests__/integration/cardRelayDemo.test.ts against cashucard/cashucard's
+# cardsim and a throwaway Nutshell FakeWallet mint in Docker. The same one
+# command runs it locally: scripts/card-relay/run-local.sh <cashucard checkout>.
+#
+# Opt-in, not a required check: on demand, and on pull requests that touch the
+# till's card or settlement services or the harness itself.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/services/cashu*'
+      - 'scripts/card-relay/**'
+      - '__tests__/integration/cardRelayDemo.test.ts'
+      - '__tests__/support/localFetch.ts'
+      - '.github/workflows/card-relay.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: card-relay-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # cashucard/cashucard main at ENG-819: CashuApplet 2.2 (GET_OUTBOX) and the
+  # assisted-relay engine (tools/assisted-relay/relay.js).
+  CASHU_CARD_REF: e8e2694b747d28107e093840946ee4d7163bded7
+  NUTSHELL_VERSION: '0.20.3'
+
+jobs:
+  relay:
+    name: Phone relay, till recovery (cardsim 2.2, Nutshell)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Cashu Card
+        uses: actions/checkout@v4
+        with:
+          repository: cashucard/cashucard
+          ref: ${{ env.CASHU_CARD_REF }}
+          path: cashucard
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+          cache-dependency-path: cashucard/tools/cardsim/pom.xml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Pull the mint image
+        run: docker pull "cashubtc/nutshell:$NUTSHELL_VERSION"
+
+      - name: Run the relay harness
+        run: scripts/card-relay/run-local.sh "$GITHUB_WORKSPACE/cashucard"

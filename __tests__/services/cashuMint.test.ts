@@ -30,6 +30,7 @@ import {
   isRateLimited,
   keysetFor,
   listSettledProofs,
+  mapSwapError,
   meltSettledProofs,
   mintReachable,
   prepareChargeOutputs,
@@ -1767,6 +1768,36 @@ describe('swap — a 2.0 payment (SIG_ALL)', () => {
     await expect(createSettlementAdapter().swap(entry)).rejects.toBeInstanceOf(
       ProofAlreadySpentError,
     );
+  });
+
+  // ENG-821: a phone relaying the same signed payment had its swap in flight
+  // at the mint (cardRelayDemo.test.ts, Nutshell 0.20.3). The mint's 11002
+  // "proofs are pending" is about that other submission of this exact payment,
+  // not a refusal of it: an entry marked failed for it books the merchant's
+  // proceeds as lost.
+  it("the mint's 11002 (proofs pending) on a 2.0 payment is not a refusal: the outcome is unknown", async () => {
+    const mint = new TestMint();
+    walletMocks.mintSwap.mockRejectedValue(
+      new cashu.MintOperationError(11002, 'proofs are pending'),
+    );
+    const entry = await sigAllEntry(mint);
+    const failure = await createSettlementAdapter()
+      .swap(entry)
+      .catch(e => e);
+    expect(failure).toBeInstanceOf(cashu.MintOperationError);
+    expect(failure).not.toBeInstanceOf(PermanentSettlementError);
+    expect(failure).not.toBeInstanceOf(TransportSettlementError);
+    expect(mapSwapError(failure, entry)).toBe(failure);
+  });
+
+  it('other mint operation errors on a 2.0 payment stay a refusal', async () => {
+    const mint = new TestMint();
+    const entry = await sigAllEntry(mint);
+    for (const code of [11003, 11005, 10001, 20008]) {
+      expect(
+        mapSwapError(new cashu.MintOperationError(code, 'refused'), entry),
+      ).toBeInstanceOf(PermanentSettlementError);
+    }
   });
 
   it('a fetch-level failure is TransportSettlementError (provably unsent)', async () => {

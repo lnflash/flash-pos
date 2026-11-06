@@ -690,7 +690,10 @@ export async function getInfo(
     context: 'GET_INFO',
   });
   const info = parseInfo(body);
-  if (info.major < PROTOCOL_MAJOR) {
+  // The major only, as SELECT reads it: every 2.x minor (2.2's GET_OUTBOX
+  // included) is charged the same way, and a 3.x card needs an update here
+  // as it does at SELECT.
+  if (info.major !== PROTOCOL_MAJOR) {
     throw new CardNeedsUpdateError(`GET_INFO version ${info.version}`);
   }
   return info;
