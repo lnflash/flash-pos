@@ -113,7 +113,6 @@ const transceive: Transceiver = async apdu => {
   return (hex.match(/../g) ?? []).map(h => parseInt(h, 16));
 };
 
-/** Mint format-4 SIG_ALL pieces to the card, each with the mint's DLEQ. */
 /** The mint's one active sat keyset, its id checked against the run's shape. */
 async function activeKeyset(mint: Mint) {
   const {keysets} = await mint.getKeySets();
@@ -131,6 +130,7 @@ async function activeKeyset(mint: Mint) {
   return keyset;
 }
 
+/** Mint format-4 SIG_ALL pieces to the card, each with the mint's DLEQ. */
 async function mintToCard(cardKey: string, amounts: number[]) {
   const mint = new Mint(MINT_URL!);
   const keyset = await activeKeyset(mint);
@@ -453,6 +453,11 @@ run('a 2.2 card payment relayed by a phone, recovered by the till', () => {
       `[ENG-821] race (${order}): phone retried ${
         raced.unresolved.length
       }: ${JSON.stringify(raced.unresolved)}`,
+    );
+    // observe() records a keyset-mapping failure instead of throwing; a
+    // mapping regression must still fail the leg, not hide in a log line.
+    expect(raced.unresolved.filter((u: {error?: string}) => u.error)).toEqual(
+      [],
     );
     return {entry, folder, drains};
   }
