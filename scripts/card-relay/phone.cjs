@@ -254,6 +254,28 @@ async function main() {
 }
 
 /**
+ * The mint's full keyset id for each 8-byte id the packet names: the one id
+ * in its catalogue that starts with it. On a legacy (8-byte) mint this is the
+ * id itself; on a v2 (33-byte) mint, the full id restore must be asked under.
+ * Returns {error} instead when a prefix names no keyset or more than one.
+ */
+async function fullKeysetIds(http, ids) {
+  const catalogue = await http('/v1/keysets');
+  const known = (catalogue && catalogue.keysets ? catalogue.keysets : []).map(
+    k => k.id,
+  );
+  const full = {};
+  for (const id of new Set(ids)) {
+    const matches = known.filter(k => k.startsWith(id));
+    if (matches.length !== 1) {
+      return {error: matches.length ? 'keyset-ambiguous' : 'keyset-unknown'};
+    }
+    full[id] = matches[0];
+  }
+  return {full};
+}
+
+/**
  * What the mint showed when the engine called the settlement unresolved:
  * how many of the packet's outputs restore returned, and the inputs' states.
  * Kept in the result so a run shows the transient it rode out.
@@ -262,7 +284,16 @@ async function observe(http, folder) {
   const captured = JSON.parse(
     fs.readFileSync(path.join(folder, 'capture-result.json'), 'utf8'),
   );
-  const restore = await http('/v1/restore', {outputs: captured.outputs});
+  // The packet names keysets by 8 bytes; restore takes the mint's full id.
+  const mapped = await fullKeysetIds(
+    http,
+    captured.outputs.map(o => o.id),
+  );
+  const restore = mapped.error
+    ? undefined
+    : await http('/v1/restore', {
+        outputs: captured.outputs.map(o => ({...o, id: mapped.full[o.id]})),
+      });
   const {crypto} = require(path.join(
     process.argv[2],
     'tools/assisted-relay/node-adapter.cjs',
@@ -271,7 +302,9 @@ async function observe(http, folder) {
     Ys: captured.inputs.map(i => crypto.proofY(i.secret)),
   });
   return {
-    restored: restore.signatures.length,
+    ...(restore
+      ? {restored: restore.signatures.length}
+      : {error: mapped.error}),
     inputs: states.states.map(s => s.state),
   };
 }

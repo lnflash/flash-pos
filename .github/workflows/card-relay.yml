@@ -5,6 +5,7 @@ name: Card relay (2.2 outbox)
 # __tests__/integration/cardRelayDemo.test.ts against cashucard/cashucard's
 # cardsim and a throwaway Nutshell FakeWallet mint in Docker. The same one
 # command runs it locally: scripts/card-relay/run-local.sh <cashucard checkout>.
+# ENG-824: a matrix leg per mint keyset id shape, v2 (33-byte) and legacy 8-byte.
 #
 # Opt-in, not a required check: on demand, and on pull requests that touch the
 # till's card or settlement services or the harness itself.
@@ -25,15 +26,20 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # cashucard/cashucard main at ENG-819: CashuApplet 2.2 (GET_OUTBOX) and the
-  # assisted-relay engine (tools/assisted-relay/relay.js).
-  CASHU_CARD_REF: e8e2694b747d28107e093840946ee4d7163bded7
+  # cashucard/cashucard main at ENG-822: CashuApplet 2.2 (GET_OUTBOX) and the
+  # assisted-relay engine (tools/assisted-relay/relay.js) with unique-prefix
+  # keyset resolution (cashucard#235) and its CI fix (#236).
+  CASHU_CARD_REF: df3f0bf06338a38ba5d422aae37651bef6ce009f
   NUTSHELL_VERSION: '0.20.3'
 
 jobs:
   relay:
-    name: Phone relay, till recovery (cardsim 2.2, Nutshell)
+    name: Phone relay, till recovery (cardsim 2.2, Nutshell, ${{ matrix.mint_ids }} ids)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mint_ids: [v2, legacy8]
     timeout-minutes: 30
     defaults:
       run:
@@ -71,4 +77,4 @@ jobs:
         run: docker pull "cashubtc/nutshell:$NUTSHELL_VERSION"
 
       - name: Run the relay harness
-        run: scripts/card-relay/run-local.sh "$GITHUB_WORKSPACE/cashucard"
+        run: scripts/card-relay/run-local.sh "$GITHUB_WORKSPACE/cashucard" "${{ matrix.mint_ids }}"

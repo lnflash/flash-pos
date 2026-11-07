@@ -1028,6 +1028,60 @@ describe('chargeCard', () => {
     }
   });
 
+  // ENG-824: a mint whose keyset has a v2 (33-byte) id. The card names the
+  // keyset by its 8-byte prefix; the till plans, queues and later recovers
+  // under the mint's full id, which only the till ever sends to the mint.
+  it('offline, an exact bill at a mint with a v2 keyset id queues the payment under the full id', async () => {
+    const v2 = '01' + 'ab'.repeat(32);
+    const mint = resetTestMint({keysetId: v2});
+    __resetWalletCache();
+    await saveKeysets(MINT_URL, [mint.cachedKeyset()]);
+    const card = cardWithPieces([8, 4]);
+    mint.failAll = OFFLINE();
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(OFFLINE());
+    try {
+      const preRead = await readAndPlan({
+        transceive: card.transceive,
+        amountSat: 12,
+        mintUrl: MINT_URL,
+      });
+      // The card holds the pieces under the 8-byte prefix.
+      expect(preRead.pieces.map(p => p.keysetId)).toEqual([
+        v2.slice(0, 16),
+        v2.slice(0, 16),
+      ]);
+      expect(preRead.requiresOnline).toBe(false);
+      expect(preRead.plan).toMatchObject({changeSat: 0});
+
+      const result = await executeCharge({
+        ...preRead,
+        transceive: card.transceive,
+        amountSat: 12,
+        mintUrl: MINT_URL,
+        now: 1000,
+      });
+      expect(result.changeSat).toBe(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    const [entry] = await listSettlements();
+    expect(entry).toMatchObject({status: 'pending', sigflag: 'SIG_ALL'});
+    expect(entry.inputs).toHaveLength(2);
+    expect(entry.inputs.map(i => i.keysetId)).toEqual([v2, v2]);
+    expect(entry.outputs.length).toBeGreaterThan(0);
+    expect(entry.outputs.every(o => o.keysetId === v2)).toBe(true);
+    // SPEND_ALL_OUTPUTS carries amount(4) || B_(33) per output: no keyset id
+    // reaches the card, so the 66-hex id never meets its 8-byte field.
+    const outputApdus = card.sent.filter(a => insOf(a) === 0x23);
+    expect(outputApdus.length).toBeGreaterThan(0);
+    const sentBytes = outputApdus.reduce((t, a) => t + a[4], 0);
+    expect(sentBytes).toBe(entry.outputs.length * 37);
+    expect(tillProofs()).toHaveLength(0);
+  });
+
   it('shows the card the cached tip header before the payment', async () => {
     const header = Array.from(Buffer.from(headerVectors()[11].header, 'hex'));
     const {cachedTipHeader} = jest.requireMock(
@@ -2314,7 +2368,7 @@ describe('owed change (ENG-630)', () => {
     }
   });
 
-  it('one unparseable element in the owed store does not refuse the charge: the good piece is still written', async () => {
+  it('one unparsable element in the owed store does not refuse the charge: the good piece is still written', async () => {
     const card = pinCard([16]);
     const [owed] = await owedFromEarlierCharge([4], [card]);
     // A downgraded build meeting a status it does not know, say.

@@ -12,8 +12,12 @@
  *   only its public folder. It reads the packet with GET_OUTBOX and settles
  *   it with cashu-card's tools/assisted-relay/relay.js (capturePacket,
  *   decodePacket, reconcilePayment).
- * - The mint: Nutshell 0.20.3 on FakeWallet with an 8-byte keyset (forge's
- *   shape; a 2.2 packet carries 8-byte keyset ids, see the README below).
+ * - The mint: Nutshell 0.20.3 on FakeWallet, run once with a v2 (33-byte,
+ *   66-hex) keyset id and once with a legacy 8-byte one (ENG-824). A 2.2
+ *   packet names keysets by 8 bytes; the relay engine maps each to the
+ *   mint's full id by unique prefix, and the till plans, queues and recovers
+ *   under the full id. CARD_RELAY_EXPECT_IDS (v2 | legacy8) pins the shape
+ *   the run was seeded for.
  *
  * The card's record holds the logical mint https://cashucard-relay.invalid
  * (a 2.2 card leaves no record for a mint that is not https); the phone maps
@@ -23,7 +27,7 @@
  * Skipped unless all three are given. One command, from the repo root, with
  * Docker, JDK 17 and Maven:
  *
- *   scripts/card-relay/run-local.sh /absolute/path/to/cashucard-checkout
+ *   scripts/card-relay/run-local.sh /absolute/path/to/cashucard-checkout [v2|legacy8|both]
  */
 import {spawn, spawnSync} from 'node:child_process';
 import {existsSync, mkdtempSync, readFileSync, readdirSync} from 'node:fs';
@@ -41,7 +45,11 @@ import {
 import {bytesToHex, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
 
 import {installLocalFetch} from '../support/localFetch';
-import {selectApplet, type Transceiver} from '../../src/services/cashuCard';
+import {
+  getPieces,
+  selectApplet,
+  type Transceiver,
+} from '../../src/services/cashuCard';
 import {
   __resetWalletCache,
   buildCardSigAllSecret,
@@ -62,6 +70,11 @@ const CARDSIM = process.env.CARD_RELAY_CARDSIM;
 const MINT_URL = process.env.CARD_RELAY_MINT;
 const CASHU_CARD = process.env.CARD_RELAY_CASHU_CARD;
 const run = CARDSIM && MINT_URL && CASHU_CARD ? describe : describe.skip;
+
+const EXPECT_IDS = process.env.CARD_RELAY_EXPECT_IDS;
+if (EXPECT_IDS && EXPECT_IDS !== 'v2' && EXPECT_IDS !== 'legacy8') {
+  throw new Error(`CARD_RELAY_EXPECT_IDS must be v2 or legacy8: ${EXPECT_IDS}`);
+}
 
 const LOGICAL_MINT = 'https://cashucard-relay.invalid';
 const PHONE = resolve(__dirname, '../../scripts/card-relay/phone.cjs');
@@ -100,14 +113,27 @@ const transceive: Transceiver = async apdu => {
   return (hex.match(/../g) ?? []).map(h => parseInt(h, 16));
 };
 
+/** The mint's one active sat keyset, its id checked against the run's shape. */
+async function activeKeyset(mint: Mint) {
+  const {keysets} = await mint.getKeySets();
+  const active = keysets.filter(k => k.active && k.unit === 'sat');
+  expect(active).toHaveLength(1);
+  const keyset = active[0];
+  // A 2.2 packet names every keyset by its first 8 bytes; the relay engine
+  // maps each to the mint's full id by unique prefix. The till keeps the
+  // full id: 8 bytes (legacy) or 33 (v2).
+  expect(keyset.id).toMatch(/^[0-9a-f]+$/);
+  expect([16, 66]).toContain(keyset.id.length);
+  if (EXPECT_IDS) {
+    expect(keyset.id).toHaveLength(EXPECT_IDS === 'v2' ? 66 : 16);
+  }
+  return keyset;
+}
+
 /** Mint format-4 SIG_ALL pieces to the card, each with the mint's DLEQ. */
 async function mintToCard(cardKey: string, amounts: number[]) {
   const mint = new Mint(MINT_URL!);
-  const {keysets} = await mint.getKeySets();
-  const keyset = keysets.find(k => k.active && k.unit === 'sat')!;
-  // A 2.2 packet names every keyset by 8 bytes; the relay engine looks them
-  // up in the mint's catalogue as given.
-  expect(keyset.id).toHaveLength(16);
+  const keyset = await activeKeyset(mint);
   const keys = (await mint.getKeys(keyset.id)).keysets[0].keys as Record<
     string,
     string
@@ -134,7 +160,8 @@ async function mintToCard(cardKey: string, amounts: number[]) {
   return signatures.map((sig, i) => {
     const b = blinded[i];
     return {
-      keysetId: keyset.id,
+      // The card stores a keyset as 8 bytes (cardsimMint.test.ts does the same).
+      keysetId: keyset.id.slice(0, 16),
       amount: b.amount,
       nonce: b.nonce,
       C: unblindSignature(
@@ -189,6 +216,8 @@ const sum = (proofs: {amount: number}[]) =>
  * the payment waits in the queue with its recovery intent.
  */
 async function chargeOffline(): Promise<SettlementEntry> {
+  const {id: keysetId} = await activeKeyset(new Mint(MINT_URL!));
+  console.log(`[ENG-824] mint keyset ${keysetId} (${keysetId.length} hex)`);
   const cardKey = ((await bridge('/reset', {})) as {pubkey: string}).pubkey;
   const pieces = await mintToCard(cardKey, [8, 4]);
   await bridge('/fixture', {mint: LOGICAL_MINT, owner: true, proofs: pieces});
@@ -233,6 +262,14 @@ async function chargeOffline(): Promise<SettlementEntry> {
   expect(entry.witness).toBeTruthy();
   expect(entry.inputs).toHaveLength(2);
   expect(sum(entry.outputs)).toBe(12);
+  // ENG-824: the till queues under the mint's full keyset id, never the
+  // card's 8-byte prefix, so its recovery names a keyset the mint has.
+  expect(entry.inputs.map(i => i.keysetId)).toEqual(
+    entry.inputs.map(() => keysetId),
+  );
+  expect(entry.outputs.map(o => o.keysetId)).toEqual(
+    entry.outputs.map(() => keysetId),
+  );
   expect(await listSettledProofs()).toEqual([]);
   return entry;
 }
@@ -253,8 +290,19 @@ function expectPacketIsTheTillsPayment(
   expect(captured.inputs.map((i: {secret: string}) => i.secret)).toEqual(
     entry.inputs.map(i => i.secret),
   );
+  // The packet names keysets by 8 bytes; the till's entry by the full id.
+  for (const named of [...captured.inputs, ...captured.outputs]) {
+    expect(named.id).toMatch(/^[0-9a-f]{16}$/);
+  }
+  expect(captured.inputs.map((i: {id: string}) => i.id)).toEqual(
+    entry.inputs.map(i => i.keysetId.slice(0, 16)),
+  );
   expect(captured.outputs).toEqual(
-    entry.outputs.map(o => ({amount: o.amount, id: o.keysetId, B_: o.B_})),
+    entry.outputs.map(o => ({
+      amount: o.amount,
+      id: o.keysetId.slice(0, 16),
+      B_: o.B_,
+    })),
   );
 }
 
@@ -406,6 +454,11 @@ run('a 2.2 card payment relayed by a phone, recovered by the till', () => {
         raced.unresolved.length
       }: ${JSON.stringify(raced.unresolved)}`,
     );
+    // observe() records a keyset-mapping failure instead of throwing; a
+    // mapping regression must still fail the leg, not hide in a log line.
+    expect(raced.unresolved.filter((u: {error?: string}) => u.error)).toEqual(
+      [],
+    );
     return {entry, folder, drains};
   }
 
@@ -453,4 +506,41 @@ run('a 2.2 card payment relayed by a phone, recovered by the till', () => {
     expect(drains[0]).toMatchObject({settled: 1, stillPending: 0, failed: 0});
     await expectConverged(entry, folder);
   });
+
+  // ENG-824, cardsim side: what /fixture does with a piece named by the
+  // mint's full 33-byte id. The harness itself always sends the card's 8
+  // bytes; this records the fixture's behaviour, whichever it is.
+  (EXPECT_IDS === 'v2' ? it : it.skip)(
+    'a cardsim /fixture piece named by a 66-hex keyset id is stored as its 8-byte prefix, or refused by name',
+    async () => {
+      const cardKey = ((await bridge('/reset', {})) as {pubkey: string}).pubkey;
+      const [piece] = await mintToCard(cardKey, [8]);
+      const {id: full} = await activeKeyset(new Mint(MINT_URL!));
+      expect(full).toHaveLength(66);
+      let refusal: Error | undefined;
+      try {
+        await bridge('/fixture', {
+          mint: LOGICAL_MINT,
+          owner: true,
+          proofs: [{...piece, keysetId: full}],
+        });
+      } catch (error) {
+        refusal = error as Error;
+      }
+      if (refusal) {
+        console.log(`[ENG-824] fixture probe: refused: ${refusal.message}`);
+        expect(refusal.message).toMatch(/cardsim \/fixture: 4\d\d/);
+        expect(refusal.message).toMatch(/keyset/i);
+        return;
+      }
+      await selectApplet(transceive);
+      const {unspent} = await getPieces(transceive);
+      console.log(
+        `[ENG-824] fixture probe: accepted, card lists ${JSON.stringify(
+          unspent.map(p => p.keysetId),
+        )}`,
+      );
+      expect(unspent.map(p => p.keysetId)).toEqual([full.slice(0, 16)]);
+    },
+  );
 });
