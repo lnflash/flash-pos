@@ -42,7 +42,7 @@ import type {Nodes} from '../../../src/components/cashu/charge/useChargeEngine';
  *   the charge card, which draws those arcs as its own overlays.
  */
 const ART_FILE_SHA256 =
-  '6e0b76e7542270cf9a45de8e7a642143b13cbd3d2e91a4573364392cba42b0d6';
+  'caefa34a8f840999d04c7e9841ce426971f0c2764276485a8b4081346067b0b6';
 const PARITY_DIGEST =
   'f7ce7004e269bd42be8fb11d7fea12bdc7e65e2e5a677a4cd85d3ebe93ba4ef1';
 const RENDER_DIGESTS = {
