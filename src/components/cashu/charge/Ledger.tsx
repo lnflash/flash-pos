@@ -189,11 +189,7 @@ const FromChip = ({
         testID="chip-from-spent"
         style={[StyleSheet.absoluteFill, styles.white, {opacity: n.fromSpent}]}>
         <Edge width={1} color={COLOR.hairline} />
-        <Number
-          value={total}
-          color={COLOR.text2}
-          opacity={n.fromSpentNum}
-        />
+        <Number value={total} color={COLOR.text2} opacity={n.fromSpentNum} />
         <Caption name="from" tracking={tracking} />
       </Animated.View>
     </Animated.View>
