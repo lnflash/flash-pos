@@ -117,10 +117,10 @@ const GlowArt = React.memo(() => (
  * (CARD.id, 4.05:1 on the greenDeep corner it sits on). At 12 dp its cap is
  * ~1.35x the caption's (idSlot.capRef), so it is not quieter than
  * CASHU ECASH CARD; the art's capRef contract would put it at 8.5 dp or less
- * at k = 1, which is the owner's call from the device pass. Its ink ends on the slot's right edge, the caption's left margin
- * mirrored (Android sets no trailing letter-space), and its row is centred
- * on the caption's mid-line. The card's accessibilityLabel carries the id
- * for screen readers.
+ * at k = 1, which is the owner's call from the device pass. Its ink ends on
+ * the slot's right edge, the caption's left margin mirrored (Android sets no
+ * trailing letter-space), and its row is centred on the caption's mid-line.
+ * The card's accessibilityLabel carries the id for screen readers.
  */
 const ID_SLOT = CARD_ART.idSlot;
 const ID_ROW = 28;
@@ -199,7 +199,7 @@ function EcashCard({layout, n, last4}: EcashCardProps) {
       <Animated.View
         testID="card-glow"
         pointerEvents="none"
-        style={[styles.abs, styles.glow, {left: 0, width: w, opacity: n.glow}]}>
+        style={[styles.abs, styles.glow, {width: w, opacity: n.glow}]}>
         <GlowArt />
       </Animated.View>
       <Animated.View
@@ -214,7 +214,7 @@ const styles = StyleSheet.create({
   abs: {position: 'absolute'},
   /** 70 dp band, centred on x = 0 before its translateX. */
   sheen: {left: -SHEEN_W / 2, width: SHEEN_W},
-  glow: {bottom: 0, height: GLOW_H},
+  glow: {left: 0, bottom: 0, height: GLOW_H},
   idRow: {justifyContent: 'center'},
   dim: {backgroundColor: CARD.dim},
 });

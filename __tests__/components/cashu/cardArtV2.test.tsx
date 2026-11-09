@@ -127,7 +127,6 @@ describe('card art v2 — parity with flash-mobile', () => {
   });
 });
 
-/** The x y pairs of a path of absolute M, L, C, Q and Z commands. */
 /** WCAG 2 contrast between two opaque hex colours. */
 const contrast = (a: string, b: string) => {
   const lum = (hex: string) => {
@@ -141,6 +140,7 @@ const contrast = (a: string, b: string) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
+/** The x y pairs of a path of absolute M, L, C, Q and Z commands. */
 const points = (d: string) => {
   const n = (d.match(/-?\d*\.?\d+/g) ?? []).map(Number);
   return n.flatMap((_, i) => (i % 2 ? [] : [[n[i], n[i + 1]]]));
