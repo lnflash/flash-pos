@@ -56,10 +56,11 @@ export const CARD = {
   goldMid: '#d2bb6a',
   goldDark: '#a98b3d',
   /**
-   * The masked id: the caption's ink at 60 %, dark on the lime field and
-   * lighter than the caption beside it.
+   * The masked id: the mark's ink at full opacity. It sits on the greenDeep
+   * corner, where the caption's ink at 60 % measured 1.94:1; markInk is
+   * 4.05:1 there, the most a card ink reaches.
    */
-  id: 'rgba(29,61,41,0.6)',
+  id: '#10271e',
   /** The finale dim recedes to black, never to teal. */
   dim: '#000000',
   shadow: '#000000',

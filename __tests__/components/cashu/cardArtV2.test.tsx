@@ -21,7 +21,7 @@ import {
   ART_W,
   chargeLayout,
 } from '../../../src/components/cashu/charge/geometry';
-import {CARD} from '../../../src/components/cashu/charge/tokens';
+import {CARD, COLOR} from '../../../src/components/cashu/charge/tokens';
 import type {Nodes} from '../../../src/components/cashu/charge/useChargeEngine';
 
 /**
@@ -128,6 +128,19 @@ describe('card art v2 — parity with flash-mobile', () => {
 });
 
 /** The x y pairs of a path of absolute M, L, C, Q and Z commands. */
+/** WCAG 2 contrast between two opaque hex colours. */
+const contrast = (a: string, b: string) => {
+  const lum = (hex: string) => {
+    const [r, g, bl] = rgb(hex).map(c => {
+      const x = c / 255;
+      return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [lo, hi] = [lum(a), lum(b)].sort((x, y) => x - y);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
 const points = (d: string) => {
   const n = (d.match(/-?\d*\.?\d+/g) ?? []).map(Number);
   return n.flatMap((_, i) => (i % 2 ? [] : [[n[i], n[i + 1]]]));
@@ -371,8 +384,13 @@ describe('card art v2 — palette', () => {
     expect(CARD.dim).toBe('#000000');
   });
 
-  it('prints the masked id in the caption’s ink at 60 %', () => {
-    expect(CARD.id).toBe(`rgba(${rgb(CARD_PALETTE.ink).join(',')},0.6)`);
+  it('prints the masked id in the mark’s ink at full opacity, legible on the greenDeep corner it sits on', () => {
+    expect(CARD.id).toBe(CARD_PALETTE.markInk);
+    // The slot is the field's dark end; the caption's ink at 60 % blended
+    // there to 1.94:1. The id is the only on-screen sign of which card was
+    // tapped, so it takes the darkest card ink.
+    expect(contrast(CARD.id, CARD_PALETTE.greenDeep)).toBeGreaterThan(4);
+    expect(contrast(CARD.id, CARD_PALETTE.green)).toBeGreaterThan(4);
   });
 
   it('is the artboard the charge geometry sizes the card from', () => {
@@ -420,7 +438,7 @@ describe.each([
     expect(row.top).toBeGreaterThan(15);
   });
 
-  it('sizes the masked id with the card, never with the font scale, so it reads as small print beside the caption', () => {
+  it('sizes the masked id with the card, never with the font scale, at a cap ~1.35x the caption’s', () => {
     const {getByTestId} = render(<EcashCard layout={L} n={n} last4="0C67" />);
     const id = getByTestId('card-id');
     const style = StyleSheet.flatten(id.props.style);
@@ -431,12 +449,13 @@ describe.each([
     // A large system font never enlarges it.
     expect(id.props.maxFontSizeMultiplier).toBe(1);
     // Outfit's digit cap (~0.725 em) against the caption's cap
-    // (idSlot.capRef): the same ratio at every k, ~1.35, small print beside
-    // CASHU ECASH CARD rather than an embossed card number. It is quieter
-    // than the caption in tone: the caption's ink at 60 % against its 100 %.
+    // (idSlot.capRef): the same ratio at every k, pinned at 1.35. The id is
+    // larger than CASHU ECASH CARD, not quieter: the art's capRef contract
+    // (cardArtV2.tsx idSlot) would need 8.5 dp or less at k = 1, the owner's
+    // call from the device pass. Any growth past 1.35 fails here.
     const ratio = (0.725 * style.fontSize) / (CARD_ART.idSlot.capRef * k);
     expect(ratio).toBeCloseTo((0.725 * 12) / 6.46, 6);
-    expect(ratio).toBeLessThan(1.4);
+    expect(ratio).toBeCloseTo(1.35, 2);
     expect(style.color).toBe(CARD.id);
     // Its row holds the line at this size, centred on the caption.
     const row = StyleSheet.flatten(getByTestId('card-id-row').props.style);
@@ -450,6 +469,41 @@ describe.each([
     expect(glow.left).toBe(0);
     expect(glow.width).toBeCloseTo(L.card.w, 6);
     expect(glow.bottom).toBe(0);
+  });
+
+  it('draws the change glow in white over an ink rule, never in a green the field swallows', () => {
+    const {getByTestId} = render(<EcashCard layout={L} n={n} last4={null} />);
+    const glow = getByTestId('card-glow');
+    const [gradient] = glow.findAll(
+      node =>
+        String(node.type) === 'RNSVGLinearGradient' && node.props.id === 'glow',
+    );
+    const stops = gradient
+      .findAll(node => String(node.type) === 'RNSVGStop')
+      .map(node => [node.props.stopColor, node.props.stopOpacity]);
+    expect(stops).toEqual([
+      ['#ffffff', 0],
+      ['#ffffff', 0.35],
+    ]);
+    const [group] = glow.findAll(node => String(node.type) === 'RNSVGGroup');
+    const rects = group
+      .findAll(node => String(node.type) === 'RNSVGRect')
+      .map(node => [node.props.y, node.props.height, node.props.fill]);
+    expect(rects).toEqual([
+      ['0', '11', 'url(#glow)'],
+      ['11', '1', CARD.ink],
+      ['12', '2', '#ffffff'],
+    ]);
+    // Neither colour is the field's: the ink rule holds 3:1 against every
+    // stop of the face, and the white rule 12:1 against the ink under it.
+    CARD_ART.base.stops.forEach(([, colour]) =>
+      expect(contrast(CARD.ink, colour)).toBeGreaterThan(3),
+    );
+    expect(contrast('#ffffff', CARD.ink)).toBeGreaterThan(11);
+    const painted = glow
+      .findAll(node => ['RNSVGStop', 'RNSVGRect'].includes(String(node.type)))
+      .map(node => String(node.props.stopColor ?? node.props.fill));
+    expect(painted).not.toContain(COLOR.green);
   });
 
   it('draws each animated arc through the art’s own arc box, peaking so the rest reads 60 %', () => {
