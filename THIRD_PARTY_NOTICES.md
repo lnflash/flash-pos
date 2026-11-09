@@ -1,14 +1,14 @@
 # Third-party notices
 
-## Inter (outlined glyphs in the eCash card art)
+## Figtree (outlined glyphs in the eCash card art)
 
-The FLASH, BEARER CARD and ₿ marks on the eCash card
-(`src/components/cashu/charge/cardArtV2.tsx`) are vector outlines of glyphs
-from Inter 4.001 (Inter Black, Inter SemiBold and Inter Bold). The font
-itself is not bundled.
+The CASHU ECASH CARD caption on the eCash card
+(`src/components/cashu/charge/cardArtV2.tsx`) is a vector outline of glyphs
+from Figtree 2.002 (the variable font at weight 650). The font itself is not
+bundled.
 
 ```
-Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+Copyright 2022 The Figtree Project Authors (https://github.com/erikdkennedy/figtree)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
