@@ -371,7 +371,7 @@ function ChargeStage(props: ChargeStageProps) {
               width: L.card.w,
               height: L.card.h,
               // The art's own ISO corner at this size: a fixed radius
-              // would crop the slash's corner or show the base around it.
+              // would crop the face's corner or show the base around it.
               borderRadius: CARD_ART.radius * L.card.k,
               opacity: n.card.opacity,
               transform: [

@@ -17,7 +17,7 @@ import {ARC_REST, type Nodes} from './useChargeEngine';
 
 /**
  * The customer's eCash card — the visual twin of the one held behind the
- * top of the phone: Flash Card v2 "Bearer", drawn by the shared card art
+ * top of the phone: the Cashu Card face, drawn by the shared card art
  * (one <Svg>, drawn once). On top of it, inside the card's clip, only what
  * the charge animates: the chip-side contactless arcs, the masked id, the
  * sheen, the change glow and the finale dim. Mounted once; nothing in here
@@ -40,7 +40,7 @@ const Arc = React.memo(({d}: {d: string}) => (
   <Svg width="100%" height="100%" viewBox={ARC_BOX}>
     <Path
       d={d}
-      stroke={CARD.orange}
+      stroke={CARD.ink}
       strokeWidth={ARC.width}
       strokeOpacity={ARC_PEAK}
       strokeLinecap="round"
@@ -51,10 +51,10 @@ const Arc = React.memo(({d}: {d: string}) => (
 
 const SHEEN_W = 70;
 const GLOW_H = 14;
-/** The glow fades in over this many dp from the slash's tip. */
+/** The glow fades in over this many dp from the card's left edge. */
 const GLOW_FADE = 16;
 
-/** A soft raking light: the card is matte, so never a gloss streak. */
+/** A soft raking light: the card is printed matte, so never a gloss streak. */
 const SheenArt = React.memo(() => (
   <Svg width="100%" height="100%">
     <Defs>
@@ -70,9 +70,9 @@ const SheenArt = React.memo(() => (
 
 /**
  * The change slip's light: an app signal, so app green, never card art. It
- * starts at the slash's tip and fades in over GLOW_FADE, so the green never
- * mixes with the card's orange (over the slash it read olive). The fade is a
- * mask, drawn once into the glow's bitmap with the rest of it.
+ * spans the card's whole width and fades in over GLOW_FADE from the left
+ * edge, so it never starts on a hard line at the rounded corner. The fade is
+ * a mask, drawn once into the glow's bitmap with the rest of it.
  */
 const GlowArt = React.memo(() => (
   <Svg width="100%" height="100%">
@@ -103,15 +103,16 @@ const GlowArt = React.memo(() => (
 ));
 
 /**
- * The masked id sits in the physical card's empty top-right slot as part of
- * the card: it scales with it (TYPE.cardId is its size at k = 1) and never
- * with the font scale, so at every size it stays quieter than FLASH (its cap
- * is ~0.78 of FLASH's) instead of reading as a printed card number. Its ink
- * ends on FLASH's right edge (Android sets no trailing letter-space) and its
- * row is centred on the chip's mid-line. The card's accessibilityLabel
- * carries the id for screen readers.
+ * The masked id sits in the face's empty bottom-right slot (CARD_ART.idSlot)
+ * as part of the card: it scales with it (TYPE.cardId is its size at k = 1)
+ * and never with the font scale, and it prints in the caption's ink at 60 %,
+ * so it reads as small print beside CASHU ECASH CARD, not as a printed card
+ * number. Its ink ends on the slot's right edge, the caption's left margin
+ * mirrored (Android sets no trailing letter-space), and its row is centred
+ * on the caption's mid-line. The card's accessibilityLabel carries the id
+ * for screen readers.
  */
-const CHIP_MID = CARD_ART.plate.y + CARD_ART.plate.h / 2;
+const ID_SLOT = CARD_ART.idSlot;
 const ID_ROW = 28;
 
 export function cardIdStyle(k: number): TextStyle {
@@ -139,7 +140,6 @@ function EcashCard({layout, n, last4}: EcashCardProps) {
     height: ARC.box.h * k,
   };
   const idStyle = React.useMemo(() => cardIdStyle(k), [k]);
-  const glowLeft = CARD_ART.slash.tipX * k;
   return (
     <>
       <CardArtV2 staticArcs={false} />
@@ -158,8 +158,8 @@ function EcashCard({layout, n, last4}: EcashCardProps) {
           styles.abs,
           styles.idRow,
           {
-            right: (CARD_ART.width - CARD_ART.flash.inkRight) * k,
-            top: (CHIP_MID - ID_ROW / 2) * k,
+            right: (CARD_ART.width - ID_SLOT.right) * k,
+            top: (ID_SLOT.centerY - ID_ROW / 2) * k,
             height: ID_ROW * k,
             opacity: n.last4,
           },
@@ -189,11 +189,7 @@ function EcashCard({layout, n, last4}: EcashCardProps) {
       <Animated.View
         testID="card-glow"
         pointerEvents="none"
-        style={[
-          styles.abs,
-          styles.glow,
-          {left: glowLeft, width: w - glowLeft, opacity: n.glow},
-        ]}>
+        style={[styles.abs, styles.glow, {left: 0, width: w, opacity: n.glow}]}>
         <GlowArt />
       </Animated.View>
       <Animated.View

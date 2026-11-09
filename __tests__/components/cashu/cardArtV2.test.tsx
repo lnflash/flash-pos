@@ -12,7 +12,6 @@ import {
   CARD_ART,
   CARD_PALETTE,
   CardArtV2,
-  grainTile,
 } from '../../../src/components/cashu/charge/cardArtV2';
 import EcashCard, {
   cardIdStyle,
@@ -36,20 +35,22 @@ import type {Nodes} from '../../../src/components/cashu/charge/useChargeEngine';
  * - ART_FILE_SHA256: the file itself, with LF line endings: comments, types
  *   and formatting included, which the other digests do not see.
  * - PARITY_DIGEST: CARD_ART — every coordinate, colour, opacity, gradient,
- *   outlined glyph, the grain and the z-order.
+ *   flattened mark, outlined glyph and the z-order.
  * - RENDER_DIGESTS: the whole drawn tree, every element in order with every
  *   prop, under the svg stub (flash-mobile's stub uses the same host names).
  *   Static is flash-mobile's still card, chip-side arcs drawn in; animated is
  *   the charge card, which draws those arcs as its own overlays.
  */
 const ART_FILE_SHA256 =
-  '355472b69813ca55b2965c50a31dc11430d0c92dfc3dfd896816edb45d901927';
+  '6e0b76e7542270cf9a45de8e7a642143b13cbd3d2e91a4573364392cba42b0d6';
 const PARITY_DIGEST =
-  '88c4f9c1ca91a921cab0d09362c42d12647a155d0a6c847f5a935283cbd77e02';
+  'f7ce7004e269bd42be8fb11d7fea12bdc7e65e2e5a677a4cd85d3ebe93ba4ef1';
 const RENDER_DIGESTS = {
-  static: '9bab0b61f17e0580e5cebcb21a8d730792a2e20f91de9b13f2229a71d294d88c',
-  animated: '270a9876f3e6b61e7b5c70c5e3b5e4d8dbdea7e167786bf7adb1f91f734e6a7d',
+  static: 'a607fbd4e4ae3fe5cb1ef9edb672253b97582ff32b8c07b59c2eef1d2043d164',
+  animated: '5a2efcb2323249a3733be4fd60d550063a060e898463aa0f1e2b0a7d22b1126a',
 };
+/** The <Path>s each build draws: the static one adds the chip-side arcs. */
+const RENDER_PATHS = {static: 6, animated: 5};
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
@@ -124,67 +125,16 @@ describe('card art v2 — parity with flash-mobile', () => {
       RENDER_DIGESTS.animated,
     );
   });
-
-  it('builds the grain exactly as the reference generator does (balanced Latin square, mulberry32, seed 0x0C67F1A5)', () => {
-    const [light, dark] = grainTile(0x0c67f1a5, 32, 40, 285);
-    expect(light).toBe(CARD_ART.grain.light.d);
-    expect(dark).toBe(CARD_ART.grain.dark.d);
-    // The reference generator's output (build_preview.py), byte for byte.
-    expect(sha256(light)).toBe(
-      '24d9fc352deeaae932750e42854937c3294b895bba54ea6d1cfcd191399408a0',
-    );
-    expect(sha256(dark)).toBe(
-      'afe57feec43a12a3dafeab90cb89f1059ce8958fadc4e6aa4c318a061c182ada',
-    );
-  });
-
-  it('lays 285 light and 285 dark specks on distinct cells of one 32-unit tile', () => {
-    const cells = (d: string) =>
-      [...d.matchAll(/M([\d.]+) ([\d.]+)h0\.8v0\.8h-0\.8z/g)].map(m => [
-        Number(m[1]),
-        Number(m[2]),
-      ]);
-    const light = cells(CARD_ART.grain.light.d);
-    const dark = cells(CARD_ART.grain.dark.d);
-    expect(light).toHaveLength(285);
-    expect(dark).toHaveLength(285);
-    const keys = new Set([...light, ...dark].map(([x, y]) => `${x},${y}`));
-    expect(keys.size).toBe(570);
-    [...light, ...dark].forEach(([x, y]) => {
-      expect(x).toBeGreaterThanOrEqual(0);
-      expect(x).toBeLessThanOrEqual(31.2);
-      expect(y).toBeGreaterThanOrEqual(0);
-      expect(y).toBeLessThanOrEqual(31.2);
-    });
-  });
-
-  it('balances every row and column of the tile: 7 or 8 specks of each tone, never a line', () => {
-    // A plain shuffle put 15 dark specks and 1 light one in a row: a dark
-    // line ~1.5 levels deep, repeated every 32 units down the card. The
-    // mean is 285 / 40 = 7.1 per row and column, for each tone.
-    const count = (d: string, axis: 1 | 2) => {
-      const out = new Array(40).fill(0);
-      [...d.matchAll(/M([\d.]+) ([\d.]+)h/g)].forEach(m => {
-        out[Math.round(Number(m[axis]) / 0.8)] += 1;
-      });
-      return out;
-    };
-    [CARD_ART.grain.light.d, CARD_ART.grain.dark.d].forEach(d => {
-      [count(d, 1), count(d, 2)].forEach(lines => {
-        expect(lines.reduce((a, b) => a + b, 0)).toBe(285);
-        expect(Math.min(...lines)).toBeGreaterThanOrEqual(7);
-        expect(Math.max(...lines)).toBeLessThanOrEqual(8);
-      });
-    });
-    // Any tile size keeps the property (the spares spread over rows).
-    const [light] = grainTile(7, 32, 40, 300);
-    const rows = count(light, 2);
-    expect(Math.max(...rows) - Math.min(...rows)).toBeLessThanOrEqual(1);
-  });
 });
 
+/** The x y pairs of a path of absolute M, L, C, Q and Z commands. */
+const points = (d: string) => {
+  const n = (d.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+  return n.flatMap((_, i) => (i % 2 ? [] : [[n[i], n[i + 1]]]));
+};
+
 describe('card art v2 — drawing rules', () => {
-  it('is one <Svg> filling its parent: no nested Svg, Text, Pattern, Image or filter', () => {
+  it('is one <Svg> filling its parent: no nested Svg, Use, Mask, Text, Pattern, Image or filter', () => {
     const all = draw();
     const svgs = all.filter(n => n.type === 'RNSVGSvg');
     expect(svgs).toHaveLength(1);
@@ -194,27 +144,37 @@ describe('card art v2 — drawing rules', () => {
       height: '100%',
       preserveAspectRatio: 'none',
     });
+    // Nothing can fall back to another font or decode late, and nothing is
+    // an offscreen layer that draws differently on Android and iOS.
     const allowed = new Set([
       'RNSVGSvg',
       'RNSVGDefs',
       'RNSVGClipPath',
       'RNSVGLinearGradient',
-      'RNSVGRadialGradient',
       'RNSVGStop',
       'RNSVGGroup',
       'RNSVGPath',
       'RNSVGRect',
-      'RNSVGCircle',
-      'RNSVGUse',
     ]);
-    all.forEach(n => expect(allowed.has(String(n.type))).toBe(true));
+    all.forEach(n =>
+      expect([n.type, allowed.has(String(n.type))]).toEqual([n.type, true]),
+    );
+    expect(all.filter(n => n.type === 'RNSVGPath')).toHaveLength(
+      RENDER_PATHS.static,
+    );
+    expect(
+      draw({staticArcs: false}).filter(n => n.type === 'RNSVGPath'),
+    ).toHaveLength(RENDER_PATHS.animated);
   });
 
   it('puts every gradient in user space and opacity only on leaves', () => {
     const all = draw();
     const gradients = all.filter(n => /Gradient$/.test(String(n.type)));
-    // The lift, the slash, the chip's halo and its gold.
-    expect(gradients).toHaveLength(4);
+    // The field and the chip's gold.
+    expect(gradients.map(g => g.props.id).sort()).toEqual([
+      'cardBase',
+      'cardGold',
+    ]);
     gradients.forEach(g =>
       expect(g.props.gradientUnits).toBe('userSpaceOnUse'),
     );
@@ -223,7 +183,7 @@ describe('card art v2 — drawing rules', () => {
       .forEach(g => expect(g.props.opacity).toBeUndefined());
   });
 
-  it('clips everything to the ISO 7810 corner and instances the grain 70 times', () => {
+  it('clips everything to the ISO 7810 corner: the field first, the edge hairline last', () => {
     const all = draw();
     const clip = all.find(n => n.type === 'RNSVGClipPath')!;
     expect(clip.props.id).toBe('cardClip');
@@ -236,135 +196,166 @@ describe('card art v2 — drawing rules', () => {
     const face = all.find(
       n => n.type === 'RNSVGGroup' && n.props.clipPath === 'url(#cardClip)',
     )!;
-    expect(face).toBeTruthy();
-    const uses = all.filter(n => n.type === 'RNSVGUse');
-    expect(uses).toHaveLength(70);
-    uses.forEach(u => expect(u.props.href).toBe('#cardGrain'));
-    expect(Math.max(...uses.map(u => u.props.x))).toBe(288);
-    expect(Math.max(...uses.map(u => u.props.y))).toBe(192);
+    const layers = face.children as Node[];
+    expect(layers[0]).toMatchObject({
+      type: 'RNSVGRect',
+      props: {width: 320, height: 202, fill: 'url(#cardBase)'},
+    });
+    expect(layers[layers.length - 1]).toMatchObject({
+      type: 'RNSVGRect',
+      props: {fill: 'none', stroke: CARD_PALETTE.white, strokeOpacity: 0.02},
+    });
   });
 
-  it('draws the chip-side arcs at the resting 60 % only in a static build', () => {
+  it('draws the chip-side arcs in the art’s ink at the resting 60 % only in a static build', () => {
     const arcs = CARD_ART.chipArcs.d.join('');
     const find = (all: Node[]) =>
       all.find(n => n.type === 'RNSVGPath' && n.props.d === arcs);
-    expect(find(draw())!.props.strokeOpacity).toBe(0.6);
+    expect(find(draw())!.props).toMatchObject({
+      stroke: CARD_PALETTE.ink,
+      strokeOpacity: 0.6,
+    });
     expect(find(draw({staticArcs: false}))).toBeUndefined();
   });
 
-  it('keeps the z-order of the design: base first, the lockup and edge last', () => {
+  it('keeps the z-order of the design: the field first, the caption and edge last', () => {
     expect(CARD_ART.layers).toEqual([
       'base',
-      'lift',
-      'watermark',
-      'grain',
-      'slash',
-      'rule',
-      'halo',
-      'ring',
+      'mark',
+      'lockup',
       'plate',
-      'contacts',
       'chipArcs',
-      'nfc',
-      'btc',
-      'flash',
-      'bearer',
+      'caption',
       'edge',
     ]);
   });
 
-  it('splits the left rule where the slash meets the edge: full above, lighter over the slash', () => {
-    const orange = draw().filter(
-      n =>
-        n.type === 'RNSVGRect' &&
-        n.props.fill === CARD_PALETTE.orange &&
-        n.props.x === 0,
-    );
-    expect(orange.map(n => n.props)).toEqual([
-      expect.objectContaining({
-        y: 0,
-        width: 1.8,
-        height: 157,
-        fillOpacity: 0.5,
-      }),
-      expect.objectContaining({
-        y: 157,
-        width: 1.8,
-        height: 45,
-        fillOpacity: 0.25,
-      }),
-    ]);
-    // The split is the slash's own left-edge point.
-    expect(CARD_ART.slash.d).toBe(
-      `M0 ${CARD_ART.rule.split} L112.9 202 L0 202 Z`,
-    );
+  it('draws the mark, the lockup and the caption as outlined paths, never type', () => {
+    const paths = draw().filter(n => n.type === 'RNSVGPath');
+    const byD = (d: string) => paths.find(n => n.props.d === d)?.props;
+    expect(byD(CARD_ART.mark.d)).toMatchObject({
+      fill: CARD_PALETTE.markInk,
+      fillOpacity: 57 / 255,
+      fillRule: 'evenodd',
+    });
+    expect(byD(CARD_ART.lockup.cashu)).toMatchObject({
+      fill: CARD_PALETTE.markInk,
+    });
+    expect(byD(CARD_ART.lockup.card)).toMatchObject({
+      fill: CARD_PALETTE.inkSoft,
+    });
+    expect(byD(CARD_ART.caption.d)).toMatchObject({fill: CARD_PALETTE.ink});
   });
 
-  it('lights the face with a cool lift, never a warm or neutral one', () => {
-    const lift = draw().find(
-      n => n.type === 'RNSVGRadialGradient' && n.props.id === 'cardLift',
-    )!;
-    const [r, g, b] = rgb(CARD_PALETTE.lift);
-    expect(b).toBeGreaterThan(r);
-    expect(b).toBeGreaterThan(g);
-    (lift.children as Node[]).forEach(stop =>
-      expect(stop.props.stopColor).toBe(CARD_PALETTE.lift),
-    );
-    // The plateau over the base lands on the sheet's blue-black: blue well
-    // above green, and red no further below green than the base has it.
-    const [br, bg, bb] = rgb(CARD_PALETTE.base);
-    const top = CARD_ART.lift.stops[0][1];
-    const core = [r, g, b].map((c, i) => [br, bg, bb][i] * (1 - top) + c * top);
-    expect(core[2] - core[1]).toBeGreaterThan(4);
-    expect(core[1] - core[0]).toBeLessThan(bg - br);
-  });
-
-  it('keeps every lift opacity on a whole 1/255 step, all Android keeps of a stop', () => {
-    // react-native-svg rounds a stop's opacity to 8 bits: a value between
-    // steps would draw differently on Android and iOS.
-    CARD_ART.lift.stops.forEach(([, opacity]) => {
+  it('keeps every small opacity on a whole 1/255 step, all Android keeps', () => {
+    // react-native-svg rounds an opacity to 8 bits: a value between steps
+    // would draw differently on Android and iOS.
+    [CARD_ART.mark.opacity].forEach(opacity => {
       const steps = opacity * 255;
       expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-9);
     });
   });
 
-  it('lights the chip plate as on the sheet: a deep top-left corner, a light middle, a darker bottom-right, no outline', () => {
+  it('lights the field and the chip plate light top-left to dark bottom-right, the plate with no outline', () => {
     const lum = (hex: string) => {
       const [r, g, b] = rgb(hex);
       return 0.299 * r + 0.587 * g + 0.114 * b;
     };
-    const gold = CARD_ART.plate.gold.stops.map(([, hex]) => lum(hex));
-    const middle = Math.max(...gold);
-    expect(gold[0]).toBeLessThan(middle - 30);
-    expect(gold[gold.length - 1]).toBeLessThan(middle - 10);
-    expect(gold[0]).toBeLessThan(gold[gold.length - 1]);
-    // The light runs from the top-left corner to the bottom-right one.
-    const {x1, y1, x2, y2} = CARD_ART.plate.gold;
-    expect(x2).toBeGreaterThan(x1);
-    expect(y2).toBeGreaterThan(y1);
+    [CARD_ART.base, CARD_ART.plate.gold].forEach(g => {
+      expect(g.x2).toBeGreaterThan(g.x1);
+      expect(g.y2).toBeGreaterThan(g.y1);
+      const tones = g.stops.map(([, hex]) => lum(hex));
+      tones.slice(1).forEach((tone, i) => expect(tone).toBeLessThan(tones[i]));
+    });
     const plate = draw().find(
-      n => n.type === 'RNSVGRect' && n.props.fill === 'url(#cardGold)',
+      n => n.type === 'RNSVGPath' && n.props.fill === 'url(#cardGold)',
     )!;
+    expect(plate.props.d).toBe(CARD_ART.plate.d);
     expect(plate.props.stroke).toBeUndefined();
   });
+});
 
-  it('runs exactly 42 dash periods round the chip ring, so there is no seam', () => {
-    const {w, h, rx, dash} = CARD_ART.ring;
-    const perimeter = 2 * (w + h) - 8 * rx + 2 * Math.PI * rx;
-    const periods = perimeter / (dash[0] + dash[1]);
-    expect(Math.abs(periods - 42)).toBeLessThan(0.01);
+describe('card art v2 — what the charge card reads from it', () => {
+  it('keeps the plate, the chip-side arcs and an id slot', () => {
+    expect(CARD_ART.plate).toMatchObject({
+      x: 22.96,
+      y: 70.29,
+      w: 65.83,
+      h: 49.71,
+      rx: 8.85,
+    });
+    expect(CARD_ART.chipArcs.d).toHaveLength(3);
+    expect(CARD_ART.chipArcs.width).toBe(1.97);
+    expect(CARD_ART.chipArcs.box).toEqual({x: 99, y: 77, w: 17.5, h: 28.5});
+    expect(CARD_ART.idSlot).toEqual({
+      right: 297.4,
+      centerY: 178.42,
+      capRef: 6.46,
+    });
+  });
+
+  it('holds each arc, caps included, inside the arcs’ box, right of the plate', () => {
+    const {box, width} = CARD_ART.chipArcs;
+    const cap = width / 2;
+    CARD_ART.chipArcs.d.forEach(d => {
+      // "Mx y0 Ar r 0 0 1 x y1": a symmetric arc bulging right.
+      const [x, y0, r, , , , , , y1] = (d.match(/-?\d*\.?\d+/g) ?? []).map(
+        Number,
+      );
+      const half = (y1 - y0) / 2;
+      const apex = x + r - Math.sqrt(r * r - half * half);
+      expect(x - cap).toBeGreaterThanOrEqual(box.x);
+      expect(apex + cap).toBeLessThanOrEqual(box.x + box.w);
+      expect(y0 - cap).toBeGreaterThanOrEqual(box.y);
+      expect(y1 + cap).toBeLessThanOrEqual(box.y + box.h);
+    });
+    expect(box.x).toBeGreaterThan(CARD_ART.plate.x + CARD_ART.plate.w);
+  });
+
+  it('puts the id slot on the card, below the large mark and on the caption’s mid-line', () => {
+    const {right, centerY, capRef} = CARD_ART.idSlot;
+    expect(right).toBeLessThanOrEqual(CARD_ART.width - CARD_ART.radius);
+    expect(centerY + capRef / 2).toBeLessThan(CARD_ART.height);
+    const markBottom = Math.max(...points(CARD_ART.mark.d).map(([, y]) => y));
+    expect(centerY - capRef / 2).toBeGreaterThan(markBottom);
+    const captionYs = points(CARD_ART.caption.d).map(([, y]) => y);
+    const mid = (Math.min(...captionYs) + Math.max(...captionYs)) / 2;
+    expect(Math.abs(centerY - mid)).toBeLessThan(0.5);
   });
 });
 
 describe('card art v2 — palette', () => {
-  it('has no green anywhere in the art (Flash green is the app’s)', () => {
+  it('has no Flash colours and no Flash bolt anywhere in the art', () => {
+    const file = readFileSync(
+      join(__dirname, '../../../src/components/cashu/charge/cardArtV2.tsx'),
+      'utf8',
+    ).toLowerCase();
     const rendered = draw().flatMap(n => colours(n.props));
     const all = [...colours(CARD_ART), ...rendered];
-    expect(all.length).toBeGreaterThan(20);
-    all.forEach(hex => {
-      const [r, g, b] = rgb(hex);
-      expect([hex, g > r && g > b]).toEqual([hex, false]);
+    expect(all.length).toBeGreaterThan(10);
+    // Flash orange and the old near-black base.
+    ['#f97316', '#080a0d'].forEach(hex => {
+      expect(all).not.toContain(hex);
+      expect(file).not.toContain(hex);
     });
+    // The bolt's path, and every Flash-only layer.
+    expect(file).not.toContain('m124.1,342.8');
+    [
+      'watermark',
+      'lift',
+      'grain',
+      'slash',
+      'rule',
+      'halo',
+      'ring',
+      'contacts',
+      'nfc',
+      'btc',
+      'flash',
+      'bearer',
+    ].forEach(layer =>
+      expect(CARD_ART.layers as readonly string[]).not.toContain(layer),
+    );
   });
 
   it('is the palette the charge screen’s CARD tokens mirror', () => {
@@ -376,8 +367,12 @@ describe('card art v2 — palette', () => {
           CARD_PALETTE[key],
         ]),
       );
-    expect(CARD.base).toBe('#080a0d');
+    expect(CARD.base).toBe('#9fc985');
     expect(CARD.dim).toBe('#000000');
+  });
+
+  it('prints the masked id in the caption’s ink at 60 %', () => {
+    expect(CARD.id).toBe(`rgba(${rgb(CARD_PALETTE.ink).join(',')},0.6)`);
   });
 
   it('is the artboard the charge geometry sizes the card from', () => {
@@ -406,19 +401,26 @@ describe.each([
     last4: v(),
   } as unknown as Nodes['card'];
 
-  it('ends the masked id on FLASH’s right edge, centred on the chip', () => {
+  it('ends the masked id on the id slot’s right edge, centred on the caption’s mid-line', () => {
     const {getByTestId, getByText} = render(
       <EcashCard layout={L} n={n} last4="0C67" />,
     );
     expect(getByText('•••• 0C67')).toBeTruthy();
     const row = StyleSheet.flatten(getByTestId('card-id-row').props.style);
-    expect(row.right).toBeCloseTo((320 - 298.9) * k, 6);
-    expect(row.top + row.height / 2).toBeCloseTo(49.6 * k, 6);
+    expect(row.right).toBeCloseTo((320 - CARD_ART.idSlot.right) * k, 6);
+    expect(row.right).toBeCloseTo((320 - 297.4) * k, 6);
+    expect(row.top + row.height / 2).toBeCloseTo(
+      CARD_ART.idSlot.centerY * k,
+      6,
+    );
+    expect(row.top + row.height / 2).toBeCloseTo(178.42 * k, 6);
+    // Inside the card at the bottom.
+    expect(row.top + row.height).toBeLessThanOrEqual(L.card.h);
     // Clear of the hold pill (top 15 dp) and the corner badge (20 dp).
     expect(row.top).toBeGreaterThan(15);
   });
 
-  it('sizes the masked id with the card, never with the font scale, so it stays quieter than FLASH', () => {
+  it('sizes the masked id with the card, never with the font scale, so it reads as small print beside the caption', () => {
     const {getByTestId} = render(<EcashCard layout={L} n={n} last4="0C67" />);
     const id = getByTestId('card-id');
     const style = StyleSheet.flatten(id.props.style);
@@ -428,20 +430,25 @@ describe.each([
     expect(style).toEqual(cardIdStyle(k));
     // A large system font never enlarges it.
     expect(id.props.maxFontSizeMultiplier).toBe(1);
-    // Outfit's digit cap (~0.725 em) against FLASH's 11.35-unit cap: the
-    // same ratio at every k, well under FLASH.
-    expect((0.725 * style.fontSize) / (11.35 * k)).toBeLessThan(0.8);
-    // Its row holds the line at this size, centred on the chip.
+    // Outfit's digit cap (~0.725 em) against the caption's cap
+    // (idSlot.capRef): the same ratio at every k, ~1.35, small print beside
+    // CASHU ECASH CARD rather than an embossed card number. It is quieter
+    // than the caption in tone: the caption's ink at 60 % against its 100 %.
+    const ratio = (0.725 * style.fontSize) / (CARD_ART.idSlot.capRef * k);
+    expect(ratio).toBeCloseTo((0.725 * 12) / 6.46, 6);
+    expect(ratio).toBeLessThan(1.4);
+    expect(style.color).toBe(CARD.id);
+    // Its row holds the line at this size, centred on the caption.
     const row = StyleSheet.flatten(getByTestId('card-id-row').props.style);
     expect(row.height).toBeCloseTo(28 * k, 6);
     expect(row.height).toBeGreaterThan(style.lineHeight);
   });
 
-  it('starts the change glow at the slash’s tip, so the app green never crosses the orange', () => {
+  it('runs the change glow across the card’s whole width, from x 0', () => {
     const {getByTestId} = render(<EcashCard layout={L} n={n} last4={null} />);
     const glow = StyleSheet.flatten(getByTestId('card-glow').props.style);
-    expect(glow.left).toBeCloseTo(CARD_ART.slash.tipX * k, 6);
-    expect(glow.left + glow.width).toBeCloseTo(L.card.w, 6);
+    expect(glow.left).toBe(0);
+    expect(glow.width).toBeCloseTo(L.card.w, 6);
     expect(glow.bottom).toBe(0);
   });
 
@@ -449,10 +456,26 @@ describe.each([
     const {getByTestId} = render(<EcashCard layout={L} n={n} last4={null} />);
     [0, 1, 2].forEach(i => {
       const box = StyleSheet.flatten(getByTestId(`card-arc-${i}`).props.style);
-      expect(box.left).toBeCloseTo(75 * k, 6);
-      expect(box.top).toBeCloseTo(38 * k, 6);
-      expect(box.width).toBeCloseTo(16 * k, 6);
-      expect(box.height).toBeCloseTo(18 * k, 6);
+      expect(box.left).toBeCloseTo(99 * k, 6);
+      expect(box.top).toBeCloseTo(77 * k, 6);
+      expect(box.width).toBeCloseTo(17.5 * k, 6);
+      expect(box.height).toBeCloseTo(28.5 * k, 6);
     });
+  });
+
+  it('strokes each animated arc in the art’s ink, at the peak that rests at 60 %', () => {
+    const {UNSAFE_root} = render(<EcashCard layout={L} n={n} last4={null} />);
+    const strokes = UNSAFE_root.findAll(
+      node =>
+        String(node.type) === 'RNSVGPath' &&
+        CARD_ART.chipArcs.d.includes(node.props.d),
+    );
+    expect(strokes).toHaveLength(3);
+    strokes.forEach(p =>
+      expect(p.props).toMatchObject({
+        stroke: CARD.ink,
+        strokeWidth: CARD_ART.chipArcs.width,
+      }),
+    );
   });
 });
