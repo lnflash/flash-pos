@@ -23,7 +23,9 @@ import {
   buildCardP2PKSecret,
   buildCardSigAllSecret,
   cachedKeysets,
+  checkTopUpQuote,
   createSettlementAdapter,
+  createTopUpQuote,
   expandKeysetId,
   finishCardChange,
   inputFee,
@@ -33,14 +35,18 @@ import {
   mapSwapError,
   meltSettledProofs,
   mintReachable,
+  mintTopUp,
   prepareChargeOutputs,
   RECONCILE_MIN_INTERVAL_MS,
   reconcileTill,
   refreshKeysets,
+  restoreTopUp,
   saveKeysets,
   sigAllMessage,
   swapSigned,
   sweepSettledProofs,
+  TopUpMintError,
+  topUpKeyset,
   UnknownKeysetError,
   verifyCardSignature,
   verifyPieceDleq,
@@ -79,6 +85,9 @@ type WalletMocks = {
   loadMint: jest.Mock;
   mintSwap: jest.Mock;
   mintRestore: jest.Mock;
+  mintQuote: jest.Mock;
+  mintQuoteCheck: jest.Mock;
+  mintBolt11: jest.Mock;
   getKeysets: jest.Mock;
   ensureKeysetKeys: jest.Mock;
   prepareSwapToSend: jest.Mock;
@@ -95,6 +104,9 @@ jest.mock('@cashu/cashu-ts', () => {
     loadMint: jest.fn(),
     mintSwap: jest.fn(),
     mintRestore: jest.fn(),
+    mintQuote: jest.fn(),
+    mintQuoteCheck: jest.fn(),
+    mintBolt11: jest.fn(),
     getKeysets: jest.fn(() => []),
     ensureKeysetKeys: jest.fn(async () => undefined),
     prepareSwapToSend: jest.fn(),
@@ -106,7 +118,13 @@ jest.mock('@cashu/cashu-ts', () => {
   };
   class MockWallet {
     loadMint = mocks.loadMint;
-    mint = {swap: mocks.mintSwap, restore: mocks.mintRestore};
+    mint = {
+      swap: mocks.mintSwap,
+      restore: mocks.mintRestore,
+      createMintQuoteBolt11: mocks.mintQuote,
+      checkMintQuoteBolt11: mocks.mintQuoteCheck,
+      mintBolt11: mocks.mintBolt11,
+    };
     keyChain = {
       getKeysets: mocks.getKeysets,
       ensureKeysetKeys: mocks.ensureKeysetKeys,
@@ -2057,4 +2075,256 @@ it('duplicate and concurrent merchant credits preserve one inventory entry per o
     p,
     {...p, secret: 'other-output'},
   ]);
+});
+
+// ── card top-up (ENG-853) ───────────────────────────────────────────────────
+
+describe("card top-up at the card's mint", () => {
+  const TOPUP_MINT = 'https://card.mint';
+
+  /** Outputs for `amounts`, blinded for real, with their blinding factors. */
+  function topUpOutputs(mint: TestMint, amounts: number[]) {
+    return amounts.map((amount, i) => {
+      const secret = buildCardSigAllSecret(
+        pieceNonce(100 + i),
+        TEST_CARD_PUBKEY,
+      );
+      const {B_, r} = cashu.blindMessage(utf8ToBytes(secret));
+      return {
+        secret,
+        output: {
+          amount,
+          keysetId: mint.keysetId,
+          B_: B_.toHex(true) as string,
+          r: (r as bigint).toString(16).padStart(64, '0'),
+        },
+      };
+    });
+  }
+
+  beforeEach(() => {
+    walletMocks.mintQuote.mockReset();
+    walletMocks.mintQuoteCheck.mockReset();
+    walletMocks.mintBolt11.mockReset();
+    walletMocks.mintRestore.mockReset();
+  });
+
+  it('quotes bolt11 in sats and maps the answer', async () => {
+    walletMocks.mintQuote.mockResolvedValue({
+      quote: 'q1',
+      request: 'lnbc1',
+      amount: cashu.Amount.from(5),
+      expiry: 1_900_000_000,
+      state: 'UNPAID',
+      unit: 'sat',
+    });
+    await expect(createTopUpQuote(TOPUP_MINT, 5)).resolves.toEqual({
+      quoteId: 'q1',
+      request: 'lnbc1',
+      expiry: 1_900_000_000,
+      amount: 5,
+    });
+    expect(walletMocks.mintQuote).toHaveBeenCalledWith({
+      unit: 'sat',
+      amount: 5,
+    });
+  });
+
+  it('refuses a quote for another amount, or with no invoice', async () => {
+    walletMocks.mintQuote.mockResolvedValueOnce({
+      quote: 'q1',
+      request: 'lnbc1',
+      amount: 6,
+      expiry: null,
+    });
+    await expect(createTopUpQuote(TOPUP_MINT, 5)).rejects.toThrow(
+      /quoted 6 sats/,
+    );
+    walletMocks.mintQuote.mockResolvedValueOnce({quote: 'q1', amount: 5});
+    await expect(createTopUpQuote(TOPUP_MINT, 5)).rejects.toThrow(/invoice/);
+  });
+
+  it('reports the quote state, and refuses one it does not know', async () => {
+    walletMocks.mintQuoteCheck.mockResolvedValueOnce({state: 'PAID'});
+    await expect(checkTopUpQuote(TOPUP_MINT, 'q1')).resolves.toBe('PAID');
+    expect(walletMocks.mintQuoteCheck).toHaveBeenCalledWith('q1');
+    walletMocks.mintQuoteCheck.mockResolvedValueOnce({state: 'MAYBE'});
+    await expect(checkTopUpQuote(TOPUP_MINT, 'q1')).rejects.toThrow(/MAYBE/);
+  });
+
+  it('says the mint took too long when it does not answer in time', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    try {
+      walletMocks.mintQuoteCheck.mockReturnValue(new Promise(() => {}));
+      const check = checkTopUpQuote(TOPUP_MINT, 'q1', 15000);
+      const settled = expect(check).rejects.toMatchObject({
+        kind: 'timeout',
+        message: 'the mint took too long',
+      });
+      await jest.advanceTimersByTimeAsync(15000);
+      await settled;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("says it can't reach the mint when the request never got there", async () => {
+    walletMocks.mintQuote.mockRejectedValueOnce(
+      new TypeError('Network request failed'),
+    );
+    const error = await createTopUpQuote(TOPUP_MINT, 5).catch(e => e);
+    expect(error).toBeInstanceOf(TopUpMintError);
+    expect(error.kind).toBe('unreachable');
+
+    const net = new Error('Request timed out after 1000ms');
+    net.name = 'NetworkError';
+    walletMocks.mintQuote.mockRejectedValueOnce(net);
+    await expect(createTopUpQuote(TOPUP_MINT, 5)).rejects.toMatchObject({
+      kind: 'timeout',
+    });
+  });
+
+  it('mints onto the kept outputs and unblinds each piece with its DLEQ', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const made = topUpOutputs(mint, [4, 1]);
+    walletMocks.mintBolt11.mockImplementation(
+      async (req: {outputs: {B_: string; amount: number}[]}) => ({
+        signatures: req.outputs.map(o => mint.sign(o.B_, o.amount)),
+      }),
+    );
+    const pieces = await mintTopUp(
+      TOPUP_MINT,
+      'q1',
+      made.map(m => m.output),
+    );
+    expect(walletMocks.mintBolt11).toHaveBeenCalledWith({
+      quote: 'q1',
+      outputs: made.map(m => ({
+        amount: m.output.amount,
+        id: mint.keysetId,
+        B_: m.output.B_,
+      })),
+    });
+    expect(pieces.map(p => p.amount)).toEqual([4, 1]);
+    pieces.forEach((p, i) => {
+      expect(mint.verifyProof(made[i].secret, p.C, p.amount)).toBe(true);
+      expect(p.dleq.e).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  it('rejects a signature whose DLEQ does not verify', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const made = topUpOutputs(mint, [4]);
+    walletMocks.mintBolt11.mockImplementation(
+      async (req: {outputs: {B_: string; amount: number}[]}) => ({
+        signatures: req.outputs.map(o => {
+          const sig = mint.sign(o.B_, o.amount);
+          return {...sig, dleq: {...sig.dleq, s: '01'.repeat(32)}};
+        }),
+      }),
+    );
+    await expect(
+      mintTopUp(
+        TOPUP_MINT,
+        'q1',
+        made.map(m => m.output),
+      ),
+    ).rejects.toThrow('mint promise DLEQ does not verify');
+  });
+
+  it('rejects a signature without a DLEQ, or for another amount', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const made = topUpOutputs(mint, [4]);
+    walletMocks.mintBolt11.mockImplementationOnce(
+      async (req: {outputs: {B_: string; amount: number}[]}) => ({
+        signatures: req.outputs.map(o => {
+          const {dleq: _dleq, ...sig} = mint.sign(o.B_, o.amount);
+          return sig;
+        }),
+      }),
+    );
+    await expect(mintTopUp(TOPUP_MINT, 'q1', [made[0].output])).rejects.toThrow(
+      /DLEQ/,
+    );
+    walletMocks.mintBolt11.mockImplementationOnce(
+      async (req: {outputs: {B_: string}[]}) => ({
+        signatures: req.outputs.map(o => mint.sign(o.B_, 8)),
+      }),
+    );
+    await expect(mintTopUp(TOPUP_MINT, 'q1', [made[0].output])).rejects.toThrow(
+      /amount\/keyset/,
+    );
+  });
+
+  it('restores the signatures on the kept outputs, or null for none', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const made = topUpOutputs(mint, [4, 1]);
+    const outputs = made.map(m => m.output);
+    walletMocks.mintRestore.mockResolvedValueOnce({
+      outputs: [],
+      signatures: [],
+    });
+    await expect(restoreTopUp(TOPUP_MINT, outputs)).resolves.toBeNull();
+
+    // The mint answers in its own order: paired by B_.
+    const reversed = outputs.slice().reverse();
+    walletMocks.mintRestore.mockResolvedValueOnce({
+      outputs: reversed.map(o => ({
+        id: o.keysetId,
+        amount: o.amount,
+        B_: o.B_,
+      })),
+      signatures: reversed.map(o => mint.sign(o.B_, o.amount)),
+    });
+    const pieces = (await restoreTopUp(TOPUP_MINT, outputs))!;
+    expect(walletMocks.mintRestore).toHaveBeenLastCalledWith({
+      outputs: outputs.map(o => ({id: o.keysetId, amount: o.amount, B_: o.B_})),
+    });
+    pieces.forEach((p, i) => {
+      expect(p.amount).toBe(outputs[i].amount);
+      expect(mint.verifyProof(made[i].secret, p.C, p.amount)).toBe(true);
+    });
+  });
+
+  it('refuses a partial or substituted restore', async () => {
+    const mint = new TestMint();
+    walletMocks.getKeysets.mockReturnValue([mint.keyChainKeyset()]);
+    const outputs = topUpOutputs(mint, [4, 1]).map(m => m.output);
+    walletMocks.mintRestore.mockResolvedValueOnce({
+      outputs: [{id: mint.keysetId, amount: 4, B_: outputs[0].B_}],
+      signatures: [mint.sign(outputs[0].B_, 4)],
+    });
+    await expect(restoreTopUp(TOPUP_MINT, outputs)).rejects.toThrow(
+      /did not cover/,
+    );
+    walletMocks.mintRestore.mockResolvedValueOnce({
+      outputs: outputs.map(o => ({id: o.keysetId, amount: o.amount, B_: o.B_})),
+      signatures: [mint.sign(outputs[0].B_, 4), mint.sign(outputs[0].B_, 4)],
+    });
+    await expect(restoreTopUp(TOPUP_MINT, outputs)).rejects.toThrow(
+      /amount\/keyset|DLEQ/,
+    );
+  });
+
+  it('picks an active sat keyset with a key for every piece', async () => {
+    const mint = new TestMint();
+    const old = new TestMint({keysetId: '00aaaaaaaaaaaaaa', active: false});
+    walletMocks.getKeysets.mockReturnValue([
+      old.keyChainKeyset(),
+      mint.keyChainKeyset(),
+    ]);
+    await expect(topUpKeyset(TOPUP_MINT, [65536, 1])).resolves.toMatchObject({
+      id: mint.keysetId,
+      active: true,
+    });
+    walletMocks.getKeysets.mockReturnValue([old.keyChainKeyset()]);
+    __resetWalletCache();
+    await expect(topUpKeyset('https://other.mint', [1])).rejects.toMatchObject({
+      kind: 'unreachable',
+    });
+  });
 });

@@ -655,6 +655,44 @@ type PromiseSignature = {
   C_: string;
   dleq?: {e: string; s: string};
 };
+/**
+ * One blind signature checked against the output it answers: the amount and
+ * keyset match what was asked, the keyset's key for the amount is known, and
+ * the NUT-12 DLEQ (required with `requireDleq`) verifies against that key.
+ * Shared by the charge's swap (`decodePromises`) and the card top-up's mint
+ * and restore, so a promise is never trusted on one path and not the other.
+ */
+async function checkPromise(
+  mintUrl: string,
+  output: {amount: number; keysetId: string; B_: string},
+  sig: PromiseSignature,
+  requireDleq: boolean,
+): Promise<{K: string; dleq?: {e: string; s: string}}> {
+  if (amountOf(sig.amount) !== output.amount || sig.id !== output.keysetId) {
+    throw new Error('mint promise does not match the original amount/keyset');
+  }
+  const keyset = await keysetFor(mintUrl, output.keysetId);
+  const K = keyset.keys[String(output.amount)];
+  if (!K || (requireDleq && !sig.dleq)) {
+    throw new Error('mint promise is missing its verification key or DLEQ');
+  }
+  if (
+    sig.dleq &&
+    !verifyDLEQProof(
+      {e: hexToBytes(sig.dleq.e), s: hexToBytes(sig.dleq.s)},
+      pointFromHex(output.B_),
+      pointFromHex(sig.C_),
+      pointFromHex(K),
+    )
+  ) {
+    throw new Error('mint promise DLEQ does not verify');
+  }
+  return {
+    K,
+    dleq: sig.dleq ? {e: String(sig.dleq.e), s: String(sig.dleq.s)} : undefined,
+  };
+}
+
 async function decodePromises(
   mintUrl: string,
   signed: SignedSwap,
@@ -682,29 +720,8 @@ async function decodePromises(
   for (let i = 0; i < signatures.length; i++) {
     const sig = signatures[i];
     const output = signed.outputs[i];
-    const amount = amountOf(sig.amount);
-    if (amount !== output.amount || sig.id !== output.keysetId) {
-      throw new Error('mint promise does not match the original amount/keyset');
-    }
-    const keyset = await keysetFor(mintUrl, output.keysetId);
-    const K = keyset.keys[String(amount)];
-    if (!K || (requireDleq && !sig.dleq)) {
-      throw new Error('mint promise is missing its verification key or DLEQ');
-    }
-    if (
-      sig.dleq &&
-      !verifyDLEQProof(
-        {e: hexToBytes(sig.dleq.e), s: hexToBytes(sig.dleq.s)},
-        pointFromHex(output.B_),
-        pointFromHex(sig.C_),
-        pointFromHex(K),
-      )
-    ) {
-      throw new Error('mint promise DLEQ does not verify');
-    }
-    const dleq = sig.dleq
-      ? {e: String(sig.dleq.e), s: String(sig.dleq.s)}
-      : undefined;
+    const amount = output.amount;
+    const {K, dleq} = await checkPromise(mintUrl, output, sig, requireDleq);
     if (i >= changeAt) {
       cardChange.push({
         keysetId: output.keysetId,
@@ -1079,6 +1096,289 @@ export async function appendSettledProofsTill(
 }
 export const listSettledProofs = readTill;
 const appendSettledProofs = appendSettledProofsTill;
+
+// ── card top-up: a bolt11 mint quote at the card's own mint (ENG-853) ──────
+
+/** How long one top-up call to the card's mint may take before it is "too long". */
+export const TOPUP_MINT_TIMEOUT_MS = 15000;
+
+/**
+ * A top-up call to the card's mint that did not get an answer: `timeout`
+ * (the mint took too long) or `unreachable` (the request never got there).
+ * Anything else the mint said is rethrown as it came.
+ */
+export class TopUpMintError extends Error {
+  constructor(readonly kind: 'timeout' | 'unreachable', message: string) {
+    super(message);
+    this.name = 'TopUpMintError';
+  }
+}
+
+/** A NUT-04 quote's state, as the mint reports it. */
+export type TopUpQuoteState = 'UNPAID' | 'PAID' | 'ISSUED';
+
+export interface TopUpQuote {
+  quoteId: string;
+  /** The bolt11 invoice the holder pays. */
+  request: string;
+  /** Unix seconds the quote expires at, or null for none given. */
+  expiry: number | null;
+  amount: number;
+}
+
+/** One blinded output of a top-up, with the blinding factor that opens it. */
+export interface TopUpOutput {
+  amount: number;
+  keysetId: string;
+  B_: string;
+  /** The blinding factor, 64 hex. */
+  r: string;
+}
+
+/** A top-up piece the mint signed: unblinded, with its NUT-12 proof. */
+export interface TopUpSignature {
+  amount: number;
+  C: string;
+  dleq: {e: string; s: string};
+}
+
+function classifyTopUpFailure(error: unknown): unknown {
+  if (error instanceof TopUpMintError) {
+    return error;
+  }
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  if (isFetchNetworkError(error) || name === 'NetworkError') {
+    return /timed out|timeout/i.test(message)
+      ? new TopUpMintError('timeout', `the mint took too long (${message})`)
+      : new TopUpMintError(
+          'unreachable',
+          `can't reach the card's mint (${message})`,
+        );
+  }
+  return error;
+}
+
+/**
+ * Run one top-up call against the card's mint with a deadline. Never falls
+ * back to another mint: a top-up is minted where the card's pieces live.
+ */
+async function topUpCall<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new TopUpMintError('timeout', 'the mint took too long')),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([fn(), deadline]);
+  } catch (error) {
+    throw classifyTopUpFailure(error);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+const QUOTE_STATES: ReadonlySet<string> = new Set(['UNPAID', 'PAID', 'ISSUED']);
+
+/** NUT-04: a bolt11 mint quote for `sat` at `mintUrl`. */
+export async function createTopUpQuote(
+  mintUrl: string,
+  sat: number,
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<TopUpQuote> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const res = await withRateLimitRetry(() =>
+      wallet.mint.createMintQuoteBolt11({unit: 'sat', amount: sat}),
+    );
+    if (
+      typeof res?.quote !== 'string' ||
+      !res.quote ||
+      typeof res.request !== 'string' ||
+      !res.request
+    ) {
+      throw new Error('the mint answered the quote without an invoice');
+    }
+    if (amountOf(res.amount) !== sat) {
+      throw new Error(
+        `the mint quoted ${amountOf(res.amount)} sats for ${sat} asked`,
+      );
+    }
+    return {
+      quoteId: res.quote,
+      request: res.request,
+      expiry: typeof res.expiry === 'number' ? res.expiry : null,
+      amount: sat,
+    };
+  }, timeoutMs);
+}
+
+/** NUT-04: the state of `quoteId` at `mintUrl`. */
+export async function checkTopUpQuote(
+  mintUrl: string,
+  quoteId: string,
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<TopUpQuoteState> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const res = await wallet.mint.checkMintQuoteBolt11(quoteId);
+    const state = String(res?.state ?? '');
+    if (!QUOTE_STATES.has(state)) {
+      throw new Error(`the mint reported quote state "${state}"`);
+    }
+    return state as TopUpQuoteState;
+  }, timeoutMs);
+}
+
+/**
+ * The keyset a top-up's pieces are minted in: an active sat keyset with a key
+ * for every piece whose 8-byte prefix names it alone (the card stores 8 bytes
+ * and a charge expands them, `expandKeysetId`). Fetched fresh from the mint
+ * first; the kept keysets are used only when the refresh fails.
+ */
+export async function topUpKeyset(
+  mintUrl: string,
+  pieces: number[],
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<CachedKeyset> {
+  await refreshKeysets(mintUrl, timeoutMs);
+  const all = await cachedKeysets(mintUrl);
+  const found = all.find(k => {
+    if (!k.active || k.unit !== 'sat') {
+      return false;
+    }
+    if (!pieces.every(p => typeof k.keys[String(p)] === 'string')) {
+      return false;
+    }
+    try {
+      return expandKeysetId(k.id.slice(0, 16), all).id === k.id;
+    } catch {
+      return false;
+    }
+  });
+  if (!found) {
+    throw new TopUpMintError(
+      'unreachable',
+      "can't reach the card's mint (no active sat keyset for these pieces)",
+    );
+  }
+  return found;
+}
+
+async function openTopUpSignatures(
+  mintUrl: string,
+  outputs: TopUpOutput[],
+  signatures: PromiseSignature[],
+): Promise<TopUpSignature[]> {
+  if (signatures.length !== outputs.length || !outputs.length) {
+    throw new Error('mint promises do not cover the top-up outputs');
+  }
+  const out: TopUpSignature[] = [];
+  for (let i = 0; i < outputs.length; i++) {
+    const {K, dleq} = await checkPromise(
+      mintUrl,
+      outputs[i],
+      signatures[i],
+      true,
+    );
+    out.push({
+      amount: outputs[i].amount,
+      C: unblind(signatures[i].C_, outputs[i].r, K),
+      dleq: dleq!,
+    });
+  }
+  return out;
+}
+
+/**
+ * NUT-04: mint `quoteId` onto `outputs`, made by the caller and kept by it
+ * BEFORE this call. Answers each piece unblinded, its DLEQ verified. A throw
+ * after the mint accepted is "outcome unknown": `restoreTopUp` with the same
+ * outputs finds the signatures, so nothing is ever minted twice.
+ */
+export async function mintTopUp(
+  mintUrl: string,
+  quoteId: string,
+  outputs: TopUpOutput[],
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<TopUpSignature[]> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const res = await withRateLimitRetry(() =>
+      wallet.mint.mintBolt11({
+        quote: quoteId,
+        outputs: outputs.map(o => ({
+          amount: o.amount,
+          id: o.keysetId,
+          B_: o.B_,
+        })) as never,
+      }),
+    );
+    return openTopUpSignatures(
+      mintUrl,
+      outputs,
+      res.signatures as PromiseSignature[],
+    );
+  }, timeoutMs);
+}
+
+/**
+ * NUT-09: the mint's signatures on `outputs`, if it issued them. Null when it
+ * holds none of them (the quote was never minted onto these outputs); a
+ * partial, substituted or duplicated answer throws.
+ */
+export async function restoreTopUp(
+  mintUrl: string,
+  outputs: TopUpOutput[],
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<TopUpSignature[] | null> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const response = await wallet.mint.restore({
+      outputs: outputs.map(o => ({
+        id: o.keysetId,
+        amount: o.amount,
+        B_: o.B_,
+      })) as never,
+    });
+    if (response.outputs.length === 0) {
+      return null;
+    }
+    if (
+      response.outputs.length !== outputs.length ||
+      response.signatures.length !== outputs.length ||
+      new Set(outputs.map(o => o.B_)).size !== outputs.length
+    ) {
+      throw new Error('restore did not cover every top-up output');
+    }
+    const paired = new Map<string, PromiseSignature>();
+    for (let i = 0; i < response.outputs.length; i++) {
+      const got = response.outputs[i];
+      const expected = outputs.find(o => o.B_ === got.B_);
+      if (
+        !expected ||
+        paired.has(got.B_) ||
+        got.id !== expected.keysetId ||
+        amountOf(got.amount) !== expected.amount
+      ) {
+        throw new Error('restore substituted or duplicated a top-up output');
+      }
+      paired.set(got.B_, response.signatures[i] as PromiseSignature);
+    }
+    return openTopUpSignatures(
+      mintUrl,
+      outputs,
+      outputs.map(o => paired.get(o.B_)!),
+    );
+  }, timeoutMs);
+}
 
 // ── payout: melt settled proofs to a bolt11 invoice or lightning address ──
 
