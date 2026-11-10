@@ -434,21 +434,48 @@ async function main() {
   const attempts = Number(process.env.E2E_FLOW_ATTEMPTS) || lib.FLOW_ATTEMPTS;
   const results = [];
   for (const flow of opts.flows) {
+    let setupRetries = 0;
     const outcome = await lib.runAttempts(
       attempts,
       async n => {
         console.log(
           `\n=== ${flow}${n > 1 ? ` (attempt ${n} of ${attempts})` : ''}`,
         );
-        const minted = await mintCardProofs(mint, pubkey, lib.FLOWS[flow].mint);
-        const fixtures = fixturesFor(flow, minted, card);
-        // Again on the minted proofs, which the placeholders only stand in for.
-        lib.validateStages(client, flow, fixtures);
-        // The flow starts on this card; later stages are its own to post.
-        await resetCard(sim, pubkey);
-        const state = await sim.fixture(fixtures.INITIAL);
-        console.log(
-          `card: ${state.balance} sat, ${state.counts.unspent} unspent / ${state.counts.spent} spent / ${state.counts.empty} empty`,
+        // The mint's keep-alive socket can die while spawnSync blocks the
+        // event loop for the previous Maestro run, and the next mint call
+        // throws `write EPIPE` (run 42657054714, ENG-849). Retry the whole
+        // setup, never one call: each try mints a fresh quote and resets the
+        // card again, so nothing resumes on torn state, and the attempt is
+        // spent only on a real Maestro run.
+        const {minted, fixtures} = await lib.retryTransient(
+          async () => {
+            const proofs = await mintCardProofs(
+              mint,
+              pubkey,
+              lib.FLOWS[flow].mint,
+            );
+            const staged = fixturesFor(flow, proofs, card);
+            // Again on the minted proofs, which the placeholders only stand
+            // in for.
+            lib.validateStages(client, flow, staged);
+            // The flow starts on this card; later stages are its own to post.
+            await resetCard(sim, pubkey);
+            const state = await sim.fixture(staged.INITIAL);
+            console.log(
+              `card: ${state.balance} sat, ${state.counts.unspent} unspent / ${state.counts.spent} spent / ${state.counts.empty} empty`,
+            );
+            return {minted: proofs, fixtures: staged};
+          },
+          {
+            onRetry: (setupTry, error) => {
+              setupRetries++;
+              console.log(
+                `${flow}: setup retried (${setupTry}) after ${
+                  error instanceof Error ? error.message : error
+                }`,
+              );
+            },
+          },
         );
         const run = spawnSync(
           maestro,
@@ -477,16 +504,16 @@ async function main() {
         `::warning::e2e flow ${flow} passed on attempt ${outcome.attempts} of ${attempts}`,
       );
     }
-    results.push({flow, ...outcome});
+    results.push({flow, ...outcome, setupRetries});
   }
 
   await stub.close();
   console.log('\n=== results');
-  for (const {flow, ok, attempts: used} of results) {
+  for (const {flow, ok, attempts: used, setupRetries: retried} of results) {
     console.log(
       `${ok ? 'PASS' : 'FAIL'}  ${flow}${
         used > 1 ? `  (${used} attempts)` : ''
-      }`,
+      }${retried > 0 ? `  (${retried} setup retries)` : ''}`,
     );
   }
   return results.every(r => r.ok) ? 0 : 1;

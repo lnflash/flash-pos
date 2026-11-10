@@ -1,0 +1,20 @@
+# Type the merchant username again unless the field already holds exactly
+# it. Maestro's inputText on a hosted iOS simulator can drop characters or
+# the whole string: run 42657054714 reached Start with "demo_atccoun"
+# (account does not exist) in one flow and an empty field (Start does
+# nothing) in another (ENG-849).
+# env: FLASH_USERNAME
+appId: com.flash.pos
+---
+- runFlow:
+    when:
+      notVisible:
+        id: 'auth-username'
+        text: ${FLASH_USERNAME}
+    commands:
+      - tapOn:
+          id: 'auth-username'
+      - eraseText: 64
+      - inputText: ${FLASH_USERNAME}
+      # Off the field, so the keyboard does not cover Start.
+      - tapOn: 'flash POS'
