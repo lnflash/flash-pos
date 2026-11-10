@@ -460,10 +460,9 @@ async function main() {
         // blocked the event loop for the previous Maestro run, and the next
         // mint call threw `write EPIPE` (run 42657054714, ENG-849). A free
         // loop now reaps it; the retry stays because a mint close can still
-        // race the first call. Retry the whole
-        // setup, never one call: each try mints a fresh quote and resets the
-        // card again, so nothing resumes on torn state, and the attempt is
-        // spent only on a real Maestro run.
+        // race the first call. Retry the whole setup, never one call: each try
+        // mints a fresh quote and resets the card again, so nothing resumes on
+        // torn state, and the attempt is spent only on a real Maestro run.
         const {minted, fixtures} = await lib.retryTransient(
           async () => {
             const proofs = await mintCardProofs(

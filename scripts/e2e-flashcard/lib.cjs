@@ -519,8 +519,9 @@ const MAX_CAUSE_LINKS = 5;
  * Maestro run, and the next mint call threw `fetch failed (write EPIPE,
  * EPIPE)` (run 42657054714, ENG-849). Flows now run through an async spawn,
  * so the loop stays free; the check stays as belt and braces, since a mint
- * close can still race the first call. An HTTP or mint protocol error ("already issued",
- * HttpResponseError) is an answer, not a dropped socket: false.
+ * close can still race the first call. An HTTP or mint protocol error
+ * ("already issued", HttpResponseError) is an answer, not a dropped socket:
+ * false.
  */
 function isTransientNetworkError(error) {
   let link = error;
