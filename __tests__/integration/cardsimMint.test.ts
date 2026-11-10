@@ -39,6 +39,7 @@ import {
   buildCardSigAllSecret,
   listSettledProofs,
   refreshKeysets,
+  restoreTopUp,
 } from '../../src/services/cashuMint';
 import {
   DAILY_LIMIT_REACHED,
@@ -49,6 +50,14 @@ import {
   writeOwedChange,
 } from '../../src/services/cashuCharge';
 import {settlePending} from '../../src/services/cashuSpend';
+import {
+  listTopUps,
+  loadTopUp,
+  pollTopUp,
+  startTopUp,
+  waitingTopUpsForCard,
+  __resetTopUpStore,
+} from '../../src/services/cashuTopUp';
 import {
   clearQueue,
   listOwedChange,
@@ -594,5 +603,116 @@ run('the 2.1 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
     expect((await listOwedChange()).every(e => e.status === 'written')).toBe(
       true,
     );
+  });
+});
+
+run('the card top-up (ENG-853) against cardsim and a Nutshell mint', () => {
+  let restoreFetch: (() => void) | undefined;
+  beforeAll(() => {
+    restoreFetch = installLocalFetch([CARDSIM!, MINT_URL!]);
+  });
+  afterAll(() => {
+    restoreFetch?.();
+  });
+
+  beforeEach(async () => {
+    for (const k of Object.keys(mockStore)) {
+      delete mockStore[k];
+    }
+    __resetWalletCache();
+    __resetTopUpStore();
+    await clearQueue();
+  });
+
+  it('a FakeWallet quote is paid, minted onto the PIN card, shown in its balance and spent by a charge', async () => {
+    const cardKey = ((await bridge('/reset', {})) as {pubkey: string}).pubkey;
+    const {pieces} = await mintToCard(cardKey, [8]);
+    await bridge('/fixture', {
+      pin: '1234',
+      mint: MINT_URL,
+      owner: true,
+      proofs: pieces,
+    });
+
+    const summary = await readCard(transceive);
+    const record = await getCard(transceive);
+    expect(record.mint).toBe(MINT_URL);
+    const entry = await startTopUp({
+      summary,
+      cardMint: record.mint,
+      unit: record.unit,
+      owedPieces: 0,
+      sat: 5,
+    });
+    expect(entry).toMatchObject({amountSat: 5, pieces: [4, 1]});
+    expect(entry.bolt11).toMatch(/^ln/);
+
+    // FakeWallet pays its own invoices: the quote turns PAID at the mint.
+    let state = entry.state;
+    for (let i = 0; i < 50 && state === 'waiting'; i++) {
+      state = (await pollTopUp(entry.topupId))!.state;
+      if (state === 'waiting') {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    expect(state).toBe('paid');
+
+    const loaded = await loadTopUp({
+      topupId: entry.topupId,
+      transceive,
+      pin: '1234',
+    });
+    expect(loaded).toEqual({
+      amountSat: 5,
+      loadId: entry.topupId.slice(0, 8),
+    });
+    expect((await readCard(transceive)).balance).toBe(13);
+    expect(await waitingTopUpsForCard(cardKey)).toEqual([]);
+    const card = (await bridge('/state')) as {
+      slots: {status: string; amount: number; dleq?: unknown}[];
+    };
+    const unspent = card.slots.filter(s => s.status === 'unspent');
+    expect(unspent.map(s => s.amount).sort((a, b) => a - b)).toEqual([1, 4, 8]);
+    expect(unspent.every(s => s.dleq)).toBe(true);
+
+    // NUT-09 against the real mint: the kept outputs restore exactly the
+    // signatures that went on the card (the lost-answer recovery path).
+    const kept = (await listTopUps()).find(e => e.topupId === entry.topupId)!;
+    const restored = await restoreTopUp(
+      MINT_URL!,
+      kept.outputs!.map(o => ({
+        amount: o.amount,
+        keysetId: kept.keysetId!,
+        B_: o.B_,
+        r: o.r,
+      })),
+    );
+    expect(restored!.map(r => r.C)).toEqual(kept.minted!.map(m => m.C));
+
+    // A second load of the same top-up is answered without the card.
+    await expect(
+      loadTopUp({topupId: entry.topupId, transceive, pin: '1234'}),
+    ).resolves.toEqual(loaded);
+
+    // The proof of the secret: a charge of everything spends the top-up's
+    // pieces in one SIG_ALL swap the mint accepts.
+    const preRead = await readAndPlan({
+      transceive,
+      amountSat: 13,
+      mintUrl: MINT_URL,
+    });
+    expect(preRead.plan).toMatchObject({burnedSat: 13, changeSat: 0});
+    await executeCharge({
+      ...preRead,
+      transceive,
+      amountSat: 13,
+      pin: '1234',
+      mintUrl: MINT_URL!,
+    });
+    expect(await getBalance(transceive)).toBe(0);
+    const [settled] = await listSettlements();
+    expect(settled.status).toBe('settled');
+    const till = await listSettledProofs();
+    expect(till.reduce((t, p) => t + p.amount, 0)).toBe(13);
   });
 });
