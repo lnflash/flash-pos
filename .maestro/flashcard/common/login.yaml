@@ -95,7 +95,13 @@ appId: com.flash.pos
           file: dismiss-open-prompt.yaml
           env:
             ANSWER: Open
+      # Same check as before the first Start: a truncated re-type here
+      # would otherwise surface 30 s later as "Card balance" not visible.
       - runFlow: enter-username.yaml
+      - runFlow: enter-username.yaml
+      - assertVisible:
+          id: 'auth-username'
+          text: ${FLASH_USERNAME}
       - tapOn: 'Start'
 - runFlow:
     file: dismiss-open-prompt.yaml

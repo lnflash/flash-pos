@@ -968,3 +968,34 @@ describe('retryTransient', () => {
     expect(setups).toBe(2);
   });
 });
+
+describe('login.yaml checks the username before every Start (ENG-849)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const text: string = fs.readFileSync(
+    path.join(__dirname, '../../.maestro/flashcard/common/login.yaml'),
+    'utf8',
+  );
+  // Each Start tap, and the stretch of flow since the previous one. A
+  // truncated username that reaches Start fails the flow 30 s later as
+  // "Card balance" not visible, which hides the cause.
+  const segments = text.split(/tapOn: 'Start'/).slice(0, -1);
+
+  it('taps Start twice: once up front and once on the re-tap branch', () => {
+    expect(segments).toHaveLength(2);
+  });
+
+  it.each([0, 1])(
+    'Start tap %i follows two re-types and an assert on the whole username',
+    i => {
+      const before = segments[i];
+      expect(before.match(/runFlow: enter-username\.yaml/g)).toHaveLength(2);
+      const assertAt = before.search(
+        /assertVisible:\s*\n\s*id: 'auth-username'\s*\n\s*text: \$\{FLASH_USERNAME\}\s*\n\s*- $/,
+      );
+      expect(assertAt).toBeGreaterThan(
+        before.lastIndexOf('runFlow: enter-username.yaml'),
+      );
+    },
+  );
+});
