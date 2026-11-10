@@ -474,6 +474,81 @@ async function runAttempts(attempts, attempt, onFail = () => {}) {
   return {ok: false, attempts: max};
 }
 
+const TRANSIENT_CODES = new Set([
+  'EPIPE',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+]);
+const TRANSIENT_MESSAGE = /fetch failed|EPIPE|ECONNRESET|socket hang up/;
+const MAX_CAUSE_LINKS = 5;
+
+/**
+ * True when `error` (or a link of its `.cause` chain, at most 5 deep) is a
+ * request that got no HTTP response: cashu-ts' NetworkError, a socket code
+ * such as EPIPE, or undici's "fetch failed". A keep-alive socket to the
+ * mint dies while spawnSync blocks the event loop for a Maestro run, and
+ * the next mint call throws `fetch failed (write EPIPE, EPIPE)` (run
+ * 42657054714, ENG-849). An HTTP or mint protocol error ("already issued",
+ * HttpResponseError) is an answer, not a dropped socket: false.
+ */
+function isTransientNetworkError(error) {
+  let link = error;
+  for (let i = 0; i < MAX_CAUSE_LINKS; i++) {
+    if (link === null || typeof link !== 'object') {
+      return false;
+    }
+    if (link.name === 'NetworkError') {
+      return true;
+    }
+    if (typeof link.code === 'string' && TRANSIENT_CODES.has(link.code)) {
+      return true;
+    }
+    if (
+      typeof link.message === 'string' &&
+      TRANSIENT_MESSAGE.test(link.message)
+    ) {
+      return true;
+    }
+    link = link.cause;
+  }
+  return false;
+}
+
+const defaultSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Await `fn(n)` (1-based), trying again after `delayMs` while it throws a
+ * transient error and tries are left. A non-transient error is rethrown at
+ * once; the last error is rethrown when tries run out. `fn` must be a whole
+ * unit that starts from scratch (a fresh quote, the card reset again), so a
+ * retry never resumes on torn state.
+ */
+async function retryTransient(
+  fn,
+  {
+    tries = 3,
+    delayMs = 500,
+    isTransient = isTransientNetworkError,
+    sleep = defaultSleep,
+    onRetry = () => {},
+  } = {},
+) {
+  const max = Math.max(1, Math.floor(tries));
+  for (let n = 1; ; n++) {
+    try {
+      return await fn(n);
+    } catch (error) {
+      if (n >= max || !isTransient(error)) {
+        throw error;
+      }
+      onRetry(n, error);
+      await sleep(delayMs);
+    }
+  }
+}
+
 module.exports = {
   BILL_SAT,
   CARD_SAT,
@@ -490,11 +565,13 @@ module.exports = {
   cardSecret,
   headerStubAnswer,
   headerVectorsPath,
+  isTransientNetworkError,
   loadCardSim,
   PLACEHOLDER_MINT,
   placeholderProofs,
   requireCardSimClient,
   resolveCardSimClient,
+  retryTransient,
   runAttempts,
   tipFromVectors,
   toHex,
