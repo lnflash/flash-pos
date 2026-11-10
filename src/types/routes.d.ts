@@ -59,10 +59,24 @@ type RootStackType = {
   // change from an earlier charge still waiting for this card (a PIN card —
   // the keypad has no pad, so it is written on the next charge).
   // changeAddedSat: the hook wrote that change in the same session.
+  // ENG-853: cardMint/cardUnit are the card's GET_CARD record (absent when
+  // that read failed: no top-up then), waitingTopUps the top-ups this phone
+  // holds for the card.
   CashuCardBalance: {
     summary: import('../services/cashuCard').CardSummary;
     owedChangeSat?: number;
     changeAddedSat?: number;
+    cardMint?: string;
+    cardUnit?: number;
+    waitingTopUps?: import('../services/cashuTopUp').WaitingTopUp[];
+  };
+  // ENG-853: top up the card the balance read, at its own mint. `resume`
+  // opens a top-up this phone already holds (its quote id).
+  CashuCardTopUp: {
+    summary: import('../services/cashuCard').CardSummary;
+    cardMint: string;
+    cardUnit?: number;
+    resume?: string;
   };
   CashuCardDebug: undefined;
   CashuCardSpend: undefined;

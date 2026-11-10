@@ -22,6 +22,7 @@ import {
   outstandingChangeForCard,
   type OwedChangeEntry,
 } from '../services/cashuSettlement';
+import {toWaitingTopUp, waitingTopUpsForCard} from '../services/cashuTopUp';
 import {
   cancelCardSession,
   describeCardFailure,
@@ -205,6 +206,40 @@ async function stillOwedSat(
 }
 
 /**
+ * What the balance screen needs to offer a top-up (ENG-853): the card's mint
+ * and unit (GET_CARD) and the top-ups this phone holds for it. The owed
+ * change whose slots a top-up may not take is read where it is used (the
+ * balance screen, the quote, the load), never carried stale in the params.
+ * Fail-soft, every part: a balance
+ * tap is a READ, and nothing here may veto it. A card whose record will not
+ * read opens with no mint, and the screen offers no top-up.
+ */
+async function topUpParams(
+  summary: CardSummary,
+  transceive: Transceiver,
+): Promise<Partial<BalanceParams>> {
+  const params: Partial<BalanceParams> = {};
+  try {
+    const record = await getCard(transceive);
+    if (typeof record?.mint === 'string' && record.mint) {
+      params.cardMint = record.mint;
+      params.cardUnit = record.unit;
+    }
+  } catch {
+    // No mint, no top-up: the read stands.
+  }
+  try {
+    const waiting = await waitingTopUpsForCard(summary.pubkey);
+    if (waiting.length > 0) {
+      params.waitingTopUps = waiting.map(toWaitingTopUp);
+    }
+  } catch {
+    // Never throws by contract; a guard all the same.
+  }
+  return params;
+}
+
+/**
  * The keypad's card reader: tap a Flashcard on the POS home screen and see
  * its balance, whichever generation it is.
  *
@@ -283,6 +318,10 @@ export function useKeypadCardReader() {
         }
         const summary = await readCard(session.transceive);
         const params = await settleOwedChange(summary, session.transceive);
+        Object.assign(
+          params,
+          await topUpParams(params.summary, session.transceive),
+        );
         // Close the session before the balance screen takes the foreground.
         await session.close();
         if (gen !== focusGenRef.current) {

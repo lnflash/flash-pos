@@ -94,6 +94,13 @@ jest.mock('../../src/services/cashuSettlement', () => ({
     mockOutstandingChangeForCard(...args),
 }));
 
+const mockWaitingTopUpsForCard = jest.fn();
+jest.mock('../../src/services/cashuTopUp', () => ({
+  ...jest.requireActual('../../src/services/cashuTopUp'),
+  waitingTopUpsForCard: (...args: unknown[]) =>
+    mockWaitingTopUpsForCard(...args),
+}));
+
 jest.mock('../../src/services/cashuCardNfc', () => ({
   // Real: cancelCardSession (so NfcManager.cancelTechnologyRequest is what we
   // observe), describeCardFailure (its text is asserted), isUserCancel and
@@ -283,6 +290,7 @@ beforeEach(() => {
   mockReadCard.mockResolvedValue(SUMMARY);
   mockOutstandingChangeForCard.mockResolvedValue([]);
   mockGetCard.mockResolvedValue({refundKey: null});
+  mockWaitingTopUpsForCard.mockResolvedValue([]);
   mockReconcileOwedChange.mockImplementation(async ({owed}) => owed ?? []);
   // The write resolves with the pieces it put on the card.
   mockWriteOwedChange.mockImplementation(async ({owed}) => owed);
@@ -1090,7 +1098,11 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     await tap(V2_TAG);
     await flush();
 
-    expect(mockGetCard).not.toHaveBeenCalled();
+    // No owed-change read: no reconcile, no write. The one GET_CARD is the
+    // top-up's (ENG-853), for the card's mint.
+    expect(mockReconcileOwedChange).not.toHaveBeenCalled();
+    expect(mockWriteOwedChange).not.toHaveBeenCalled();
+    expect(mockGetCard).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: NO_PIN,
     });
@@ -1246,6 +1258,71 @@ describe('useKeypadCardReader: change owed from an earlier charge (ENG-630)', ()
     expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
       summary: NO_PIN,
       owedChangeSat: 6,
+    });
+  });
+});
+
+describe('useKeypadCardReader: what the balance needs to top up (ENG-853)', () => {
+  beforeEach(() => setPlatform('android'));
+
+  const read = async () => {
+    renderHook(() => useKeypadCardReader());
+    focus();
+    await flush();
+    await tap(V2_TAG);
+    await flush();
+  };
+
+  it("carries the card's mint and unit, and the top-ups waiting for it", async () => {
+    mockGetCard.mockResolvedValue({
+      refundKey: null,
+      mint: 'https://card.mint',
+      unit: 0,
+    });
+    mockWaitingTopUpsForCard.mockResolvedValue([
+      {
+        topupId: 'q1',
+        amountSat: 5,
+        state: 'paid',
+        cardPubkey: SUMMARY.pubkey,
+        outputs: [],
+      },
+    ]);
+    await read();
+
+    expect(mockWaitingTopUpsForCard).toHaveBeenCalledWith(SUMMARY.pubkey);
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+      cardMint: 'https://card.mint',
+      cardUnit: 0,
+      waitingTopUps: [{topupId: 'q1', amountSat: 5, state: 'paid'}],
+    });
+  });
+
+  it('a record read that fails still opens the balance, with no mint (no top-up)', async () => {
+    mockGetCard.mockRejectedValue(new Error('Tag was lost.'));
+    await read();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+    });
+  });
+
+  it('a top-up store that fails still opens the balance', async () => {
+    mockGetCard.mockResolvedValue({
+      refundKey: null,
+      mint: 'https://card.mint',
+      unit: 0,
+    });
+    mockWaitingTopUpsForCard.mockRejectedValue(new Error('keychain locked'));
+    await read();
+
+    expect(mockToastShow).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('CashuCardBalance', {
+      summary: SUMMARY,
+      cardMint: 'https://card.mint',
+      cardUnit: 0,
     });
   });
 });

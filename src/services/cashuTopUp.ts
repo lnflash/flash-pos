@@ -612,14 +612,30 @@ const mintFailure = (error: unknown): TopUpError => {
 export const normalizeMintUrl = (url: string): string =>
   url.trim().toLowerCase().replace(/\/+$/, '');
 
+/**
+ * How many owed-change pieces wait for this card (ENG-630): slots a top-up
+ * may not take. An unreadable store counts none here; the card's own LOAD
+ * answer (6A84) is the backstop.
+ */
+export async function owedPiecesFor(cardPubkey: string): Promise<number> {
+  try {
+    return (await outstandingChangeForCard(cardPubkey)).length;
+  } catch {
+    return 0;
+  }
+}
+
 export interface StartTopUpArgs {
   summary: CardSummary;
   /** `CardRecord.mint`: the mint the card's pieces belong to. */
   cardMint: string;
   /** `CardRecord.unit`; 0 is sat. */
   unit?: number;
-  /** This card's owed-change pieces, whose slots the top-up may not take. */
-  owedPieces: number;
+  /**
+   * This card's owed-change pieces, whose slots the top-up may not take;
+   * read from the owed-change store when not given.
+   */
+  owedPieces?: number;
   /** What the merchant typed; rounded here. */
   sat: number;
 }
@@ -640,7 +656,8 @@ export async function startTopUp({
   if (!cardMint) {
     throw new TopUpError('no_mint');
   }
-  const refused = canTopUp(summary, owedPieces, {unit, pieces: pieces.length});
+  const owed = owedPieces ?? (await owedPiecesFor(summary.pubkey));
+  const refused = canTopUp(summary, owed, {unit, pieces: pieces.length});
   if (refused) {
     throw new TopUpError(refused);
   }
@@ -736,6 +753,19 @@ export async function waitingTopUpsForCard(
     return [];
   }
 }
+
+/** What the balance screen shows of a waiting top-up. */
+export interface WaitingTopUp {
+  topupId: string;
+  amountSat: number;
+  state: TopUpState;
+}
+
+export const toWaitingTopUp = (e: TopUpEntry): WaitingTopUp => ({
+  topupId: e.topupId,
+  amountSat: e.amountSat,
+  state: e.state,
+});
 
 /**
  * One quote check for each `waiting` top-up of this card (a payment that
@@ -952,12 +982,7 @@ export async function loadTopUp({
   const remaining = entry.minted
     ? entry.minted.filter(m => !m.loaded).length
     : entry.pieces.length;
-  let owedPieces = 0;
-  try {
-    owedPieces = (await outstandingChangeForCard(summary.pubkey)).length;
-  } catch {
-    owedPieces = 0;
-  }
+  const owedPieces = await owedPiecesFor(summary.pubkey);
   if (summary.info.empty - owedPieces < remaining) {
     throw new TopUpError('card_full');
   }
