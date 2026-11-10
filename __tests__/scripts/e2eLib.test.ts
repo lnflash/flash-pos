@@ -817,3 +817,185 @@ describe('runAttempts', () => {
     expect(lib.FLOW_ATTEMPTS).toBe(2);
   });
 });
+
+// The shape cashu-ts 4.11 throws when the mint's keep-alive socket died
+// under a blocking Maestro run (run 42657054714): NetworkError, then
+// undici's TypeError('fetch failed'), then the socket error.
+function withCause<T extends Error>(error: T, cause: unknown): T {
+  return Object.assign(error, {cause});
+}
+
+function epipe(): Error {
+  const socket = Object.assign(new Error('write EPIPE'), {code: 'EPIPE'});
+  const fetchFailed = withCause(new TypeError('fetch failed'), socket);
+  const error = withCause(
+    new Error('fetch failed (write EPIPE, EPIPE) at http://127.0.0.1:3338'),
+    fetchFailed,
+  );
+  error.name = 'NetworkError';
+  return error;
+}
+
+describe('isTransientNetworkError', () => {
+  it('is true for the EPIPE chain cashu-ts throws', () => {
+    expect(lib.isTransientNetworkError(epipe())).toBe(true);
+  });
+
+  it('finds a socket code two causes deep', () => {
+    const error = withCause(
+      new Error('outer'),
+      withCause(new Error('middle'), {code: 'ECONNRESET'}),
+    );
+    expect(lib.isTransientNetworkError(error)).toBe(true);
+  });
+
+  it("is true for undici's bare fetch failed", () => {
+    expect(lib.isTransientNetworkError(new TypeError('fetch failed'))).toBe(
+      true,
+    );
+  });
+
+  it('is false for a quote the mint already issued', () => {
+    expect(
+      lib.isTransientNetworkError(
+        new Error('mint quote q1 was already issued'),
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for an HTTP error the mint answered', () => {
+    const error = new Error('HTTP request failed');
+    error.name = 'HttpResponseError';
+    expect(lib.isTransientNetworkError(error)).toBe(false);
+  });
+
+  it('is false for a cardsim key rotation', () => {
+    expect(
+      lib.isTransientNetworkError(
+        new Error('cardsim rotated the card key between reads'),
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for undefined and for a string', () => {
+    expect(lib.isTransientNetworkError(undefined)).toBe(false);
+    expect(lib.isTransientNetworkError('fetch failed')).toBe(false);
+  });
+
+  it('stops after 5 links on a self-referential cause chain', () => {
+    const loop: {message: string; cause?: unknown} = {message: 'loop'};
+    loop.cause = loop;
+    expect(lib.isTransientNetworkError(loop)).toBe(false);
+  });
+
+  it('does not look past 5 links', () => {
+    let error: unknown = {code: 'EPIPE'};
+    for (let i = 0; i < 5; i++) {
+      error = {message: `wrap ${i}`, cause: error};
+    }
+    expect(lib.isTransientNetworkError(error)).toBe(false);
+  });
+});
+
+describe('retryTransient', () => {
+  it('retries a transient error and resolves the value', async () => {
+    const sleep = jest.fn(async () => {});
+    const onRetry = jest.fn();
+    let calls = 0;
+    const out = await lib.retryTransient(
+      async () => {
+        calls++;
+        if (calls <= 2) {
+          throw epipe();
+        }
+        return 'set up';
+      },
+      {delayMs: 250, sleep, onRetry},
+    );
+    expect(out).toBe('set up');
+    expect(calls).toBe(3);
+    expect(onRetry.mock.calls.map(([n]) => n)).toEqual([1, 2]);
+    expect(sleep.mock.calls).toEqual([[250], [250]]);
+  });
+
+  it('rethrows a non-transient error at once', async () => {
+    const sleep = jest.fn(async () => {});
+    let calls = 0;
+    await expect(
+      lib.retryTransient(
+        async () => {
+          calls++;
+          throw new Error('mint quote q1 was already issued');
+        },
+        {sleep},
+      ),
+    ).rejects.toThrow('already issued');
+    expect(calls).toBe(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('rethrows the last transient error once tries run out', async () => {
+    const sleep = jest.fn(async () => {});
+    let calls = 0;
+    await expect(
+      lib.retryTransient(
+        async () => {
+          calls++;
+          throw new TypeError(`fetch failed ${calls}`);
+        },
+        {tries: 3, sleep},
+      ),
+    ).rejects.toThrow('fetch failed 3');
+    expect(calls).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an EPIPE in setup from spending a flow attempt', async () => {
+    let setups = 0;
+    const out = await lib.runAttempts(2, async () => {
+      await lib.retryTransient(
+        async () => {
+          setups++;
+          if (setups === 1) {
+            throw epipe();
+          }
+        },
+        {sleep: async () => {}},
+      );
+      return true; // the Maestro run
+    });
+    expect(out).toEqual({ok: true, attempts: 1});
+    expect(setups).toBe(2);
+  });
+});
+
+describe('login.yaml checks the username before every Start (ENG-849)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const text: string = fs.readFileSync(
+    path.join(__dirname, '../../.maestro/flashcard/common/login.yaml'),
+    'utf8',
+  );
+  // Each Start tap, and the stretch of flow since the previous one. A
+  // truncated username that reaches Start fails the flow 30 s later as
+  // "Card balance" not visible, which hides the cause.
+  const segments = text.split(/tapOn: 'Start'/).slice(0, -1);
+
+  it('taps Start twice: once up front and once on the re-tap branch', () => {
+    expect(segments).toHaveLength(2);
+  });
+
+  it.each([0, 1])(
+    'Start tap %i follows two re-types and an assert on the whole username',
+    i => {
+      const before = segments[i];
+      expect(before.match(/runFlow: enter-username\.yaml/g)).toHaveLength(2);
+      const assertAt = before.search(
+        /assertVisible:\s*\n\s*id: 'auth-username'\s*\n\s*text: \$\{FLASH_USERNAME\}\s*\n\s*- $/,
+      );
+      expect(assertAt).toBeGreaterThan(
+        before.lastIndexOf('runFlow: enter-username.yaml'),
+      );
+    },
+  );
+});
