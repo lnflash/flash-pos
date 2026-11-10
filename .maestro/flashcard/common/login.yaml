@@ -70,14 +70,37 @@ appId: com.flash.pos
     file: dismiss-open-prompt.yaml
     env:
       ANSWER: Open
+# The username must be in the field, whole, before Start: a short or empty
+# one fails the login on Auth with nothing to retry (run 42657054714,
+# ENG-849). Two re-types at most, then the field must hold it.
+- runFlow: enter-username.yaml
+- runFlow: enter-username.yaml
+- assertVisible:
+    id: 'auth-username'
+    text: ${FLASH_USERNAME}
 - tapOn: 'Start'
-- retry:
-    maxRetries: 2
+# Unrolled rather than a retry block. Only Auth renders "Start", so a Start
+# still on screen after the first wait means the AccountDefaultWallets query
+# failed (Auth shows the error and stays) or the tap was lost: check the
+# username again and tap Start once more. On Home this is a no-op.
+- extendedWaitUntil:
+    visible: '.*Card balance'
+    timeout: 30000
+    optional: true
+- runFlow:
+    when:
+      visible: 'Start'
     commands:
       - runFlow:
           file: dismiss-open-prompt.yaml
           env:
             ANSWER: Open
-      - extendedWaitUntil:
-          visible: '.*Card balance'
-          timeout: 30000
+      - runFlow: enter-username.yaml
+      - tapOn: 'Start'
+- runFlow:
+    file: dismiss-open-prompt.yaml
+    env:
+      ANSWER: Open
+- extendedWaitUntil:
+    visible: '.*Card balance'
+    timeout: 30000
