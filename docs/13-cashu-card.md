@@ -499,7 +499,8 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
    `loaded` entry answers without touching the card.
 
 **States.** `waiting` (quoted, not paid) → `paid` → `loading` (outputs kept,
-pieces going on) → `loaded`; or `waiting` → `expired`. The store copies the
+pieces going on) → `loaded`; or `waiting` → `expired`; or, before anything
+is minted, `paid`/`loading` → `refunding` → `refunded` (below). The store copies the
 owed-change store's rules: its own key, an unreadable store throws (never
 reads as empty), corrupt bytes are quarantined under
 `@cashu_topups_corrupt:<hash>` before anything overwrites them, a `{v,
@@ -512,16 +513,70 @@ entries}` envelope, a serialising write, and a soft cap that evicts only
   fewer free slots than pieces is refused, not given fewer pieces.
 - (b) The room check subtracts the card's owed-change pieces, so a top-up
   never takes change's slots.
-- (c) A paid top-up that can never load has no refund path here (Known gaps).
+- (c) A paid top-up can be refunded to the holder's Lightning invoice or
+  address while nothing is minted (ENG-855, below); minted pieces are locked
+  to the card and can only be loaded.
 - (d) No merchant reporting in v1: no history, settlement record or print.
 - (e) Three power-of-two pieces break the covering ladder (`targetPieces`,
   ENG-700/701), so the card has fewer exact offline amounts until the
   holder's app reshapes it. The pieces are not picked from the ladder.
 - (f) The mint quote's state is the truth, never the local clock.
 
-**A paid top-up must be loaded on the phone that created it.** The quote and
-the kept outputs live only in that phone's secure storage; the card's next
-balance read on that phone shows "Load waiting top-up · N sats".
+**A paid top-up must be loaded, or refunded, on the phone that created it.**
+The quote and the kept outputs live only in that phone's secure storage; the
+card's next balance read on that phone shows "Load waiting top-up · N sats"
+(or "Refund in progress · N sats").
+
+### Refund (ENG-855)
+
+A paid top-up the holder no longer wants on the card (the card is full, they
+changed their mind) goes back to them over Lightning. The value is the
+holder's; the merchant's phone only holds it.
+
+1. **Refund** on the paid step, offered only while the entry has nothing
+   minted. Once the mint has signed the card-locked outputs (P2PK SIG_ALL to
+   the card key, no locktime), only the card can spend those pieces: the
+   step says "The pieces are locked to this card. Load them."
+2. The holder gives a bolt11 invoice or a Lightning address (`lightning:`
+   is dropped, case ignored). The phone quotes a melt at the card's own mint,
+   never the merchant's, for the amount less the keyset input fee: an
+   address is asked for less until amount plus fee reserve fits (the payout's
+   `quoteMelt`); a pasted invoice over it is refused with the most that fits,
+   and one so far under it that more than one fee reserve would come back as
+   change is refused with the amount to ask for (change stays on the phone).
+   The confirm step echoes the destination in full and says "The holder gets
+   X sats. The mint keeps up to Y sats in fees." Nothing is persisted yet.
+3. The card's tap and PIN: the same gate as the load (`verifyCardForTopUp`:
+   this card, this mint, not locked, PIN not blocked, PIN verified), with no
+   room check and no LOAD. The price is asked again; a smaller net than the
+   one confirmed stops it. Then, in one compare-and-set write, the entry
+   becomes `refunding` with the destination, the melt quote and **plain**
+   outputs (random secrets), only if it is still `paid`/`loading` with
+   nothing minted. The card session ends here.
+4. No card from here (`resumeTopUpRefund`, also what opening a `refunding`
+   top-up runs): the mint signs the plain outputs (the same outputs every
+   time, NUT-09 restore for a lost answer) and the proofs are kept;
+   `meltSent` is written; the melt goes. PAID makes the entry `refunded` with
+   the preimage and any NUT-08 change, which stays in the entry ("N sats came
+   back and stay on this phone"), never in the till's settled store.
+5. A melt already sent is checked before anything is spent again: PAID
+   finishes, PENDING is "The refund is on its way", UNPAID melts the same
+   proofs again. An expired melt quote is quoted again (an address
+   re-resolves) and the new id kept before the melt; a new quote that pays
+   less than the net the holder confirmed stops before the melt, and an
+   invoice that has expired needs a new destination; either takes the card
+   and its PIN again ("Refund to another destination", whose Back returns to
+   the stuck refund, never to the load).
+6. If the load won the race (the mint signed the card's outputs), the
+   refund records those pieces as the load's (`loading`, minted) and says it
+   cannot refund; the next tap loads them. A load of a `refunding` or
+   `refunded` entry stops before the card. Refunded entries are never
+   evicted: they are the record of where the money went.
+
+**Downgrade.** An older build does not know `refunding` or `refunded`: it
+reads the store as corrupt, keeps its bytes under the content-keyed
+quarantine slot and goes on with the entries it knows, so those entries live
+on only in the quarantine copy (recoverable by hand, not by the app).
 
 ## Known gaps
 
@@ -534,13 +589,18 @@ balance read on that phone shows "Load waiting top-up · N sats".
   fails as not paid, as a lost burn did on 0.x. The burn is the last thing
   the card's commit does, so this needs the card to leave in the few
   milliseconds between the commit and the answer.
-- **A paid top-up that can never load (ENG-853).** A card lost, PIN-blocked
-  or locked after the holder paid strands the top-up: there is no refund or
-  melt-back path on the phone, and the minted pieces are locked to that
-  card. The quote and its outputs also live only on the phone that made
-  them, so an uninstall, a data clear or another POS phone strands it too.
-  Whoever holds the quote id could mint it (NUT-20 is not used); it never
-  leaves the phone. Follow-up ticket filed at merge.
+- **A paid top-up that can neither load nor refund (ENG-853, ENG-855).**
+  The refund needs the card to pass its gate, because the quote id is bearer
+  (NUT-20 is not used) and nothing else tells the holder apart from a
+  merchant typing in their own invoice. So a card lost, PIN-blocked or
+  locked after the holder paid still strands the top-up, and pieces already
+  minted are locked to that card whatever happens. The quote and its outputs
+  also live only on the phone that made them, so an uninstall, a data clear
+  or another POS phone strands it too.
+- **A lost melt answer loses the change.** cashu-ts makes the NUT-08 change
+  outputs inside the melt call; when its answer is lost, the melt is
+  recovered as paid from the quote, but the change (at most the unused fee
+  reserve) is not.
 - **No till-held owner key.** The till never holds an owner key: owner
   commands (`SET_OWNER`, `ALLOW_LOAD`, `SET_LIMIT`, `REFRESH`) are the
   holder's phone's (flash-mobile).

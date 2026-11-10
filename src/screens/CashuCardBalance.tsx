@@ -42,10 +42,15 @@ const CARD_RADIUS = (CARD_ART.radius * CARD_W) / CARD_ART.width;
 const rowButtonStyle = {flex: 1, width: undefined, marginBottom: 0};
 const rowGap = {width: 12};
 
-/** A waiting top-up's line: paid ones load on the card's tap, open ones show the invoice. */
+/**
+ * A waiting top-up's line: paid ones load on the card's tap, open ones show
+ * the invoice, and a refund under way (ENG-855) is finished by the mint.
+ */
 const waitingLabel = (t: WaitingTopUp): string =>
   t.state === 'waiting'
     ? `Top-up invoice open · ${formatSatAmount(t.amountSat)}`
+    : t.state === 'refunding'
+    ? `Refund in progress · ${formatSatAmount(t.amountSat)}`
     : `Load waiting top-up · ${formatSatAmount(t.amountSat)}`;
 
 const PIN_LABEL: Record<CardInfo['pinState'], string> = {

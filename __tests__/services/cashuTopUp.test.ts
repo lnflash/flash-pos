@@ -8,16 +8,21 @@
 import {bytesToHex} from '@noble/hashes/utils';
 
 import {
+  beginTopUpRefund,
   canTopUp,
   CORRUPT_TOPUP_KEY,
   listTopUps,
   loadTopUp,
   MAX_TOPUP_ENTRIES,
   NULL_EXPIRY_HOLD_MS,
+  normalizeRefundDestination,
   pollTopUp,
   PRECHECK_TIMEOUT_MS,
+  previewTopUpRefund,
   refreshWaitingTopUps,
+  refundTopUp,
   reservedPiecesFor,
+  resumeTopUpRefund,
   roundTopUp,
   startTopUp,
   TOPUP_KEY,
@@ -28,11 +33,14 @@ import {
   waitingTopUpsForCard,
   __resetTopUpStore,
   type TopUpEntry,
+  type TopUpRefund,
 } from '../../src/services/cashuTopUp';
 import {readCard, type CardSummary} from '../../src/services/cashuCard';
 import {
   buildCardSigAllSecret,
+  MeltBudgetError,
   TopUpMintError,
+  type RefundProof,
   type TopUpOutput,
 } from '../../src/services/cashuMint';
 import {OWED_CHANGE_KEY} from '../../src/services/cashuSettlement';
@@ -78,6 +86,9 @@ jest.mock('../../src/services/cashuMint', () => {
     mintTopUp: jest.fn(),
     restoreTopUp: jest.fn(),
     topUpKeyset: jest.fn(),
+    createRefundQuote: jest.fn(),
+    checkRefundMelt: jest.fn(),
+    meltRefund: jest.fn(),
   };
 });
 
@@ -88,6 +99,9 @@ const mintMocks = jest.requireMock('../../src/services/cashuMint') as {
   mintTopUp: jest.Mock;
   restoreTopUp: jest.Mock;
   topUpKeyset: jest.Mock;
+  createRefundQuote: jest.Mock;
+  checkRefundMelt: jest.Mock;
+  meltRefund: jest.Mock;
 };
 
 /** The TestMint's signatures on `outputs`, unblinded as cashuMint would. */
@@ -154,6 +168,9 @@ beforeEach(() => {
     mintMocks.mintTopUp,
     mintMocks.restoreTopUp,
     mintMocks.topUpKeyset,
+    mintMocks.createRefundQuote,
+    mintMocks.checkRefundMelt,
+    mintMocks.meltRefund,
   ]) {
     m.mockReset();
   }
@@ -167,6 +184,29 @@ beforeEach(() => {
       signOutputs(outputs),
   );
   mintMocks.restoreTopUp.mockResolvedValue(null);
+  mintMocks.createRefundQuote.mockImplementation(
+    async (
+      _url: string,
+      dest: {bolt11?: string; lightningAddress?: string},
+      budget: number,
+    ) => ({
+      meltQuoteId: 'melt-1',
+      request: dest.bolt11 ?? `lnbc-for-${dest.lightningAddress}`,
+      amountSat: budget - 2,
+      feeReserveSat: 2,
+      expiry: 2_000_000_000,
+    }),
+  );
+  mintMocks.checkRefundMelt.mockResolvedValue({
+    state: 'UNPAID',
+    preimage: null,
+    expiry: 2_000_000_000,
+  });
+  mintMocks.meltRefund.mockResolvedValue({
+    state: 'PAID',
+    preimage: 'preimage-1',
+    change: [],
+  });
 });
 
 describe('roundTopUp', () => {
@@ -984,3 +1024,772 @@ function fillerSlot() {
     status: 1,
   };
 }
+
+describe('refund (ENG-855)', () => {
+  const INVOICE = 'lnbc70n1holderinvoice';
+  const LOAD = 0x30;
+
+  /** A top-up of `sat` on `card`, paid and waiting to load. */
+  async function paidOn(card: FakeCard2, sat = 7) {
+    await startOn(card, sat);
+    await pollTopUp(QUOTE);
+    expect(storedEntries()[0].state).toBe('paid');
+    card.sent.length = 0;
+    jest.clearAllMocks();
+  }
+
+  const refund = (
+    card: FakeCard2,
+    over: Partial<Parameters<typeof refundTopUp>[0]> = {},
+  ) =>
+    refundTopUp({
+      topupId: QUOTE,
+      destination: INVOICE,
+      shownNetSat: 5,
+      transceive: card.transceive,
+      ...over,
+    });
+
+  const fakeRefund = (over: Partial<TopUpRefund> = {}): TopUpRefund => ({
+    destination: {kind: 'bolt11', value: INVOICE},
+    meltQuoteId: 'melt-1',
+    request: INVOICE,
+    amountSat: 5,
+    feeSat: 2,
+    inputFeeSat: 0,
+    meltExpiry: 2_000_000_000,
+    keysetId: KEYSET_ID,
+    outputs: [
+      {amount: 4, secret: 'aa'.repeat(32), r: '01'.repeat(32), B_: '02'},
+    ],
+    ...over,
+  });
+
+  /** Rewrite the stored entry as if another flow wrote it. */
+  const rewrite = (fn: (e: TopUpEntry) => TopUpEntry) => {
+    const env = JSON.parse(mockStore[TOPUP_KEY]);
+    env.entries = env.entries.map(fn);
+    mockStore[TOPUP_KEY] = JSON.stringify(env);
+  };
+
+  describe('the destination', () => {
+    it.each([
+      ['LIGHTNING:LNBC70N1XYZ', {kind: 'bolt11', value: 'lnbc70n1xyz'}],
+      ['  lnbcrt70n1xyz ', {kind: 'bolt11', value: 'lnbcrt70n1xyz'}],
+      [
+        ' Holder@Wallet.Example ',
+        {kind: 'address', value: 'holder@wallet.example'},
+      ],
+    ])('normalises %p', (raw, want) => {
+      expect(normalizeRefundDestination(raw)).toEqual(want);
+    });
+
+    it.each(['', '   ', 'not an invoice', 'lnurl1dp68gurn'])(
+      'refuses %p',
+      raw => {
+        expect(() => normalizeRefundDestination(raw)).toThrow(TopUpError);
+      },
+    );
+  });
+
+  describe('previewTopUpRefund', () => {
+    it('prices the net after the reserve and the input fee, persisting nothing', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      resetTestMint({inputFeePpk: 1000});
+      const before = mockStore[TOPUP_KEY];
+
+      const preview = await previewTopUpRefund({
+        topupId: QUOTE,
+        destination: 'LIGHTNING:LNBC70N1HOLDERINVOICE',
+      });
+
+      // 7 sats, three pieces at 1000 ppk: 3 sats input fee, a 4-sat budget,
+      // of which the mint reserves 2.
+      expect(mintMocks.createRefundQuote).toHaveBeenCalledWith(
+        MINT_URL,
+        {bolt11: INVOICE},
+        4,
+      );
+      expect(preview).toEqual({
+        netSat: 2,
+        feeSat: 5,
+        destination: {kind: 'bolt11', value: INVOICE},
+      });
+      expect(mockStore[TOPUP_KEY]).toBe(before);
+      expect(card.sent).toEqual([]);
+    });
+
+    it('quotes a lightning address for the budget', async () => {
+      await paidOn(new FakeCard2(), 7);
+      await expect(
+        previewTopUpRefund({
+          topupId: QUOTE,
+          destination: 'holder@wallet.example',
+        }),
+      ).resolves.toMatchObject({netSat: 5, feeSat: 2});
+      expect(mintMocks.createRefundQuote).toHaveBeenCalledWith(
+        MINT_URL,
+        {lightningAddress: 'holder@wallet.example'},
+        7,
+      );
+    });
+
+    it('refuses an unpaid quote as not_paid', async () => {
+      mintMocks.checkTopUpQuote.mockResolvedValue('UNPAID');
+      await startOn(new FakeCard2(), 7);
+      await expect(
+        previewTopUpRefund({topupId: QUOTE, destination: INVOICE}),
+      ).rejects.toMatchObject({kind: 'not_paid'});
+      expect(mintMocks.createRefundQuote).not.toHaveBeenCalled();
+    });
+
+    it('refuses an ISSUED quote: the pieces are the card’s', async () => {
+      await paidOn(new FakeCard2(), 7);
+      mintMocks.checkTopUpQuote.mockResolvedValue('ISSUED');
+      await expect(
+        previewTopUpRefund({topupId: QUOTE, destination: INVOICE}),
+      ).rejects.toMatchObject({kind: 'refund_unavailable'});
+      expect(mintMocks.createRefundQuote).not.toHaveBeenCalled();
+    });
+
+    it('refuses a top-up with minted pieces', async () => {
+      const card = new FakeCard2({
+        refuseLoad: n => (n === 0 ? 0x6a84 : undefined),
+      });
+      await startOn(card, 7);
+      await expect(
+        loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+      ).rejects.toMatchObject({kind: 'card_full'});
+      expect(storedEntries()[0].minted).toHaveLength(3);
+      await expect(
+        previewTopUpRefund({topupId: QUOTE, destination: INVOICE}),
+      ).rejects.toMatchObject({kind: 'refund_unavailable'});
+      await expect(refund(card)).rejects.toMatchObject({
+        kind: 'refund_unavailable',
+      });
+      expect(mintMocks.createRefundQuote).not.toHaveBeenCalled();
+    });
+
+    it('refuses an invoice over the budget with the most that fits', async () => {
+      await paidOn(new FakeCard2(), 7);
+      mintMocks.createRefundQuote.mockRejectedValueOnce(
+        new MeltBudgetError('too big', 12, 2, 7),
+      );
+      const error = await previewTopUpRefund({
+        topupId: QUOTE,
+        destination: INVOICE,
+      }).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toBe(
+        'The invoice is too large. Ask for one of at most 5 sats.',
+      );
+    });
+    it('refuses an invoice well under the budget: its change would stay on this phone', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.createRefundQuote.mockImplementation(async () => ({
+        meltQuoteId: 'melt-small',
+        request: INVOICE,
+        amountSat: 1,
+        feeReserveSat: 2,
+        expiry: 2_000_000_000,
+      }));
+      const before = mockStore[TOPUP_KEY];
+      const error = await previewTopUpRefund({
+        topupId: QUOTE,
+        destination: INVOICE,
+      }).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toBe(
+        'The invoice is too small. Ask for one of 5 sats.',
+      );
+      await expect(
+        beginTopUpRefund({
+          topupId: QUOTE,
+          destination: INVOICE,
+          shownNetSat: 1,
+          transceive: card.transceive,
+        }),
+      ).rejects.toMatchObject({kind: 'refund_failed'});
+      expect(mockStore[TOPUP_KEY]).toBe(before);
+      expect(storedEntries()[0].state).toBe('paid');
+      expect(storedEntries()[0].refund).toBeUndefined();
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the card gate', () => {
+    // Blocked and locked happen after payment: a top-up is never quoted for
+    // such a card.
+    const block = (c: FakeCard2) => {
+      c.pinState = 2;
+    };
+    const lock = (c: FakeCard2) => {
+      (c.opts as {locked?: boolean}).locked = true;
+    };
+    it.each([
+      ['a wrong PIN', {pin: '9999'}, null, {kind: 'wrong_pin', triesLeft: 2}],
+      ['no PIN', {}, null, {kind: 'pin_needed'}],
+      ['a blocked PIN', {pin: '1234'}, block, {kind: 'pin_blocked'}],
+      ['a locked card', {pin: '1234'}, lock, {kind: 'card_locked'}],
+    ])('stops at %s before any mint call', async (_n, args, after, want) => {
+      const card = new FakeCard2({pin: '1234'});
+      await paidOn(card, 7);
+      after?.(card);
+      await expect(refund(card, args)).rejects.toMatchObject(want);
+      expect(mintMocks.checkTopUpQuote).not.toHaveBeenCalled();
+      expect(mintMocks.createRefundQuote).not.toHaveBeenCalled();
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+      expect(storedEntries()[0].state).toBe('paid');
+    });
+
+    it('refuses another card before any mint call', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      const other = new FakeCard2({privateKey: '22'.repeat(32)});
+      await expect(refund(other)).rejects.toMatchObject({
+        kind: 'not_our_card',
+      });
+      expect(mintMocks.createRefundQuote).not.toHaveBeenCalled();
+      expect(storedEntries()[0].state).toBe('paid');
+    });
+
+    it('verifies the PIN, and never sends a LOAD', async () => {
+      const card = new FakeCard2({pin: '1234'});
+      await paidOn(card, 7);
+      await refund(card, {pin: '1234'});
+      const ins = card.sent.map(a => a[1]);
+      expect(ins).toContain(0x40);
+      expect(ins).not.toContain(LOAD);
+      expect(card.loads).toEqual([]);
+    });
+
+    it('stops when the mint would now pay less than the holder confirmed', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      await expect(refund(card, {shownNetSat: 6})).rejects.toMatchObject({
+        kind: 'refund_failed',
+      });
+      expect(storedEntries()[0].state).toBe('paid');
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refundTopUp', () => {
+    it('mints onto kept plain outputs, marks the melt sent, then melts and records refunded', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      let kept: TopUpRefund | undefined;
+      mintMocks.mintTopUp.mockImplementationOnce(
+        async (_u: string, quote: string, outputs: TopUpOutput[]) => {
+          const e = storedEntries()[0];
+          expect(e.state).toBe('refunding');
+          kept = e.refund!;
+          expect(quote).toBe(QUOTE);
+          expect(kept.outputs.map(o => o.B_)).toEqual(outputs.map(o => o.B_));
+          expect(kept.proofs).toBeUndefined();
+          expect(outputs.every(o => o.keysetId === KEYSET_ID)).toBe(true);
+          return signOutputs(outputs);
+        },
+      );
+      mintMocks.meltRefund.mockImplementationOnce(
+        async (_u: string, meltId: string, proofs: RefundProof[]) => {
+          const r = storedEntries()[0].refund!;
+          expect(r.meltSent).toBe(true);
+          expect(r.proofs).toEqual(proofs);
+          expect(meltId).toBe('melt-1');
+          return {
+            state: 'PAID',
+            preimage: 'preimage-1',
+            change: [{id: KEYSET_ID, amount: 1, secret: 'chg', C: '02aa'}],
+          };
+        },
+      );
+
+      const done = await refund(card);
+
+      expect(done).toEqual({
+        amountSat: 5,
+        changeSat: 1,
+        preimage: 'preimage-1',
+        destination: {kind: 'bolt11', value: INVOICE},
+      });
+      const e = storedEntries()[0];
+      expect(e.state).toBe('refunded');
+      expect(e.refund).toMatchObject({
+        meltQuoteId: 'melt-1',
+        amountSat: 5,
+        feeSat: 2,
+        preimage: 'preimage-1',
+        changeSat: 1,
+        change: [{id: KEYSET_ID, amount: 1, secret: 'chg', C: '02aa'}],
+      });
+      // Plain secrets, signed by the mint: proofs anyone holding them spends.
+      for (const p of e.refund!.proofs!) {
+        expect(p.secret).toMatch(/^[0-9a-f]{64}$/);
+        expect(testMint().verifyProof(p.secret, p.C, p.amount)).toBe(true);
+      }
+      expect(e.refund!.proofs!.map(p => p.secret)).toEqual(
+        kept!.outputs.map(o => o.secret),
+      );
+      expect(e.minted).toBeUndefined();
+      expect(card.loads).toEqual([]);
+      // The change stays in the entry: never the settled store.
+      expect(Object.keys(mockStore)).toEqual([TOPUP_KEY]);
+    });
+
+    it('restores, never mints again, when the mint answer is lost', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      let signed: ReturnType<typeof signOutputs> = [];
+      mintMocks.mintTopUp.mockImplementationOnce(
+        async (_u: string, _q: string, outputs: TopUpOutput[]) => {
+          signed = signOutputs(outputs);
+          throw new TopUpMintError('timeout', 'the mint took too long');
+        },
+      );
+      mintMocks.restoreTopUp.mockImplementationOnce(async () => signed);
+      await refund(card);
+      expect(mintMocks.mintTopUp).toHaveBeenCalledTimes(1);
+      expect(mintMocks.restoreTopUp).toHaveBeenCalledTimes(1);
+      expect(storedEntries()[0].refund!.proofs!.map(p => p.C)).toEqual(
+        signed.map(s => s.C),
+      );
+      expect(storedEntries()[0].state).toBe('refunded');
+    });
+
+    it('a mint that cannot be reached leaves it refunding, and resume mints the same outputs', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.mintTopUp.mockRejectedValueOnce(
+        new TopUpMintError('unreachable', 'offline'),
+      );
+      await expect(refund(card)).rejects.toMatchObject({
+        kind: 'mint_unreachable',
+      });
+      const first = storedEntries()[0];
+      expect(first.state).toBe('refunding');
+      expect(first.refund!.proofs).toBeUndefined();
+      await expect(resumeTopUpRefund(QUOTE)).resolves.toMatchObject({
+        amountSat: 5,
+      });
+      const asked = mintMocks.mintTopUp.mock.calls.map(c =>
+        (c[2] as TopUpOutput[]).map(o => o.B_),
+      );
+      expect(asked[1]).toEqual(asked[0]);
+      expect(storedEntries()[0].state).toBe('refunded');
+    });
+
+    describe('a melt that throws or times out', () => {
+      async function stuck(card: FakeCard2) {
+        await paidOn(card, 7);
+        mintMocks.meltRefund.mockRejectedValueOnce(
+          new TopUpMintError('timeout', 'the mint took too long'),
+        );
+        await expect(refund(card)).rejects.toMatchObject({
+          kind: 'mint_timeout',
+        });
+        const e = storedEntries()[0];
+        expect(e.state).toBe('refunding');
+        expect(e.refund!.meltSent).toBe(true);
+        expect(e.lastError).toMatch(/too long/);
+        return e.refund!.proofs!;
+      }
+
+      it('resumes as refunded when the mint paid, with no second melt', async () => {
+        await stuck(new FakeCard2());
+        mintMocks.checkRefundMelt.mockResolvedValueOnce({
+          state: 'PAID',
+          preimage: 'preimage-late',
+          expiry: 2_000_000_000,
+        });
+        await expect(resumeTopUpRefund(QUOTE)).resolves.toMatchObject({
+          preimage: 'preimage-late',
+          changeSat: 0,
+        });
+        expect(mintMocks.meltRefund).toHaveBeenCalledTimes(1);
+        expect(storedEntries()[0].state).toBe('refunded');
+      });
+
+      it('melts the same proofs again when the mint did not pay', async () => {
+        const proofs = await stuck(new FakeCard2());
+        await resumeTopUpRefund(QUOTE);
+        expect(mintMocks.meltRefund).toHaveBeenCalledTimes(2);
+        expect(mintMocks.meltRefund.mock.calls[1][2]).toEqual(proofs);
+        expect(mintMocks.mintTopUp).toHaveBeenCalledTimes(1);
+        expect(storedEntries()[0].state).toBe('refunded');
+      });
+
+      it('says the refund is on its way while the melt is pending', async () => {
+        await stuck(new FakeCard2());
+        mintMocks.checkRefundMelt.mockResolvedValueOnce({
+          state: 'PENDING',
+          preimage: null,
+          expiry: 2_000_000_000,
+        });
+        await expect(resumeTopUpRefund(QUOTE)).rejects.toMatchObject({
+          kind: 'refund_pending',
+        });
+        expect(mintMocks.meltRefund).toHaveBeenCalledTimes(1);
+        expect(storedEntries()[0].state).toBe('refunding');
+      });
+    });
+
+    it('a melt the mint answers PENDING stays refunding', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.meltRefund.mockResolvedValueOnce({
+        state: 'PENDING',
+        preimage: null,
+        change: [],
+      });
+      await expect(refund(card)).rejects.toMatchObject({
+        kind: 'refund_pending',
+      });
+      expect(storedEntries()[0].state).toBe('refunding');
+    });
+
+    it('quotes an expired melt quote again, keeping the new id before the melt', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.createRefundQuote
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-old',
+          request: INVOICE,
+          amountSat: 5,
+          feeReserveSat: 2,
+          expiry: 1,
+        })
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-new',
+          request: INVOICE,
+          amountSat: 5,
+          feeReserveSat: 2,
+          expiry: 2_000_000_000,
+        });
+      mintMocks.meltRefund.mockImplementationOnce(async (_u, id: string) => {
+        expect(storedEntries()[0].refund!.meltQuoteId).toBe('melt-new');
+        expect(id).toBe('melt-new');
+        return {state: 'PAID', preimage: 'p', change: []};
+      });
+      await refund(card);
+      expect(storedEntries()[0].refund!.meltQuoteId).toBe('melt-new');
+    });
+
+    it('an expired melt quote that would now pay less than confirmed stops before the melt', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.createRefundQuote
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-old',
+          request: INVOICE,
+          amountSat: 5,
+          feeReserveSat: 2,
+          expiry: 1,
+        })
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-new',
+          request: INVOICE,
+          amountSat: 4,
+          feeReserveSat: 3,
+          expiry: 2_000_000_000,
+        });
+      const error = await refund(card).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toMatch(/less than confirmed/);
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+      const e = storedEntries()[0];
+      expect(e.state).toBe('refunding');
+      expect(e.refund!.meltQuoteId).toBe('melt-old');
+      expect(e.refund!.amountSat).toBe(5);
+      expect(e.lastError).toMatch(/less than confirmed/);
+    });
+
+    it('an expired invoice that will not quote again asks for a new one, and a new destination takes the card again', async () => {
+      const card = new FakeCard2({pin: '1234'});
+      await paidOn(card, 7);
+      mintMocks.meltRefund.mockRejectedValueOnce(
+        new TopUpMintError('timeout', 'slow'),
+      );
+      await expect(refund(card, {pin: '1234'})).rejects.toMatchObject({
+        kind: 'mint_timeout',
+      });
+      const outputs = storedEntries()[0].refund!.outputs;
+      mintMocks.checkRefundMelt.mockResolvedValueOnce({
+        state: 'UNPAID',
+        preimage: null,
+        expiry: 1,
+      });
+      mintMocks.createRefundQuote.mockRejectedValueOnce(
+        new Error('invoice expired'),
+      );
+      const error = await resumeTopUpRefund(QUOTE).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toMatch(/new one/);
+      expect(storedEntries()[0].state).toBe('refunding');
+
+      // No card, no new destination.
+      await expect(
+        refund(new FakeCard2({privateKey: '22'.repeat(32)}), {
+          destination: 'holder@wallet.example',
+        }),
+      ).rejects.toMatchObject({kind: 'not_our_card'});
+      await refund(card, {
+        pin: '1234',
+        destination: 'holder@wallet.example',
+      });
+      const e = storedEntries()[0];
+      expect(e.state).toBe('refunded');
+      expect(e.refund!.destination).toEqual({
+        kind: 'address',
+        value: 'holder@wallet.example',
+      });
+      // The plain outputs the mint signed are kept, never made again.
+      expect(e.refund!.outputs).toEqual(outputs);
+      expect(mintMocks.mintTopUp).toHaveBeenCalledTimes(1);
+    });
+
+    it('a load that won the race keeps its pieces: the refund is unavailable', async () => {
+      const card = new FakeCard2();
+      await startOn(card, 7);
+      // A load kept its outputs, then lost the mint's answer.
+      mintMocks.mintTopUp.mockRejectedValueOnce(
+        new TopUpMintError('unreachable', 'offline'),
+      );
+      await expect(
+        loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+      ).rejects.toMatchObject({kind: 'mint_unreachable'});
+      const cardOutputs = storedEntries()[0].outputs!;
+      jest.clearAllMocks();
+      // The mint signed the card's outputs after all.
+      mintMocks.checkTopUpQuote
+        .mockResolvedValueOnce('PAID')
+        .mockResolvedValue('ISSUED');
+      mintMocks.restoreTopUp.mockImplementation(
+        async (_u: string, asked: TopUpOutput[]) =>
+          asked[0].B_ === cardOutputs[0].B_ ? signOutputs(asked) : null,
+      );
+
+      await expect(refund(card)).rejects.toMatchObject({
+        kind: 'refund_unavailable',
+      });
+      const e = storedEntries()[0];
+      expect(e.state).toBe('loading');
+      expect(e.refund).toBeUndefined();
+      expect(e.minted).toHaveLength(3);
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+
+      await loadTopUp({topupId: QUOTE, transceive: card.transceive});
+      expect(card.loads.map(l => l.amount)).toEqual([4, 2, 1]);
+      expect(storedEntries()[0].state).toBe('loaded');
+    });
+
+    it('refuses a top-up already refunded', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      await refund(card);
+      await expect(refund(card)).rejects.toMatchObject({kind: 'refunded'});
+      await expect(resumeTopUpRefund(QUOTE)).resolves.toMatchObject({
+        amountSat: 5,
+      });
+      expect(mintMocks.meltRefund).toHaveBeenCalledTimes(1);
+    });
+
+    it('beginTopUpRefund writes the intent and calls neither mint nor melt', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      await beginTopUpRefund({
+        topupId: QUOTE,
+        destination: INVOICE,
+        shownNetSat: 5,
+        transceive: card.transceive,
+      });
+      expect(storedEntries()[0].state).toBe('refunding');
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the load guards', () => {
+    it('never touches the card for a refunding or refunded top-up', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.meltRefund.mockRejectedValueOnce(new Error('lost'));
+      await expect(refund(card)).rejects.toMatchObject({
+        kind: 'refund_failed',
+      });
+      card.sent.length = 0;
+      await expect(
+        loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+      ).rejects.toMatchObject({kind: 'refund_pending'});
+      expect(card.sent).toEqual([]);
+
+      await resumeTopUpRefund(QUOTE);
+      await expect(
+        loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+      ).rejects.toMatchObject({kind: 'refunded'});
+      expect(card.sent).toEqual([]);
+    });
+
+    it('a refund written between the load read and its outputs stops the load', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.topUpKeyset.mockImplementationOnce(async () => {
+        rewrite(e => ({...e, state: 'refunding', refund: fakeRefund()}));
+        return testMint().cachedKeyset();
+      });
+      await expect(
+        loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+      ).rejects.toMatchObject({kind: 'refund_pending'});
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+      expect(card.loads).toEqual([]);
+      expect(storedEntries()[0].outputs).toBeUndefined();
+    });
+
+    it('a refund written before a piece goes on stops the LOAD', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      const {setSecure} = jest.requireMock(
+        '../../src/services/secureStorage',
+      ) as {setSecure: jest.Mock};
+      // The moment the minted pieces land in the store, a refund record
+      // replaces the entry: the first LOAD's write-ahead must see it.
+      setSecure.mockImplementation(async (k: string, v: string) => {
+        mockStore[k] = v;
+        const e = JSON.parse(v).entries?.[0];
+        if (e?.minted && !e.minted.some((m: {sent?: boolean}) => m.sent)) {
+          rewrite(x => ({...x, state: 'refunded', refund: fakeRefund()}));
+        }
+      });
+      try {
+        await expect(
+          loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+        ).rejects.toMatchObject({kind: 'refunded'});
+        expect(card.loads).toEqual([]);
+        expect(card.sent.map(x => x[1])).not.toContain(LOAD);
+      } finally {
+        setSecure.mockImplementation(async (k: string, v: string) => {
+          if (mockStoreFault.write) {
+            throw mockStoreFault.write;
+          }
+          mockStore[k] = v;
+        });
+      }
+    });
+  });
+
+  describe('the lists and the store', () => {
+    const entryIn = (
+      state: TopUpEntry['state'],
+      i = 0,
+      over: Partial<TopUpEntry> = {},
+    ): TopUpEntry => ({
+      topupId: `r${i}`,
+      cardPubkey: '02ab',
+      mintUrl: MINT_URL,
+      bolt11: BOLT11,
+      amountSat: 7,
+      pieces: [4, 2, 1],
+      expiry: null,
+      state,
+      attempts: 0,
+      createdAt: i,
+      updatedAt: i,
+      ...(state === 'refunding' || state === 'refunded'
+        ? {refund: fakeRefund()}
+        : {}),
+      ...over,
+    });
+
+    it('a refunding or refunded top-up holds no slots; only refunding is waiting', async () => {
+      mockStore[TOPUP_KEY] = JSON.stringify({
+        v: 1,
+        entries: [
+          entryIn('refunding', 1),
+          entryIn('refunded', 2),
+          entryIn('paid', 3),
+        ],
+      });
+      expect(await reservedPiecesFor('02ab')).toBe(3);
+      expect((await waitingTopUpsForCard('02ab')).map(e => e.state)).toEqual([
+        'refunding',
+        'paid',
+      ]);
+    });
+
+    it('evicts neither refunding nor refunded entries', async () => {
+      const entries = Array.from({length: MAX_TOPUP_ENTRIES}, (_, i) =>
+        entryIn(i % 2 ? 'refunded' : i % 4 ? 'loaded' : 'refunding', i),
+      );
+      mockStore[TOPUP_KEY] = JSON.stringify({v: 1, entries});
+      await startOn(new FakeCard2());
+      const kept = storedEntries();
+      expect(kept).toHaveLength(MAX_TOPUP_ENTRIES);
+      expect(kept.filter(e => e.state === 'refunded')).toHaveLength(
+        MAX_TOPUP_ENTRIES / 2,
+      );
+      expect(kept.filter(e => e.state === 'refunding')).toHaveLength(
+        MAX_TOPUP_ENTRIES / 4,
+      );
+    });
+
+    it.each([
+      [
+        'refunding with no refund',
+        entryIn('refunding', 1, {refund: undefined}),
+      ],
+      [
+        'a refund with no outputs',
+        entryIn('refunding', 1, {refund: fakeRefund({outputs: []})}),
+      ],
+      [
+        'a refund with a bad destination',
+        entryIn('refunded', 1, {
+          refund: fakeRefund({
+            destination: {kind: 'onchain', value: 'x'} as never,
+          }),
+        }),
+      ],
+      [
+        'a refund with a malformed proof',
+        entryIn('refunding', 1, {
+          refund: fakeRefund({proofs: [{id: 'k', amount: 1}] as never}),
+        }),
+      ],
+      [
+        'a paid entry carrying a refund',
+        entryIn('paid', 1, {refund: fakeRefund()}),
+      ],
+    ])('rejects %s as corrupt', async (_n, bad) => {
+      mockStore[TOPUP_KEY] = JSON.stringify({
+        v: 1,
+        entries: [entryIn('refunding', 0), bad],
+      });
+      const listed = await listTopUps();
+      expect(listed.map(e => e.topupId)).toEqual(['r0']);
+      expect(
+        Object.keys(mockStore).some(k => k.startsWith(CORRUPT_TOPUP_KEY)),
+      ).toBe(true);
+    });
+  });
+
+  it('has copy for each refund stop', () => {
+    expect(topUpErrorCopy('refund_unavailable')).toEqual({
+      title: "This top-up can't be refunded",
+      body: 'The pieces are locked to this card. Load them.',
+    });
+    expect(topUpErrorCopy('refund_pending').title).toBe(
+      'The refund is on its way',
+    );
+    expect(topUpErrorCopy('refunded').title).toBe('Already refunded');
+    expect(
+      topUpErrorCopy(new TopUpError('refund_failed', 'Ask for a new one.')),
+    ).toEqual({title: 'The refund failed', body: 'Ask for a new one.'});
+    expect(topUpErrorCopy('refund_failed').body).toBe(
+      'Nothing was sent. Try again.',
+    );
+  });
+});

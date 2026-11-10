@@ -23,7 +23,9 @@ import {
   buildCardP2PKSecret,
   buildCardSigAllSecret,
   cachedKeysets,
+  checkRefundMelt,
   checkTopUpQuote,
+  createRefundQuote,
   createSettlementAdapter,
   createTopUpQuote,
   expandKeysetId,
@@ -33,6 +35,8 @@ import {
   keysetFor,
   listSettledProofs,
   mapSwapError,
+  MeltBudgetError,
+  meltRefund,
   meltSettledProofs,
   mintReachable,
   mintTopUp,
@@ -95,6 +99,7 @@ type WalletMocks = {
   checkProofsStates: jest.Mock;
   serializeSwapPreview: jest.Mock;
   createMeltQuoteBolt11: jest.Mock;
+  checkMeltQuoteBolt11: jest.Mock;
   meltProofsBolt11: jest.Mock;
 };
 
@@ -114,6 +119,7 @@ jest.mock('@cashu/cashu-ts', () => {
     checkProofsStates: jest.fn(),
     serializeSwapPreview: jest.fn(() => 'serialized-preview'),
     createMeltQuoteBolt11: jest.fn(),
+    checkMeltQuoteBolt11: jest.fn(),
     meltProofsBolt11: jest.fn(),
   };
   class MockWallet {
@@ -133,6 +139,7 @@ jest.mock('@cashu/cashu-ts', () => {
     completeSwap = mocks.completeSwap;
     checkProofsStates = mocks.checkProofsStates;
     createMeltQuoteBolt11 = mocks.createMeltQuoteBolt11;
+    checkMeltQuoteBolt11 = mocks.checkMeltQuoteBolt11;
     meltProofsBolt11 = mocks.meltProofsBolt11;
   }
   return {
@@ -2329,5 +2336,202 @@ describe("card top-up at the card's mint", () => {
     await expect(topUpKeyset('https://other.mint', [1])).rejects.toMatchObject({
       kind: 'unreachable',
     });
+  });
+});
+
+describe("top-up refund at the card's mint (ENG-855)", () => {
+  const REFUND_MINT = 'https://card.mint';
+  const meltQuote = {
+    quote: 'melt-q1',
+    amount: 60,
+    fee_reserve: 2,
+    unit: 'sat',
+    state: 'UNPAID',
+    request: 'lnbc600n1refund',
+    payment_preimage: null,
+    expiry: 1_900_000_000,
+  };
+  const proofs = [
+    {id: KEYSET_ID, amount: 64, secret: 'refund-secret', C: TEST_CARD_PUBKEY},
+  ];
+  const lnurl = () =>
+    jest.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('.well-known/lnurlp')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            tag: 'payRequest',
+            minSendable: '1000',
+            maxSendable: '100000000',
+            callback: 'https://wallet.example/lnurlp/holder',
+          }),
+        };
+      }
+      const amount = new URL(u).searchParams.get('amount');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({pr: `lnbc-${amount}-invoice`}),
+      };
+    }) as unknown as typeof fetch;
+
+  beforeEach(() => {
+    walletMocks.createMeltQuoteBolt11.mockReset();
+    walletMocks.checkMeltQuoteBolt11.mockReset();
+    walletMocks.meltProofsBolt11.mockReset();
+  });
+
+  it('quotes a pasted invoice within the budget, and maps the answer', async () => {
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue(meltQuote);
+    await expect(
+      createRefundQuote(REFUND_MINT, {bolt11: 'lnbc600n1refund'}, 63),
+    ).resolves.toEqual({
+      meltQuoteId: 'melt-q1',
+      request: 'lnbc600n1refund',
+      amountSat: 60,
+      feeReserveSat: 2,
+      expiry: 1_900_000_000,
+    });
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenCalledWith(
+      'lnbc600n1refund',
+    );
+  });
+
+  it('refuses a pasted invoice over the budget, naming what it needs', async () => {
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      ...meltQuote,
+      amount: 63,
+    });
+    const error = await createRefundQuote(
+      REFUND_MINT,
+      {bolt11: 'lnbc630n1refund'},
+      63,
+    ).catch(e => e);
+    expect(error).toBeInstanceOf(MeltBudgetError);
+    expect(error).toMatchObject({
+      neededSat: 65,
+      feeReserveSat: 2,
+      budgetSat: 63,
+    });
+  });
+
+  it('asks a lightning address for the budget, then less until the reserve fits', async () => {
+    global.fetch = lnurl();
+    walletMocks.createMeltQuoteBolt11
+      .mockResolvedValueOnce({...meltQuote, amount: 63, fee_reserve: 2})
+      .mockResolvedValueOnce({...meltQuote, amount: 61, fee_reserve: 2});
+    const quote = await createRefundQuote(
+      REFUND_MINT,
+      {lightningAddress: 'holder@wallet.example'},
+      63,
+    );
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenNthCalledWith(
+      1,
+      'lnbc-63000-invoice',
+    );
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenNthCalledWith(
+      2,
+      'lnbc-61000-invoice',
+    );
+    expect(quote).toMatchObject({amountSat: 61, feeReserveSat: 2});
+  });
+
+  it('needs exactly one destination', async () => {
+    await expect(createRefundQuote(REFUND_MINT, {}, 63)).rejects.toThrow(
+      /exactly one/,
+    );
+  });
+
+  it.each(['UNPAID', 'PENDING', 'PAID'])(
+    'reports a melt quote %s, with its preimage and expiry',
+    async state => {
+      walletMocks.checkMeltQuoteBolt11.mockResolvedValue({
+        ...meltQuote,
+        state,
+        payment_preimage: state === 'PAID' ? 'pre-1' : null,
+      });
+      await expect(checkRefundMelt(REFUND_MINT, 'melt-q1')).resolves.toEqual({
+        state,
+        preimage: state === 'PAID' ? 'pre-1' : null,
+        expiry: 1_900_000_000,
+      });
+      expect(walletMocks.checkMeltQuoteBolt11).toHaveBeenCalledWith('melt-q1');
+    },
+  );
+
+  it('refuses a melt state it does not know', async () => {
+    walletMocks.checkMeltQuoteBolt11.mockResolvedValue({
+      ...meltQuote,
+      state: 'MAYBE',
+    });
+    await expect(checkRefundMelt(REFUND_MINT, 'melt-q1')).rejects.toThrow(
+      /MAYBE/,
+    );
+  });
+
+  it('melts the exact proofs and answers the change', async () => {
+    walletMocks.checkMeltQuoteBolt11.mockResolvedValue(meltQuote);
+    walletMocks.meltProofsBolt11.mockResolvedValue({
+      quote: {...meltQuote, state: 'PAID', payment_preimage: 'pre-1'},
+      change: [
+        {id: KEYSET_ID, amount: cashu.Amount.from(2), secret: 's', C: 'c'},
+      ],
+    });
+    await expect(meltRefund(REFUND_MINT, 'melt-q1', proofs)).resolves.toEqual({
+      state: 'PAID',
+      preimage: 'pre-1',
+      change: [{id: KEYSET_ID, amount: 2, secret: 's', C: 'c'}],
+    });
+    expect(walletMocks.meltProofsBolt11).toHaveBeenCalledWith(
+      meltQuote,
+      proofs,
+    );
+  });
+
+  it('answers a PENDING melt rather than throwing', async () => {
+    walletMocks.checkMeltQuoteBolt11.mockResolvedValue(meltQuote);
+    walletMocks.meltProofsBolt11.mockResolvedValue({
+      quote: {...meltQuote, state: 'PENDING'},
+      change: [],
+    });
+    await expect(meltRefund(REFUND_MINT, 'melt-q1', proofs)).resolves.toEqual({
+      state: 'PENDING',
+      preimage: null,
+      change: [],
+    });
+  });
+
+  it('never melts a quote the mint already paid or is paying', async () => {
+    walletMocks.checkMeltQuoteBolt11.mockResolvedValueOnce({
+      ...meltQuote,
+      state: 'PAID',
+      payment_preimage: 'pre-1',
+    });
+    await expect(
+      meltRefund(REFUND_MINT, 'melt-q1', proofs),
+    ).resolves.toMatchObject({state: 'PAID', preimage: 'pre-1'});
+    walletMocks.checkMeltQuoteBolt11.mockResolvedValueOnce({
+      ...meltQuote,
+      state: 'PENDING',
+    });
+    await expect(
+      meltRefund(REFUND_MINT, 'melt-q1', proofs),
+    ).resolves.toMatchObject({state: 'PENDING'});
+    expect(walletMocks.meltProofsBolt11).not.toHaveBeenCalled();
+  });
+
+  it('a melt past its deadline is "the mint took too long"', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    try {
+      walletMocks.checkMeltQuoteBolt11.mockResolvedValue(meltQuote);
+      walletMocks.meltProofsBolt11.mockReturnValue(new Promise(() => {}));
+      const failed = meltRefund(REFUND_MINT, 'melt-q1', proofs).catch(e => e);
+      await jest.advanceTimersByTimeAsync(60000);
+      expect(await failed).toMatchObject({kind: 'timeout'});
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

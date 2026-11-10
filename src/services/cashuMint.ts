@@ -1473,6 +1473,90 @@ export interface PayoutResult {
   change: SettledProof[];
 }
 
+/** Where a melt pays: exactly one of a bolt11 invoice or a lightning address. */
+export interface MeltDestination {
+  bolt11?: string;
+  lightningAddress?: string;
+  /** Serve the address's LNURL metadata from this base instead (see `PayoutArgs`). */
+  lnurlpUrl?: string;
+}
+
+/**
+ * A melt that cannot fit its budget: the invoice's amount plus the mint's
+ * fee reserve is more than the proofs hold.
+ */
+export class MeltBudgetError extends Error {
+  constructor(
+    message: string,
+    readonly neededSat: number,
+    readonly feeReserveSat: number,
+    readonly budgetSat: number,
+  ) {
+    super(message);
+    this.name = 'MeltBudgetError';
+  }
+}
+
+type MeltQuote = Awaited<ReturnType<Wallet['createMeltQuoteBolt11']>>;
+
+/**
+ * A bolt11 melt quote whose amount plus fee reserve fits `budgetSat`. For a
+ * lightning address WE choose the amount, so a fee reserve that would overrun
+ * the budget is answered by asking for a smaller invoice: the reserve is only
+ * knowable after a quote, hence the loop. A pasted invoice over the budget is
+ * refused (`MeltBudgetError`).
+ */
+async function quoteMelt(
+  wallet: Wallet,
+  {bolt11, lightningAddress, lnurlpUrl}: MeltDestination,
+  budgetSat: number,
+): Promise<MeltQuote> {
+  let attemptSat = budgetSat;
+  let quote: MeltQuote | null = null;
+  for (let tries = 0; tries < 3; tries++) {
+    const request =
+      bolt11 ??
+      (await resolveLightningAddress(lightningAddress!, attemptSat, lnurlpUrl));
+    quote = await wallet.createMeltQuoteBolt11(request);
+    const needed = Number(quote.amount) + Number(quote.fee_reserve);
+    if (needed <= budgetSat || bolt11) {
+      if (needed > budgetSat) {
+        throw new MeltBudgetError(
+          `the invoice needs ${needed} sat (amount + ${Number(
+            quote.fee_reserve,
+          )} fee reserve) but the settled balance is ${budgetSat} sat — ` +
+            'use a smaller invoice',
+          needed,
+          Number(quote.fee_reserve),
+          budgetSat,
+        );
+      }
+      break;
+    }
+    if (lightningAddress && needed <= budgetSat + Number(quote.fee_reserve)) {
+      // The reserve alone overruns: ask the address for
+      // `budget − reserve` next round, so amount + reserve fits exactly.
+      attemptSat = budgetSat - Number(quote.fee_reserve);
+      continue;
+    }
+    attemptSat = Math.floor(attemptSat / 2);
+  }
+  if (!quote) {
+    throw new Error('payout: no melt quote');
+  }
+
+  const needed = Number(quote.amount) + Number(quote.fee_reserve);
+  if (needed > budgetSat) {
+    throw new MeltBudgetError(
+      `payout needs ${needed} sat but the settled balance is ${budgetSat} sat`,
+      needed,
+      Number(quote.fee_reserve),
+      budgetSat,
+    );
+  }
+  return quote;
+}
+
 /**
  * Melt the merchant's settled proofs to a bolt11 invoice — the payout leg of
  * the terminal, mint → Lightning → any wallet.
@@ -1506,48 +1590,11 @@ export async function meltSettledProofs({
   }
   const wallet = await getWallet(mintUrl);
   const totalSat = proofs.reduce((t, p) => t + p.amount, 0);
-
-  // For a lightning address WE choose the amount, so a fee reserve that
-  // would overrun the balance is answered by asking for a smaller invoice —
-  // the reserve is only knowable after a quote, hence the loop.
-  let attemptSat = totalSat;
-  let quote: Awaited<ReturnType<typeof wallet.createMeltQuoteBolt11>> | null =
-    null;
-  for (let tries = 0; tries < 3; tries++) {
-    const request =
-      bolt11 ??
-      (await resolveLightningAddress(lightningAddress!, attemptSat, lnurlpUrl));
-    quote = await wallet.createMeltQuoteBolt11(request);
-    const needed = Number(quote.amount) + Number(quote.fee_reserve);
-    if (needed <= totalSat || bolt11) {
-      if (needed > totalSat) {
-        throw new Error(
-          `the invoice needs ${needed} sat (amount + ${Number(
-            quote.fee_reserve,
-          )} fee reserve) but the settled balance is ${totalSat} sat — ` +
-            'use a smaller invoice',
-        );
-      }
-      break;
-    }
-    if (lightningAddress && needed <= totalSat + Number(quote.fee_reserve)) {
-      // The reserve alone overruns: ask the address for
-      // `total − reserve` next round, so amount + reserve fits exactly.
-      attemptSat = totalSat - Number(quote.fee_reserve);
-      continue;
-    }
-    attemptSat = Math.floor(attemptSat / 2);
-  }
-  if (!quote) {
-    throw new Error('payout: no melt quote');
-  }
-
-  const needed = Number(quote.amount) + Number(quote.fee_reserve);
-  if (needed > totalSat) {
-    throw new Error(
-      `payout needs ${needed} sat but the settled balance is ${totalSat} sat`,
-    );
-  }
+  const quote = await quoteMelt(
+    wallet,
+    {bolt11, lightningAddress, lnurlpUrl},
+    totalSat,
+  );
 
   // Persist the melt intent before the network call: if the app dies after
   // the mint pays, these secrets + quote are the reconciliation record.
@@ -1596,6 +1643,144 @@ export async function meltSettledProofs({
     preimage: response.quote.payment_preimage ?? null,
     change,
   };
+}
+
+// ── top-up refund: melt a paid top-up at the card's mint (ENG-855) ────────
+
+/**
+ * How long the refund's melt may take: the mint pays a Lightning invoice
+ * inside the call, which routing can stretch well past
+ * `TOPUP_MINT_TIMEOUT_MS`. A melt past it is "outcome unknown".
+ */
+export const REFUND_MELT_TIMEOUT_MS = 60000;
+
+/** A NUT-05 melt quote's state, as the mint reports it. */
+export type RefundMeltState = 'UNPAID' | 'PENDING' | 'PAID';
+
+const MELT_STATES: ReadonlySet<string> = new Set(['UNPAID', 'PENDING', 'PAID']);
+
+const meltState = (state: unknown): RefundMeltState => {
+  const s = String(state ?? '');
+  if (!MELT_STATES.has(s)) {
+    throw new Error(`the mint reported melt quote state "${s}"`);
+  }
+  return s as RefundMeltState;
+};
+
+export interface RefundQuote {
+  meltQuoteId: string;
+  /** The bolt11 invoice the mint will pay. */
+  request: string;
+  /** What the destination receives. */
+  amountSat: number;
+  /** What the mint holds back for routing; unused reserve comes back as change. */
+  feeReserveSat: number;
+  /** Unix seconds the melt quote expires at; null when the mint gave none. */
+  expiry: number | null;
+}
+
+/** A plain (unlocked) proof a refund melts, or a piece of its change. */
+export interface RefundProof {
+  id: string;
+  amount: number;
+  secret: string;
+  C: string;
+}
+
+export interface RefundMeltCheck {
+  state: RefundMeltState;
+  preimage: string | null;
+  expiry: number | null;
+}
+
+export interface RefundMeltResult {
+  state: RefundMeltState;
+  preimage: string | null;
+  /** NUT-08 change from an overpaid reserve: the holder's, never the merchant's. */
+  change: RefundProof[];
+}
+
+/**
+ * A bolt11 melt quote at the card's mint whose amount plus fee reserve fits
+ * `budgetSat` (`quoteMelt`: a lightning address is asked for less until it
+ * fits; a pasted invoice over the budget throws `MeltBudgetError`). Never
+ * falls back to another mint; nothing is persisted here.
+ */
+export async function createRefundQuote(
+  mintUrl: string,
+  destination: MeltDestination,
+  budgetSat: number,
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<RefundQuote> {
+  if (Boolean(destination.bolt11) === Boolean(destination.lightningAddress)) {
+    throw new Error('a refund needs exactly one of bolt11 or lightningAddress');
+  }
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const quote = await quoteMelt(wallet, destination, budgetSat);
+    return {
+      meltQuoteId: quote.quote,
+      request: quote.request,
+      amountSat: Number(quote.amount),
+      feeReserveSat: Number(quote.fee_reserve),
+      expiry: typeof quote.expiry === 'number' ? quote.expiry : null,
+    };
+  }, timeoutMs);
+}
+
+/** NUT-05: the state of melt quote `meltQuoteId` at `mintUrl`. */
+export async function checkRefundMelt(
+  mintUrl: string,
+  meltQuoteId: string,
+  timeoutMs = TOPUP_MINT_TIMEOUT_MS,
+): Promise<RefundMeltCheck> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const quote = await wallet.checkMeltQuoteBolt11(meltQuoteId);
+    return {
+      state: meltState(quote?.state),
+      preimage: quote?.payment_preimage ?? null,
+      expiry: typeof quote?.expiry === 'number' ? quote.expiry : null,
+    };
+  }, timeoutMs);
+}
+
+/**
+ * Melt `proofs` (kept by the caller BEFORE this call, with the melt marked
+ * sent) against `meltQuoteId`. The quote is fetched fresh first: one already
+ * PAID or PENDING answers as it is, never melts again. A PENDING melt is
+ * answered, not thrown. A throw is "outcome unknown": `checkRefundMelt`
+ * before any re-spend.
+ */
+export async function meltRefund(
+  mintUrl: string,
+  meltQuoteId: string,
+  proofs: RefundProof[],
+  timeoutMs = REFUND_MELT_TIMEOUT_MS,
+): Promise<RefundMeltResult> {
+  return topUpCall(async () => {
+    const wallet = await getWallet(mintUrl);
+    const quote = await wallet.checkMeltQuoteBolt11(meltQuoteId);
+    const before = meltState(quote?.state);
+    if (before !== 'UNPAID') {
+      return {
+        state: before,
+        preimage: quote.payment_preimage ?? null,
+        change: [],
+      };
+    }
+    const res = await wallet.meltProofsBolt11(quote, proofs as ProofLike[]);
+    return {
+      state: meltState(res.quote.state),
+      preimage: res.quote.payment_preimage ?? null,
+      change: res.change.map(p => ({
+        id: p.id,
+        amount: Number(p.amount),
+        secret: p.secret,
+        C: p.C,
+      })),
+    };
+  }, timeoutMs);
 }
 
 /**
