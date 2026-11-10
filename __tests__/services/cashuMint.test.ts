@@ -2156,13 +2156,12 @@ describe("card top-up at the card's mint", () => {
     jest.useFakeTimers(FAKE_TIMERS);
     try {
       walletMocks.mintQuoteCheck.mockReturnValue(new Promise(() => {}));
-      const check = checkTopUpQuote(TOPUP_MINT, 'q1', 15000);
-      const settled = expect(check).rejects.toMatchObject({
+      const failed = checkTopUpQuote(TOPUP_MINT, 'q1', 15000).catch(e => e);
+      await jest.advanceTimersByTimeAsync(15000);
+      expect(await failed).toMatchObject({
         kind: 'timeout',
         message: 'the mint took too long',
       });
-      await jest.advanceTimersByTimeAsync(15000);
-      await settled;
     } finally {
       jest.useRealTimers();
     }
