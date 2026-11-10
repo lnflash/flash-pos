@@ -56,6 +56,20 @@ describe('FLOWS', () => {
     expect(yaml).toEqual([...lib.FLOW_NAMES].sort());
   });
 
+  it('tops a PIN card holding 8 up by 4 + 1, with no rounding (ENG-853)', () => {
+    expect(lib.TOPUP_SAT).toBe(5);
+    for (const flow of ['top-up', 'top-up-waiting']) {
+      const body = lib.buildFixture(
+        lib.FLOWS[flow].stages.INITIAL,
+        minted(flow),
+      );
+      expect(body.pin).toBe(lib.PIN);
+      expect(body.proofs.map((p: {amount: number}) => p.amount)).toEqual([
+        lib.CARD_SAT,
+      ]);
+    }
+  });
+
   it('keeps the bill sub-cent and the change two pieces (4 + 1)', () => {
     expect(lib.BILL_SAT).toBe(3);
     expect(lib.CARD_SAT - lib.BILL_SAT).toBe(5);

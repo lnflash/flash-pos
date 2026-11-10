@@ -1,0 +1,39 @@
+# ENG-853: top up a PIN card holding one 8-sat piece by 5 sats at its own
+# mint. The local Nutshell's FakeWallet pays the invoice by itself; the
+# phone mints 4 + 1 locked to the card's key and loads them after the PIN.
+appId: com.flash.pos
+name: 'eCash card: top up'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '8'
+- tapOn:
+    id: 'balance-topup'
+- tapOn:
+    id: 'pin-key-5'
+- assertVisible:
+    id: 'topup-amount'
+    text: 'Top up 5 sats'
+- tapOn:
+    id: 'topup-create'
+- extendedWaitUntil:
+    visible:
+      id: 'topup-paid'
+      text: 'Hold the card to load 5 sats'
+    timeout: 60000
+- tapOn:
+    id: 'topup-load'
+- runFlow: common/enter-pin.yaml
+- extendedWaitUntil:
+    visible:
+      id: 'topup-loaded'
+      text: 'Loaded 5 sats'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8,4,1],"unspentLabels":["P8"]}'

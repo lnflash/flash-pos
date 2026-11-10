@@ -24,6 +24,12 @@ const CARD_SAT = 8;
 /** The proof the owed-change flow's second charge pays with, exactly. */
 const NEXT_SAT = 4;
 
+/**
+ * The top-up flows' amount (ENG-853): two power-of-two pieces (4 + 1), so no
+ * rounding, loaded beside the card's 8.
+ */
+const TOPUP_SAT = 5;
+
 /** A protocol 2.0 cashu-javacard holds 128 proof slots. */
 const CARD_SLOTS = 128;
 
@@ -157,6 +163,19 @@ const FLOWS = {
     // (4 + 1): an 8 s window from the first "Putting 5 sats on the card".
     link: {holdLoad: HOLD_LOAD_MS},
   },
+};
+
+// ENG-853: the card top-up at the card's own mint. The local Nutshell's
+// FakeWallet pays every quote, so the invoice turns paid by itself.
+FLOWS['top-up'] = {
+  mint: {P8: CARD_SAT},
+  stages: {INITIAL: {pin: PIN, proofs: ['P8']}},
+};
+// Paid, left at the card's tap, then the card read again: the balance
+// offers the waiting top-up, which loads from there.
+FLOWS['top-up-waiting'] = {
+  mint: {P8: CARD_SAT},
+  stages: {INITIAL: {pin: PIN, proofs: ['P8']}},
 };
 
 const FLOW_NAMES = Object.keys(FLOWS);
@@ -590,6 +609,7 @@ module.exports = {
   FLOW_ATTEMPTS,
   FLOW_NAMES,
   PIN,
+  TOPUP_SAT,
   bridgeLink,
   buildFixture,
   cardSecret,
