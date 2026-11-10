@@ -1609,6 +1609,18 @@ async function priceRefund(
   } catch (error) {
     throw refundFailure(error);
   }
+  // The mint gives back as change everything the invoice does not ask
+  // for, and change stays on this phone: refuse an invoice that would leave
+  // more than one fee reserve behind (the value is the holder's).
+  const slackSat = budgetSat - quote.amountSat - quote.feeReserveSat;
+  if (slackSat > quote.feeReserveSat) {
+    throw new TopUpError(
+      'refund_failed',
+      `The invoice is too small. Ask for one of ${(
+        budgetSat - quote.feeReserveSat
+      ).toLocaleString('en-US')} sats.`,
+    );
+  }
   return {quote, keysetId, inputFeeSat};
 }
 
@@ -1978,6 +1990,17 @@ async function completeRefund(
         );
       }
       throw refundFailure(error);
+    }
+    // Never pay less than the net the holder confirmed with the card.
+    if (quote.amountSat < r.amountSat) {
+      const less = new TopUpError(
+        'refund_failed',
+        `The mint now pays ${quote.amountSat.toLocaleString(
+          'en-US',
+        )} sats, less than confirmed. Refund to another destination.`,
+      );
+      await noteError(topupId, less);
+      throw less;
     }
     try {
       entry = await patchRefund(topupId, x => ({

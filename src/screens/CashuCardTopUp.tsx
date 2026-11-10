@@ -847,7 +847,12 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
           testID="topup-refund-back"
           btnText="Back"
           btnStyle={gapTop}
-          onPress={() => setPhase('paid')}
+          onPress={() =>
+            // A refund already under way cannot load: back to its own step.
+            entry.state === 'refunding'
+              ? finishRefund(entry.topupId)
+              : setPhase('paid')
+          }
         />
       </Wrapper>
     );

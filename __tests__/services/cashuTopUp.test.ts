@@ -1185,6 +1185,39 @@ describe('refund (ENG-855)', () => {
         'The invoice is too large. Ask for one of at most 5 sats.',
       );
     });
+    it('refuses an invoice well under the budget: its change would stay on this phone', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.createRefundQuote.mockImplementation(async () => ({
+        meltQuoteId: 'melt-small',
+        request: INVOICE,
+        amountSat: 1,
+        feeReserveSat: 2,
+        expiry: 2_000_000_000,
+      }));
+      const before = mockStore[TOPUP_KEY];
+      const error = await previewTopUpRefund({
+        topupId: QUOTE,
+        destination: INVOICE,
+      }).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toBe(
+        'The invoice is too small. Ask for one of 5 sats.',
+      );
+      await expect(
+        beginTopUpRefund({
+          topupId: QUOTE,
+          destination: INVOICE,
+          shownNetSat: 1,
+          transceive: card.transceive,
+        }),
+      ).rejects.toMatchObject({kind: 'refund_failed'});
+      expect(mockStore[TOPUP_KEY]).toBe(before);
+      expect(storedEntries()[0].state).toBe('paid');
+      expect(storedEntries()[0].refund).toBeUndefined();
+      expect(mintMocks.mintTopUp).not.toHaveBeenCalled();
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+    });
   });
 
   describe('the card gate', () => {
@@ -1444,6 +1477,35 @@ describe('refund (ENG-855)', () => {
       });
       await refund(card);
       expect(storedEntries()[0].refund!.meltQuoteId).toBe('melt-new');
+    });
+
+    it('an expired melt quote that would now pay less than confirmed stops before the melt', async () => {
+      const card = new FakeCard2();
+      await paidOn(card, 7);
+      mintMocks.createRefundQuote
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-old',
+          request: INVOICE,
+          amountSat: 5,
+          feeReserveSat: 2,
+          expiry: 1,
+        })
+        .mockResolvedValueOnce({
+          meltQuoteId: 'melt-new',
+          request: INVOICE,
+          amountSat: 4,
+          feeReserveSat: 3,
+          expiry: 2_000_000_000,
+        });
+      const error = await refund(card).catch(e => e);
+      expect(error).toMatchObject({kind: 'refund_failed'});
+      expect(error.detail).toMatch(/less than confirmed/);
+      expect(mintMocks.meltRefund).not.toHaveBeenCalled();
+      const e = storedEntries()[0];
+      expect(e.state).toBe('refunding');
+      expect(e.refund!.meltQuoteId).toBe('melt-old');
+      expect(e.refund!.amountSat).toBe(5);
+      expect(e.lastError).toMatch(/less than confirmed/);
     });
 
     it('an expired invoice that will not quote again asks for a new one, and a new destination takes the card again', async () => {

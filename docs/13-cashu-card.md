@@ -541,7 +541,9 @@ holder's; the merchant's phone only holds it.
    is dropped, case ignored). The phone quotes a melt at the card's own mint,
    never the merchant's, for the amount less the keyset input fee: an
    address is asked for less until amount plus fee reserve fits (the payout's
-   `quoteMelt`); a pasted invoice over it is refused with the most that fits.
+   `quoteMelt`); a pasted invoice over it is refused with the most that fits,
+   and one so far under it that more than one fee reserve would come back as
+   change is refused with the amount to ask for (change stays on the phone).
    The confirm step echoes the destination in full and says "The holder gets
    X sats. The mint keeps up to Y sats in fees." Nothing is persisted yet.
 3. The card's tap and PIN: the same gate as the load (`verifyCardForTopUp`:
@@ -560,8 +562,11 @@ holder's; the merchant's phone only holds it.
 5. A melt already sent is checked before anything is spent again: PAID
    finishes, PENDING is "The refund is on its way", UNPAID melts the same
    proofs again. An expired melt quote is quoted again (an address
-   re-resolves) and the new id kept before the melt; an invoice that has
-   expired needs a new destination, which takes the card and its PIN again.
+   re-resolves) and the new id kept before the melt; a new quote that pays
+   less than the net the holder confirmed stops before the melt, and an
+   invoice that has expired needs a new destination; either takes the card
+   and its PIN again ("Refund to another destination", whose Back returns to
+   the stuck refund, never to the load).
 6. If the load won the race (the mint signed the card's outputs), the
    refund records those pieces as the load's (`loading`, minted) and says it
    cannot refund; the next tap loads them. A load of a `refunding` or

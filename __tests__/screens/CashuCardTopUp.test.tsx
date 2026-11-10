@@ -714,6 +714,24 @@ describe('CashuCardTopUp refund (ENG-855)', () => {
     expect(getByTestId('topup-refunded')).toBeTruthy();
   });
 
+  it('Back from another destination on a stuck refund never offers the load', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'refunding', refund: REFUND}));
+    const stuck = new TopUpError('refund_failed', 'The invoice expired.');
+    mockResumeRefund.mockRejectedValueOnce(stuck).mockRejectedValueOnce(stuck);
+    const {getByTestId, queryByTestId} = renderScreen({
+      resume: 'quote-0123456789',
+    });
+    await flush();
+    await flush();
+    fireEvent.press(getByTestId('topup-refund-new'));
+    fireEvent.press(getByTestId('topup-refund-back'));
+    await flush();
+    await flush();
+    expect(queryByTestId('topup-load')).toBeNull();
+    expect(mockResumeRefund).toHaveBeenCalledTimes(2);
+    expect(getByTestId('topup-refund-new')).toBeTruthy();
+  });
+
   it('a stuck refund can go to another destination, behind the card again', async () => {
     mockGetTopUp.mockResolvedValue(entry({state: 'refunding', refund: REFUND}));
     mockResumeRefund.mockRejectedValueOnce(

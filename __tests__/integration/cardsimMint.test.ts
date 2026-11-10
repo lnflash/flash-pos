@@ -57,6 +57,7 @@ import {
   listTopUps,
   loadTopUp,
   pollTopUp,
+  previewTopUpRefund,
   refundTopUp,
   startTopUp,
   waitingTopUpsForCard,
@@ -785,15 +786,36 @@ run('the card top-up (ENG-853) against cardsim and a Nutshell mint', () => {
     }
     expect(state).toBe('paid');
 
-    // The holder's invoice, from an outside wallet.
-    const invoice = outsideInvoice(32);
+    // An invoice for half is refused: the rest would come back as change
+    // on this phone, where nothing can load it or pay it out.
+    await expect(
+      previewTopUpRefund({
+        topupId: entry.topupId,
+        destination: outsideInvoice(32),
+      }),
+    ).rejects.toMatchObject({kind: 'refund_failed'});
+
+    // What the mint keeps, priced over the budget, then the holder's
+    // invoice for the rest, from an outside wallet.
+    const probe = await previewTopUpRefund({
+      topupId: entry.topupId,
+      destination: outsideInvoice(60),
+    });
+    const netSat = 64 - probe.feeSat;
+    const invoice = outsideInvoice(netSat);
+    const preview = await previewTopUpRefund({
+      topupId: entry.topupId,
+      destination: invoice,
+    });
+    expect(preview.netSat).toBe(netSat);
+    const feeReserve = preview.feeSat;
 
     // A wrong PIN stops it before the mint is asked anything.
     await expect(
       refundTopUp({
         topupId: entry.topupId,
         destination: invoice,
-        shownNetSat: 32,
+        shownNetSat: netSat,
         transceive,
         pin: '9999',
       }),
@@ -803,11 +825,11 @@ run('the card top-up (ENG-853) against cardsim and a Nutshell mint', () => {
     const done = await refundTopUp({
       topupId: entry.topupId,
       destination: `lightning:${invoice.toUpperCase()}`,
-      shownNetSat: 32,
+      shownNetSat: netSat,
       transceive,
       pin: '1234',
     });
-    expect(done.amountSat).toBe(32);
+    expect(done.amountSat).toBe(netSat);
 
     const after = (await listTopUps()).find(e => e.topupId === entry.topupId)!;
     expect(after.state).toBe('refunded');
@@ -817,6 +839,8 @@ run('the card top-up (ENG-853) against cardsim and a Nutshell mint', () => {
     expect(after.refund!.proofs!.reduce((t, p) => t + p.amount, 0)).toBe(64);
     // What the reserve did not use came back to the entry, never the till.
     expect(after.refund!.changeSat).toBeGreaterThan(0);
+    // At most the unused reserve: the holder got the rest.
+    expect(after.refund!.changeSat).toBeLessThanOrEqual(feeReserve);
     expect(after.refund!.changeSat).toBe(
       (after.refund!.change ?? []).reduce((t, p) => t + p.amount, 0),
     );
