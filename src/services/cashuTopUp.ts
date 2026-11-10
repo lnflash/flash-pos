@@ -19,9 +19,15 @@
  * settlement queue or `pendingExposure`: a top-up is the holder's money at
  * the card's mint, not the merchant's.
  *
+ *   5. `refundTopUp` (ENG-855), instead of the load: behind the same card
+ *      and PIN gate, the paid quote is minted onto PLAIN outputs and melted
+ *      to the holder's invoice or Lightning address at the same mint. Only
+ *      before minting: once the mint signed the card-locked outputs, only the
+ *      card can spend the pieces.
+ *
  * A paid top-up lives on the phone that made it. Nothing here refunds one
- * that can never load (a card lost, locked or PIN-blocked after payment):
- * see docs/13-cashu-card.md, Known gaps.
+ * whose card can no longer pass the gate (lost, locked or PIN-blocked after
+ * payment): see docs/13-cashu-card.md, Known gaps.
  */
 import {blindMessage} from '@cashu/cashu-ts';
 import {sha256} from '@noble/hashes/sha256';
@@ -43,12 +49,21 @@ import {
 } from './cashuCard';
 import {
   buildCardSigAllSecret,
+  checkRefundMelt,
   checkTopUpQuote,
+  createRefundQuote,
   createTopUpQuote,
+  inputFee,
+  MeltBudgetError,
+  meltRefund,
   mintTopUp,
   restoreTopUp,
   TopUpMintError,
   topUpKeyset,
+  type RefundMeltCheck,
+  type RefundMeltResult,
+  type RefundProof,
+  type RefundQuote,
   type TopUpOutput,
   type TopUpQuoteState,
   type TopUpSignature,
@@ -143,6 +158,10 @@ export type TopUpErrorKind =
   | 'expired'
   | 'mint_unreachable'
   | 'mint_timeout'
+  | 'refund_unavailable'
+  | 'refund_pending'
+  | 'refund_failed'
+  | 'refunded'
   | 'failed';
 
 /** A top-up refused or stopped, with what the screen tells the merchant. */
@@ -263,6 +282,26 @@ export function topUpErrorCopy(
         title: "Can't read the card's mint",
         body: 'Tap the card on the keypad again.',
       };
+    case 'refund_unavailable':
+      return {
+        title: "This top-up can't be refunded",
+        body: 'The pieces are locked to this card. Load them.',
+      };
+    case 'refund_pending':
+      return {
+        title: 'The refund is on its way',
+        body: 'The mint is still paying it. Open the top-up again in a minute.',
+      };
+    case 'refund_failed':
+      return {
+        title: 'The refund failed',
+        body: e.detail || 'Nothing was sent. Try again.',
+      };
+    case 'refunded':
+      return {
+        title: 'Already refunded',
+        body: 'This top-up was refunded. Nothing is left to load.',
+      };
     case 'failed':
     default:
       return {
@@ -321,7 +360,14 @@ export class TopUpStoreError extends Error {
   }
 }
 
-export type TopUpState = 'waiting' | 'paid' | 'loading' | 'loaded' | 'expired';
+export type TopUpState =
+  | 'waiting'
+  | 'paid'
+  | 'loading'
+  | 'loaded'
+  | 'expired'
+  | 'refunding'
+  | 'refunded';
 
 export interface TopUpOutputRecord {
   amount: number;
@@ -350,6 +396,53 @@ export interface TopUpMintedPiece {
   sent?: boolean;
 }
 
+/** Where a refund pays: what the holder gave, normalised. */
+export interface TopUpRefundDestination {
+  kind: 'bolt11' | 'address';
+  value: string;
+}
+
+/** A refund's plain output: the secret is random, locked to no one. */
+export interface TopUpRefundOutput {
+  amount: number;
+  /** 32 random bytes, hex: the proof's secret. */
+  secret: string;
+  /** The blinding factor, 64 hex. */
+  r: string;
+  /** The blinded message, compressed hex. */
+  B_: string;
+}
+
+/**
+ * A refund in flight or done (ENG-855). Every step is written before the
+ * network call it guards: the outputs before the mint signs them, the melt
+ * quote and `meltSent` before the melt.
+ */
+export interface TopUpRefund {
+  destination: TopUpRefundDestination;
+  meltQuoteId: string;
+  /** The bolt11 the mint pays (the address's invoice, for an address). */
+  request: string;
+  /** What the destination receives. */
+  amountSat: number;
+  /** Shown to the holder: the melt's fee reserve plus the keyset input fee. */
+  feeSat: number;
+  /** The keyset input fee alone, part of `feeSat`. */
+  inputFeeSat: number;
+  /** Unix seconds the melt quote expires at; null when the mint gave none. */
+  meltExpiry: number | null;
+  keysetId: string;
+  outputs: TopUpRefundOutput[];
+  /** The mint's signatures on `outputs`, unblinded: the proofs melted. */
+  proofs?: RefundProof[];
+  /** The melt was sent (written before the send): check before re-spending. */
+  meltSent?: boolean;
+  preimage?: string | null;
+  /** NUT-08 change from the reserve: the holder's, kept here, never the till's. */
+  change?: RefundProof[];
+  changeSat?: number;
+}
+
 export interface TopUpEntry {
   /** The mint quote id. */
   topupId: string;
@@ -366,6 +459,8 @@ export interface TopUpEntry {
   outputs?: TopUpOutputRecord[];
   /** The mint's signatures, unblinded, kept as soon as they arrive. */
   minted?: TopUpMintedPiece[];
+  /** Set from `refunding` on; present exactly in `refunding` and `refunded`. */
+  refund?: TopUpRefund;
   attempts: number;
   lastError?: string;
   createdAt: number;
@@ -378,12 +473,53 @@ const STATES: ReadonlySet<string> = new Set<TopUpState>([
   'loading',
   'loaded',
   'expired',
+  'refunding',
+  'refunded',
 ]);
 
 const isText = (v: unknown): v is string =>
   typeof v === 'string' && v.length > 0;
 const isNum = (v: unknown): v is number =>
   typeof v === 'number' && Number.isFinite(v);
+
+const isProof = (p: Record<string, unknown>): boolean =>
+  isText(p?.id) && isNum(p?.amount) && isText(p?.secret) && isText(p?.C);
+
+function isRefund(value: unknown): value is TopUpRefund {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const r = value as Record<string, unknown>;
+  const dest = r.destination as Record<string, unknown> | undefined;
+  return (
+    typeof dest === 'object' &&
+    dest !== null &&
+    (dest.kind === 'bolt11' || dest.kind === 'address') &&
+    isText(dest.value) &&
+    isText(r.meltQuoteId) &&
+    isText(r.request) &&
+    isNum(r.amountSat) &&
+    isNum(r.feeSat) &&
+    isNum(r.inputFeeSat) &&
+    (r.meltExpiry === null || isNum(r.meltExpiry)) &&
+    isText(r.keysetId) &&
+    Array.isArray(r.outputs) &&
+    r.outputs.length > 0 &&
+    r.outputs.every(
+      (o: Record<string, unknown>) =>
+        isNum(o?.amount) && isText(o?.secret) && isText(o?.r) && isText(o?.B_),
+    ) &&
+    (r.proofs === undefined ||
+      (Array.isArray(r.proofs) && r.proofs.every(isProof))) &&
+    (r.meltSent === undefined || typeof r.meltSent === 'boolean') &&
+    (r.preimage === undefined ||
+      r.preimage === null ||
+      typeof r.preimage === 'string') &&
+    (r.change === undefined ||
+      (Array.isArray(r.change) && r.change.every(isProof))) &&
+    (r.changeSat === undefined || isNum(r.changeSat))
+  );
+}
 
 function isTopUpEntry(value: unknown): value is TopUpEntry {
   if (typeof value !== 'object' || value === null) {
@@ -411,6 +547,8 @@ function isTopUpEntry(value: unknown): value is TopUpEntry {
           typeof m?.loaded === 'boolean' &&
           (m?.sent === undefined || typeof m?.sent === 'boolean'),
       ));
+  const refunding = e.state === 'refunding' || e.state === 'refunded';
+  const refundOk = refunding ? isRefund(e.refund) : e.refund === undefined;
   return (
     isText(e.topupId) &&
     isText(e.cardPubkey) &&
@@ -425,6 +563,7 @@ function isTopUpEntry(value: unknown): value is TopUpEntry {
     (e.keysetId === undefined || isText(e.keysetId)) &&
     outputsOk &&
     mintedOk &&
+    refundOk &&
     isNum(e.attempts) &&
     (e.lastError === undefined || typeof e.lastError === 'string') &&
     isNum(e.createdAt) &&
@@ -647,7 +786,10 @@ const mayBeOnCard = (m: TopUpMintedPiece): boolean => m.loaded || !!m.sent;
  */
 export const NULL_EXPIRY_HOLD_MS = 24 * 60 * 60 * 1000;
 
-/** Does this top-up still hold slots on its card at `now`? */
+/**
+ * Does this top-up still hold slots on its card at `now`? A `refunding` or
+ * `refunded` one never does: its value leaves by Lightning, not the card.
+ */
 const holdsSlots = (e: TopUpEntry, now: number): boolean => {
   if (e.state === 'paid' || e.state === 'loading') {
     return true;
@@ -837,8 +979,9 @@ export async function pollTopUp(
 }
 
 /**
- * The top-ups waiting for this card: paid ones still to load, and quotes not
- * yet confirmed expired. Never throws (a store that will not read is none).
+ * The top-ups waiting for this card: paid ones still to load, refunds not yet
+ * finished, and quotes not yet confirmed expired. Never throws (a store that
+ * will not read is none).
  */
 export async function waitingTopUpsForCard(
   cardPubkey: string,
@@ -848,7 +991,10 @@ export async function waitingTopUpsForCard(
     return (await listTopUps()).filter(
       e =>
         e.cardPubkey === key &&
-        (e.state === 'paid' || e.state === 'loading' || e.state === 'waiting'),
+        (e.state === 'paid' ||
+          e.state === 'loading' ||
+          e.state === 'waiting' ||
+          e.state === 'refunding'),
     );
   } catch {
     return [];
@@ -985,6 +1131,84 @@ async function obtainSignatures(
   );
 }
 
+/**
+ * The gate a load and a refund both pass, before anything is written: the
+ * card this top-up is for (its key and its mint), not locked, its PIN not
+ * blocked, and its PIN verified when it has one — even when the change grant
+ * would let a LOAD through. Answers the card's summary.
+ */
+async function verifyCardForTopUp(
+  entry: TopUpEntry,
+  transceive: Transceiver,
+  pin: string | undefined,
+  onPhase: (phase: 'reading') => void,
+): Promise<CardSummary> {
+  onPhase('reading');
+  let summary: CardSummary;
+  let cardMint: string;
+  try {
+    summary = await readCard(transceive);
+    cardMint = (await getCard(transceive)).mint;
+  } catch (error) {
+    throw readFailure(error);
+  }
+  if (
+    summary.pubkey.toLowerCase() !== entry.cardPubkey.toLowerCase() ||
+    normalizeMintUrl(cardMint) !== normalizeMintUrl(entry.mintUrl)
+  ) {
+    throw new TopUpError('not_our_card');
+  }
+  if (summary.info.locked) {
+    throw new TopUpError('card_locked');
+  }
+  if (summary.info.pinState === 'blocked') {
+    throw new TopUpError('pin_blocked');
+  }
+  if (summary.info.pinState === 'set') {
+    if (!pin) {
+      throw new TopUpError('pin_needed');
+    }
+    try {
+      await verifyCardPin(transceive, pin);
+    } catch (error) {
+      // 63CX: a wrong PIN, X tries left.
+      if (error instanceof CardError && Math.floor(error.sw / 16) === 0x63c) {
+        throw new TopUpError('wrong_pin', '', error.sw % 16);
+      }
+      if (error instanceof CardError && error.sw === 0x6983) {
+        throw new TopUpError('pin_blocked');
+      }
+      throw readFailure(error);
+    }
+  }
+  return summary;
+}
+
+/** A refund under way or done owns the entry: a load stops before the card. */
+function refuseIfRefund(e: TopUpEntry): void {
+  if (e.state === 'refunding') {
+    throw new TopUpError('refund_pending');
+  }
+  if (e.state === 'refunded') {
+    throw new TopUpError('refunded');
+  }
+}
+
+/** The card-locked pieces, from the kept outputs and the mint's signatures. */
+const mintedFrom = (
+  kept: TopUpOutputRecord[],
+  signatures: TopUpSignature[],
+): TopUpMintedPiece[] =>
+  kept.map((o, i) => ({
+    amount: o.amount,
+    nonce: o.nonce,
+    C: signatures[i].C,
+    dleqE: signatures[i].dleq.e,
+    dleqS: signatures[i].dleq.s,
+    r: o.r,
+    loaded: false,
+  }));
+
 async function noteError(topupId: string, error: unknown): Promise<void> {
   try {
     await patchTopUp(topupId, e => ({
@@ -1026,6 +1250,7 @@ export async function loadTopUp({
   if (entry.state === 'expired') {
     throw new TopUpError('expired');
   }
+  refuseIfRefund(entry);
   if (entry.state === 'waiting') {
     let state: TopUpQuoteState;
     try {
@@ -1045,47 +1270,8 @@ export async function loadTopUp({
     }
   }
 
-  // 1. The card: the one this top-up is for, at this mint.
-  onPhase('reading');
-  let summary: CardSummary;
-  let cardMint: string;
-  try {
-    summary = await readCard(transceive);
-    cardMint = (await getCard(transceive)).mint;
-  } catch (error) {
-    throw readFailure(error);
-  }
-  if (
-    summary.pubkey.toLowerCase() !== entry.cardPubkey.toLowerCase() ||
-    normalizeMintUrl(cardMint) !== normalizeMintUrl(entry.mintUrl)
-  ) {
-    throw new TopUpError('not_our_card');
-  }
-  if (summary.info.locked) {
-    throw new TopUpError('card_locked');
-  }
-  if (summary.info.pinState === 'blocked') {
-    throw new TopUpError('pin_blocked');
-  }
-
-  // 2. The PIN, before any LOAD — even when the change grant would let one through.
-  if (summary.info.pinState === 'set') {
-    if (!pin) {
-      throw new TopUpError('pin_needed');
-    }
-    try {
-      await verifyCardPin(transceive, pin);
-    } catch (error) {
-      // 63CX: a wrong PIN, X tries left.
-      if (error instanceof CardError && Math.floor(error.sw / 16) === 0x63c) {
-        throw new TopUpError('wrong_pin', '', error.sw % 16);
-      }
-      if (error instanceof CardError && error.sw === 0x6983) {
-        throw new TopUpError('pin_blocked');
-      }
-      throw readFailure(error);
-    }
-  }
+  // 1-2. The card this top-up is for, at this mint, and its PIN.
+  const summary = await verifyCardForTopUp(entry, transceive, pin, onPhase);
 
   // 3. Room for what is still to load, beside this card's owed change. A
   // piece already sent may be on the card with its reply lost: it is not
@@ -1120,13 +1306,15 @@ export async function loadTopUp({
       };
     });
     try {
-      entry = await patchTopUp(topupId, e => ({
-        ...e,
-        keysetId,
-        outputs,
-        state: 'loading',
-      }));
+      entry = await patchTopUp(topupId, e => {
+        // A refund written since this load read the entry owns it now.
+        refuseIfRefund(e);
+        return {...e, keysetId, outputs, state: 'loading'};
+      });
     } catch (error) {
+      if (error instanceof TopUpError) {
+        throw error;
+      }
       // Nothing was sent to the mint: the next tap makes new outputs.
       throw new TopUpError(
         'failed',
@@ -1142,17 +1330,16 @@ export async function loadTopUp({
       entry,
       kept.map(o => ({amount: o.amount, keysetId, B_: o.B_, r: o.r})),
     );
-    const minted: TopUpMintedPiece[] = kept.map((o, i) => ({
-      amount: o.amount,
-      nonce: o.nonce,
-      C: signatures[i].C,
-      dleqE: signatures[i].dleq.e,
-      dleqS: signatures[i].dleq.s,
-      r: o.r,
-      loaded: false,
-    }));
+    const minted = mintedFrom(kept, signatures);
     try {
-      entry = await patchTopUp(topupId, e => ({...e, minted}));
+      // The mint signed the card's outputs: they are the truth, whatever a
+      // refund wrote meanwhile (its own outputs can no longer be signed).
+      entry = await patchTopUp(topupId, e => ({
+        ...e,
+        minted,
+        state: 'loading',
+        refund: undefined,
+      }));
     } catch {
       // The kept outputs are enough: a later restore finds these signatures.
       entry = {...entry, minted};
@@ -1169,12 +1356,18 @@ export async function loadTopUp({
     }
     try {
       const at = i;
-      entry = await patchTopUp(topupId, e => ({
-        ...e,
-        attempts: e.attempts + 1,
-        minted: e.minted?.map((m, j) => (j === at ? {...m, sent: true} : m)),
-      }));
+      entry = await patchTopUp(topupId, e => {
+        refuseIfRefund(e);
+        return {
+          ...e,
+          attempts: e.attempts + 1,
+          minted: e.minted?.map((m, j) => (j === at ? {...m, sent: true} : m)),
+        };
+      });
     } catch (error) {
+      if (error instanceof TopUpError) {
+        throw error;
+      }
       // The attempt is not recorded, so nothing is sent.
       throw new TopUpError('not_loaded', String(error));
     }
@@ -1252,4 +1445,594 @@ export async function loadTopUp({
     // Every piece is on the card; the record catches up on the next tap.
   }
   return result(entry);
+}
+
+// ── refund (ENG-855) ────────────────────────────────────────────────────────
+
+/**
+ * What the holder gave, normalised: trimmed, `lightning:` dropped, lower
+ * case. A bolt11 starts `lnbc`/`lntb`-like (`/^lnb[ct]/`, as CashuCardSpend);
+ * anything else must look like a Lightning address.
+ */
+export function normalizeRefundDestination(
+  raw: string,
+): TopUpRefundDestination {
+  const value = raw
+    .trim()
+    .replace(/^lightning:/i, '')
+    .trim()
+    .toLowerCase();
+  if (/^lnb[ct]/i.test(value)) {
+    return {kind: 'bolt11', value};
+  }
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
+    return {kind: 'address', value};
+  }
+  throw new TopUpError(
+    'refund_failed',
+    value
+      ? "That isn't a Lightning invoice or address."
+      : 'Enter a Lightning invoice or address.',
+  );
+}
+
+const meltDestination = (d: TopUpRefundDestination) =>
+  d.kind === 'bolt11' ? {bolt11: d.value} : {lightningAddress: d.value};
+
+/** A refund's mint step that did not go: the mint's own words, or its silence. */
+function refundFailure(error: unknown): TopUpError {
+  if (error instanceof TopUpError) {
+    return error;
+  }
+  if (error instanceof TopUpMintError) {
+    return mintFailure(error);
+  }
+  if (error instanceof MeltBudgetError) {
+    const fits = error.budgetSat - error.feeReserveSat;
+    return new TopUpError(
+      'refund_failed',
+      fits > 0
+        ? `The invoice is too large. Ask for one of at most ${fits.toLocaleString(
+            'en-US',
+          )} sats.`
+        : 'The mint fee is larger than the top-up.',
+    );
+  }
+  return new TopUpError(
+    'refund_failed',
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+async function readEntry(topupId: string): Promise<TopUpEntry> {
+  let entry: TopUpEntry | null;
+  try {
+    entry = await getTopUp(topupId);
+  } catch (error) {
+    throw new TopUpError('failed', String(error));
+  }
+  if (!entry) {
+    throw new TopUpError('failed', 'This top-up is not on this phone.');
+  }
+  return entry;
+}
+
+interface RefundPrice {
+  quote: RefundQuote;
+  keysetId: string;
+  inputFeeSat: number;
+}
+
+/**
+ * Can this entry be refunded now, and for how much (steps 2-3 of the plan)?
+ *
+ * - `paid` or `loading` with nothing minted, and the mint quote PAID: yes.
+ *   ISSUED (the card's pieces exist) or anything minted: `refund_unavailable`.
+ * - `refunding` whose melt has not gone (a new destination after the first
+ *   one's invoice expired): yes, with the outputs it already has.
+ * - `waiting`: `not_paid`; `refunded`: `refunded`; else `refund_unavailable`.
+ *
+ * Quotes a melt for the amount less the keyset input fee. Persists nothing.
+ */
+async function priceRefund(
+  entry: TopUpEntry,
+  destination: TopUpRefundDestination,
+): Promise<RefundPrice> {
+  if (entry.state === 'refunded') {
+    throw new TopUpError('refunded');
+  }
+  if (entry.state === 'waiting') {
+    throw new TopUpError('not_paid');
+  }
+  if (entry.state === 'expired') {
+    throw new TopUpError('expired');
+  }
+  let keysetId: string;
+  let inputFeeSat: number;
+  if (entry.state === 'refunding' && entry.refund) {
+    const {refund} = entry;
+    if (refund.meltSent) {
+      let check: RefundMeltCheck;
+      try {
+        check = await checkRefundMelt(entry.mintUrl, refund.meltQuoteId);
+      } catch (error) {
+        throw mintFailure(error);
+      }
+      if (check.state !== 'UNPAID') {
+        // Paid or paying: the destination is settled, resume finishes it.
+        throw new TopUpError('refund_pending');
+      }
+    }
+    keysetId = refund.keysetId;
+    inputFeeSat = refund.inputFeeSat;
+  } else if (
+    (entry.state === 'paid' || entry.state === 'loading') &&
+    !entry.minted
+  ) {
+    let state: TopUpQuoteState;
+    try {
+      state = await checkTopUpQuote(entry.mintUrl, entry.topupId);
+    } catch (error) {
+      throw mintFailure(error);
+    }
+    if (state === 'UNPAID') {
+      throw new TopUpError('not_paid');
+    }
+    if (state === 'ISSUED') {
+      throw new TopUpError('refund_unavailable');
+    }
+    let keyset: Awaited<ReturnType<typeof topUpKeyset>>;
+    try {
+      keyset = await topUpKeyset(entry.mintUrl, entry.pieces);
+    } catch (error) {
+      throw mintFailure(error);
+    }
+    keysetId = keyset.id;
+    inputFeeSat = inputFee(keyset, entry.pieces.length);
+  } else {
+    throw new TopUpError('refund_unavailable');
+  }
+  const budgetSat = entry.amountSat - inputFeeSat;
+  if (budgetSat <= 0) {
+    throw new TopUpError(
+      'refund_failed',
+      'The mint fee is larger than the top-up.',
+    );
+  }
+  let quote: RefundQuote;
+  try {
+    quote = await createRefundQuote(
+      entry.mintUrl,
+      meltDestination(destination),
+      budgetSat,
+    );
+  } catch (error) {
+    throw refundFailure(error);
+  }
+  return {quote, keysetId, inputFeeSat};
+}
+
+export interface TopUpRefundPreview {
+  /** What the destination receives. */
+  netSat: number;
+  /** At most what the mint keeps: the fee reserve plus the input fee. */
+  feeSat: number;
+  destination: TopUpRefundDestination;
+}
+
+/**
+ * What a refund of this top-up to `destination` would pay, before the card:
+ * no card, nothing persisted. Throws a `TopUpError`.
+ */
+export async function previewTopUpRefund({
+  topupId,
+  destination,
+}: {
+  topupId: string;
+  destination: string;
+}): Promise<TopUpRefundPreview> {
+  const dest = normalizeRefundDestination(destination);
+  const entry = await readEntry(topupId);
+  const {quote, inputFeeSat} = await priceRefund(entry, dest);
+  return {
+    netSat: quote.amountSat,
+    feeSat: quote.feeReserveSat + inputFeeSat,
+    destination: dest,
+  };
+}
+
+export type RefundPhase = 'reading' | 'minting' | 'paying';
+
+export interface RefundTopUpArgs {
+  topupId: string;
+  destination: string;
+  /** The net the holder confirmed; a refund that would pay less stops. */
+  shownNetSat: number;
+  transceive: Transceiver;
+  pin?: string;
+  onPhase?: (phase: RefundPhase) => void;
+}
+
+export interface TopUpRefundResult {
+  amountSat: number;
+  /** The reserve the mint gave back: stays on this phone, in the entry. */
+  changeSat: number;
+  preimage: string | null;
+  destination: TopUpRefundDestination;
+}
+
+const refundResult = (entry: TopUpEntry): TopUpRefundResult => ({
+  amountSat: entry.refund!.amountSat,
+  changeSat: entry.refund!.changeSat ?? 0,
+  preimage: entry.refund!.preimage ?? null,
+  destination: entry.refund!.destination,
+});
+
+/**
+ * The card's part of a refund, inside one card session: the same card and
+ * PIN gate as the load (no room check, no LOAD), a fresh price, then the
+ * intent written ahead — `refunding`, with plain outputs — only while
+ * nothing is minted. Nothing goes to the mint's mint or melt here, so the
+ * screen can let the card go before the melt (`resumeTopUpRefund`), which
+ * may take longer than an NFC session lives. Throws a `TopUpError`.
+ */
+export async function beginTopUpRefund({
+  topupId,
+  destination,
+  shownNetSat,
+  transceive,
+  pin,
+  onPhase = () => {},
+}: RefundTopUpArgs): Promise<void> {
+  const dest = normalizeRefundDestination(destination);
+  const entry = await readEntry(topupId);
+  if (entry.state === 'refunded') {
+    throw new TopUpError('refunded');
+  }
+  if (
+    !(
+      entry.state === 'refunding' ||
+      ((entry.state === 'paid' || entry.state === 'loading') && !entry.minted)
+    )
+  ) {
+    throw new TopUpError(
+      entry.state === 'waiting' ? 'not_paid' : 'refund_unavailable',
+    );
+  }
+
+  // 1. The card and its PIN, as for a load.
+  await verifyCardForTopUp(entry, transceive, pin, onPhase);
+
+  // 2. The price again: the holder confirmed a net, never pay less.
+  const {quote, keysetId, inputFeeSat} = await priceRefund(entry, dest);
+  if (quote.amountSat < shownNetSat) {
+    throw new TopUpError(
+      'refund_failed',
+      `The mint now pays ${quote.amountSat.toLocaleString(
+        'en-US',
+      )} sats, less than shown. Check the amount and confirm again.`,
+    );
+  }
+
+  // 3. Write-ahead, compare-and-set: only an entry still unminted (or a
+  // refund whose melt has not gone) takes the refund. A refund's own plain
+  // outputs, once made, are kept: the mint may already have signed them.
+  const outputs: TopUpRefundOutput[] = entry.pieces.map(amount => {
+    const secret = bytesToHex(randomBytes(32));
+    const {B_, r} = blindMessage(utf8ToBytes(secret));
+    return {
+      amount,
+      secret,
+      r: r.toString(16).padStart(64, '0'),
+      B_: bytesToHex(B_.toBytes(true)),
+    };
+  });
+  const terms = {
+    destination: dest,
+    meltQuoteId: quote.meltQuoteId,
+    request: quote.request,
+    amountSat: quote.amountSat,
+    feeSat: quote.feeReserveSat + inputFeeSat,
+    inputFeeSat,
+    meltExpiry: quote.expiry,
+  };
+  try {
+    await patchTopUp(topupId, e => {
+      if (e.state === 'refunding' && e.refund && !e.refund.preimage) {
+        return {
+          ...e,
+          refund: {...e.refund, ...terms, meltSent: false},
+          lastError: undefined,
+        };
+      }
+      if ((e.state === 'paid' || e.state === 'loading') && !e.minted) {
+        return {
+          ...e,
+          state: 'refunding',
+          refund: {...terms, keysetId, outputs},
+          lastError: undefined,
+        };
+      }
+      throw new TopUpError('refund_unavailable');
+    });
+  } catch (error) {
+    if (error instanceof TopUpError) {
+      throw error;
+    }
+    // Nothing was sent to the mint.
+    throw new TopUpError(
+      'failed',
+      `The refund could not be saved on this phone (${String(error)}).`,
+    );
+  }
+}
+
+/**
+ * Refund a paid top-up to the holder's invoice or Lightning address:
+ * `beginTopUpRefund` (the card, its PIN and the intent), then the mint and
+ * the melt (`completeRefund`, which needs no card). Throws a `TopUpError`.
+ */
+export async function refundTopUp(
+  args: RefundTopUpArgs,
+): Promise<TopUpRefundResult> {
+  await beginTopUpRefund(args);
+  return completeRefund(args.topupId, args.onPhase ?? (() => {}));
+}
+
+/**
+ * Finish a `refunding` top-up without the card: the gate was passed and the
+ * destination fixed when the refund was written. Throws a `TopUpError`; the
+ * entry stays `refunding` and resuming again goes on from where it stopped.
+ */
+export async function resumeTopUpRefund(
+  topupId: string,
+  onPhase: (phase: RefundPhase) => void = () => {},
+): Promise<TopUpRefundResult> {
+  return completeRefund(topupId, onPhase);
+}
+
+/** Patch a `refunding` entry's refund; any other state refuses inside the write. */
+async function patchRefund(
+  topupId: string,
+  fn: (r: TopUpRefund) => TopUpRefund,
+): Promise<TopUpEntry> {
+  return patchTopUp(topupId, e => {
+    if (e.state !== 'refunding' || !e.refund) {
+      throw new TopUpError(
+        e.state === 'refunded' ? 'refunded' : 'refund_unavailable',
+      );
+    }
+    return {...e, refund: fn(e.refund)};
+  });
+}
+
+/**
+ * The mint would not sign the refund's outputs. When it signed the card's
+ * instead (a load won the race), record those pieces as the load's and say
+ * the refund cannot happen; else the first failure stands.
+ */
+async function settleLostRace(
+  entry: TopUpEntry,
+  failure: unknown,
+): Promise<never> {
+  let state: TopUpQuoteState | null = null;
+  try {
+    state = await checkTopUpQuote(entry.mintUrl, entry.topupId);
+  } catch {
+    state = null;
+  }
+  if (state === 'ISSUED' && entry.outputs && entry.keysetId) {
+    const kept = entry.outputs;
+    const keysetId = entry.keysetId;
+    let signatures: TopUpSignature[] | null = null;
+    try {
+      signatures = await restoreTopUp(
+        entry.mintUrl,
+        kept.map(o => ({amount: o.amount, keysetId, B_: o.B_, r: o.r})),
+      );
+    } catch {
+      signatures = null;
+    }
+    if (signatures) {
+      const minted = mintedFrom(kept, signatures);
+      try {
+        await patchTopUp(entry.topupId, e => ({
+          ...e,
+          state: 'loading',
+          minted,
+          refund: undefined,
+        }));
+      } catch {
+        // The kept outputs are enough: the next load restores them.
+      }
+      throw new TopUpError('refund_unavailable');
+    }
+  }
+  throw mintFailure(failure);
+}
+
+/**
+ * The refund's network steps, each written ahead and each resumable:
+ *
+ *   1. the mint's signatures on the plain outputs (the same outputs every
+ *      time; NUT-09 restore finds a lost answer), kept as `proofs`;
+ *   2. a melt already sent is checked first: PAID finishes, PENDING waits,
+ *      UNPAID melts again with the same proofs;
+ *   3. an expired melt quote is quoted again (an address re-resolves) and
+ *      the new id kept before the melt;
+ *   4. `meltSent` is written, then the melt; PAID makes the entry `refunded`
+ *      with the preimage and any change.
+ */
+async function completeRefund(
+  topupId: string,
+  onPhase: (phase: RefundPhase) => void,
+): Promise<TopUpRefundResult> {
+  let entry = await readEntry(topupId);
+  if (entry.state === 'refunded' && entry.refund) {
+    return refundResult(entry);
+  }
+  if (entry.state !== 'refunding' || !entry.refund) {
+    throw new TopUpError('refund_unavailable');
+  }
+
+  // 1. The proofs.
+  if (!entry.refund.proofs) {
+    onPhase('minting');
+    const r = entry.refund;
+    let signatures: TopUpSignature[];
+    try {
+      signatures = await obtainSignatures(
+        entry,
+        r.outputs.map(o => ({
+          amount: o.amount,
+          keysetId: r.keysetId,
+          B_: o.B_,
+          r: o.r,
+        })),
+      );
+    } catch (error) {
+      await noteError(topupId, error);
+      return settleLostRace(entry, error);
+    }
+    const proofs: RefundProof[] = r.outputs.map((o, i) => ({
+      id: r.keysetId,
+      amount: o.amount,
+      secret: o.secret,
+      C: signatures[i].C,
+    }));
+    try {
+      entry = await patchRefund(topupId, x => ({...x, proofs}));
+    } catch (error) {
+      if (error instanceof TopUpError) {
+        throw error;
+      }
+      // Not kept: nothing is melted until it is (restore finds them again).
+      throw new TopUpError(
+        'failed',
+        `The refund could not be saved on this phone (${String(error)}).`,
+      );
+    }
+  }
+
+  onPhase('paying');
+  const finish = async (
+    preimage: string | null,
+    change: RefundProof[],
+  ): Promise<TopUpRefundResult> => {
+    const changeSat = change.reduce((t, p) => t + p.amount, 0);
+    try {
+      entry = await patchTopUp(topupId, e => ({
+        ...e,
+        state: 'refunded',
+        refund: {...e.refund!, preimage, change, changeSat},
+        lastError: undefined,
+      }));
+    } catch {
+      // The mint paid; the next resume checks the melt and writes it.
+      entry = {
+        ...entry,
+        state: 'refunded',
+        refund: {...entry.refund!, preimage, change, changeSat},
+      };
+    }
+    return refundResult(entry);
+  };
+
+  // 2. A melt already sent: the mint says what became of it.
+  let expiry = entry.refund!.meltExpiry;
+  if (entry.refund!.meltSent) {
+    let check: RefundMeltCheck;
+    try {
+      check = await checkRefundMelt(entry.mintUrl, entry.refund!.meltQuoteId);
+    } catch (error) {
+      throw mintFailure(error);
+    }
+    if (check.state === 'PAID') {
+      return finish(check.preimage, []);
+    }
+    if (check.state === 'PENDING') {
+      throw new TopUpError('refund_pending');
+    }
+    expiry = check.expiry ?? expiry;
+  }
+
+  // 3. An expired melt quote: quote the same destination again.
+  if (expiry !== null && Date.now() >= expiry * 1000) {
+    const r = entry.refund!;
+    let quote: RefundQuote;
+    try {
+      quote = await createRefundQuote(
+        entry.mintUrl,
+        meltDestination(r.destination),
+        entry.amountSat - r.inputFeeSat,
+      );
+    } catch (error) {
+      await noteError(topupId, error);
+      if (
+        r.destination.kind === 'bolt11' &&
+        !(error instanceof TopUpMintError)
+      ) {
+        throw new TopUpError(
+          'refund_failed',
+          'The invoice expired. Ask the holder for a new one.',
+        );
+      }
+      throw refundFailure(error);
+    }
+    try {
+      entry = await patchRefund(topupId, x => ({
+        ...x,
+        meltQuoteId: quote.meltQuoteId,
+        request: quote.request,
+        amountSat: quote.amountSat,
+        feeSat: quote.feeReserveSat + x.inputFeeSat,
+        meltExpiry: quote.expiry,
+        meltSent: false,
+      }));
+    } catch (error) {
+      if (error instanceof TopUpError) {
+        throw error;
+      }
+      throw new TopUpError(
+        'failed',
+        `The refund could not be saved on this phone (${String(error)}).`,
+      );
+    }
+  }
+
+  // 4. The melt, its attempt written first.
+  try {
+    entry = await patchRefund(topupId, x => ({...x, meltSent: true}));
+  } catch (error) {
+    if (error instanceof TopUpError) {
+      throw error;
+    }
+    // Not recorded, so not sent.
+    throw new TopUpError(
+      'failed',
+      `The refund could not be saved on this phone (${String(error)}).`,
+    );
+  }
+  const r = entry.refund!;
+  let melted: RefundMeltResult;
+  try {
+    melted = await meltRefund(entry.mintUrl, r.meltQuoteId, r.proofs!);
+  } catch (error) {
+    // Outcome unknown: the entry stays `refunding` with the melt sent, and
+    // the next resume asks the mint before spending anything again.
+    await noteError(topupId, error);
+    throw refundFailure(error);
+  }
+  if (melted.state === 'PAID') {
+    return finish(melted.preimage, melted.change);
+  }
+  if (melted.state === 'PENDING') {
+    throw new TopUpError('refund_pending');
+  }
+  const unpaid = new TopUpError(
+    'refund_failed',
+    'The mint could not pay it. Nothing was sent. Try again.',
+  );
+  await noteError(topupId, unpaid);
+  throw unpaid;
 }
