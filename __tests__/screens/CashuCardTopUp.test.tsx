@@ -33,12 +33,18 @@ const mockStartTopUp = jest.fn();
 const mockPollTopUp = jest.fn();
 const mockLoadTopUp = jest.fn();
 const mockGetTopUp = jest.fn();
+const mockPreviewRefund = jest.fn();
+const mockBeginRefund = jest.fn();
+const mockResumeRefund = jest.fn();
 jest.mock('../../src/services/cashuTopUp', () => ({
   ...jest.requireActual('../../src/services/cashuTopUp'),
   startTopUp: (...a: unknown[]) => mockStartTopUp(...a),
   pollTopUp: (...a: unknown[]) => mockPollTopUp(...a),
   loadTopUp: (...a: unknown[]) => mockLoadTopUp(...a),
   getTopUp: (...a: unknown[]) => mockGetTopUp(...a),
+  previewTopUpRefund: (...a: unknown[]) => mockPreviewRefund(...a),
+  beginTopUpRefund: (...a: unknown[]) => mockBeginRefund(...a),
+  resumeTopUpRefund: (...a: unknown[]) => mockResumeRefund(...a),
 }));
 
 class MockUserCancel extends Error {}
@@ -498,5 +504,234 @@ describe('CashuCardTopUp', () => {
     expect(getByTestId('topup-error-title').props.children).toBe(
       'Not loaded yet',
     );
+  });
+});
+
+describe('CashuCardTopUp refund (ENG-855)', () => {
+  const INVOICE = 'lnbc50n1holder';
+  const REFUND = {
+    destination: {kind: 'bolt11' as const, value: INVOICE},
+    meltQuoteId: 'melt-1',
+    request: INVOICE,
+    amountSat: 3,
+    feeSat: 2,
+    inputFeeSat: 0,
+    meltExpiry: null,
+    keysetId: '00ab',
+    outputs: [{amount: 4, secret: 'aa', r: 'bb', B_: 'cc'}],
+  };
+  const PREVIEW = {
+    netSat: 3,
+    feeSat: 2,
+    destination: {kind: 'bolt11', value: INVOICE},
+  };
+  const DONE = {
+    amountSat: 3,
+    changeSat: 1,
+    preimage: 'pre',
+    destination: {kind: 'bolt11', value: INVOICE},
+  };
+
+  beforeEach(() => {
+    mockPreviewRefund.mockResolvedValue(PREVIEW);
+    mockBeginRefund.mockResolvedValue(undefined);
+    mockResumeRefund.mockResolvedValue(DONE);
+  });
+
+  async function toConfirm(summary: CardSummary = SUMMARY) {
+    mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
+    const screen = renderScreen({summary, resume: 'quote-0123456789'});
+    await flush();
+    fireEvent.press(screen.getByTestId('topup-refund'));
+    fireEvent.changeText(
+      screen.getByTestId('topup-refund-destination'),
+      `LIGHTNING:${INVOICE.toUpperCase()}`,
+    );
+    fireEvent.press(screen.getByTestId('topup-refund-continue'));
+    await flush();
+    return screen;
+  }
+
+  it('offers Refund on a paid top-up, and not once pieces are minted', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
+    const paid = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    expect(paid.getByTestId('topup-refund')).toBeTruthy();
+    paid.unmount();
+
+    mockGetTopUp.mockResolvedValue(
+      entry({
+        state: 'loading',
+        minted: [
+          {
+            amount: 4,
+            nonce: 'n',
+            C: 'c',
+            dleqE: 'e',
+            dleqS: 's',
+            r: 'r',
+            loaded: false,
+          },
+        ],
+      }),
+    );
+    const minted = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    expect(minted.queryByTestId('topup-refund')).toBeNull();
+    expect(minted.getByTestId('topup-refund-locked').props.children).toBe(
+      'The pieces are locked to this card. Load them.',
+    );
+  });
+
+  it('prices the destination, shows it in full, then refunds behind the card', async () => {
+    const {getByTestId} = await toConfirm();
+    expect(mockPreviewRefund).toHaveBeenCalledWith({
+      topupId: 'quote-0123456789',
+      destination: `LIGHTNING:${INVOICE.toUpperCase()}`,
+    });
+    expect(getByTestId('topup-refund-to').props.children).toBe(INVOICE);
+    expect(getByTestId('topup-refund-terms').props.children).toBe(
+      'The holder gets 3 sats. The mint keeps up to 2 sats in fees.',
+    );
+
+    fireEvent.press(getByTestId('topup-refund-confirm'));
+    await flush();
+
+    expect(mockWithCardSession).toHaveBeenCalledWith(expect.any(Function), {
+      alertMessage: 'Hold the card to refund 3 sats',
+    });
+    expect(mockBeginRefund).toHaveBeenCalledWith({
+      topupId: 'quote-0123456789',
+      destination: INVOICE,
+      shownNetSat: 3,
+      transceive: mockTransceive,
+      pin: undefined,
+      onPhase: expect.any(Function),
+    });
+    // The mint's part runs after the card session ended.
+    expect(mockResumeRefund).toHaveBeenCalledWith('quote-0123456789');
+    expect(getByTestId('topup-refunded').props.children).toBe(
+      'Refunded 3 sats',
+    );
+    expect(getByTestId('topup-refund-change').props.children).toBe(
+      '1 sat came back and stays on this phone.',
+    );
+  });
+
+  it('asks a PIN card for its PIN, and sends it with the refund', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    const {getByTestId} = await toConfirm(PIN_CARD);
+    fireEvent.press(getByTestId('topup-refund-confirm'));
+    expect(getByTestId('pin-sheet')).toBeTruthy();
+    expect(getByTestId('pin-confirm').props.accessibilityState).toEqual({
+      disabled: true,
+    });
+    type(getByTestId, '1234');
+    await tick(PIN_COMMIT_MS);
+    expect(mockBeginRefund).toHaveBeenCalledWith(
+      expect.objectContaining({pin: '1234'}),
+    );
+    expect(mockLoadTopUp).not.toHaveBeenCalled();
+    expect(getByTestId('topup-refunded')).toBeTruthy();
+  });
+
+  it('a wrong PIN goes back to the paid step, nothing refunded', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    mockBeginRefund.mockRejectedValueOnce(new TopUpError('wrong_pin', '', 2));
+    const {getByTestId} = await toConfirm(PIN_CARD);
+    fireEvent.press(getByTestId('topup-refund-confirm'));
+    type(getByTestId, '9999');
+    await tick(PIN_COMMIT_MS);
+    await flush();
+    expect(mockResumeRefund).not.toHaveBeenCalled();
+    expect(getByTestId('topup-error-title').props.children).toBe('Wrong PIN');
+    expect(getByTestId('topup-error-body').props.children).toBe(
+      '2 tries left. Try again. The top-up is paid and waiting.',
+    );
+    fireEvent.press(getByTestId('topup-retry'));
+    expect(getByTestId('topup-paid')).toBeTruthy();
+  });
+
+  it('says why a destination will not do, and stays on it', async () => {
+    mockPreviewRefund.mockRejectedValueOnce(
+      new TopUpError('refund_failed', 'The invoice is too large.'),
+    );
+    const {getByTestId} = await toConfirm();
+    expect(getByTestId('topup-refund-note-title').props.children).toBe(
+      'The refund failed',
+    );
+    expect(getByTestId('topup-refund-note-body').props.children).toBe(
+      'The invoice is too large.',
+    );
+    expect(getByTestId('topup-refund-destination')).toBeTruthy();
+    expect(mockWithCardSession).not.toHaveBeenCalled();
+  });
+
+  it('finishes a refunding top-up on resume, with no card session', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'refunding', refund: REFUND}));
+    const {getByTestId} = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    await flush();
+    expect(mockResumeRefund).toHaveBeenCalledWith('quote-0123456789');
+    expect(mockWithCardSession).not.toHaveBeenCalled();
+    expect(getByTestId('topup-refunded').props.children).toBe(
+      'Refunded 3 sats',
+    );
+  });
+
+  it('shows a refunded top-up as done', async () => {
+    mockGetTopUp.mockResolvedValue(
+      entry({
+        state: 'refunded',
+        refund: {...REFUND, preimage: 'p', changeSat: 0},
+      }),
+    );
+    const {getByTestId, queryByTestId} = renderScreen({
+      resume: 'quote-0123456789',
+    });
+    await flush();
+    expect(getByTestId('topup-refunded').props.children).toBe(
+      'Refunded 3 sats',
+    );
+    expect(queryByTestId('topup-refund-change')).toBeNull();
+    expect(mockResumeRefund).not.toHaveBeenCalled();
+  });
+
+  it('a stuck refund retries without the card', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'refunding', refund: REFUND}));
+    mockResumeRefund.mockRejectedValueOnce(
+      new TopUpError('refund_failed', 'The invoice expired.'),
+    );
+    const {getByTestId} = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    await flush();
+    expect(getByTestId('topup-error-body').props.children).toBe(
+      'The invoice expired.',
+    );
+    fireEvent.press(getByTestId('topup-retry'));
+    await flush();
+    expect(mockResumeRefund).toHaveBeenCalledTimes(2);
+    expect(getByTestId('topup-refunded')).toBeTruthy();
+  });
+
+  it('a stuck refund can go to another destination, behind the card again', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'refunding', refund: REFUND}));
+    mockResumeRefund.mockRejectedValueOnce(
+      new TopUpError('refund_failed', 'The invoice expired.'),
+    );
+    const {getByTestId} = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    await flush();
+    fireEvent.press(getByTestId('topup-refund-new'));
+    fireEvent.changeText(
+      getByTestId('topup-refund-destination'),
+      'holder@wallet.example',
+    );
+    fireEvent.press(getByTestId('topup-refund-continue'));
+    await flush();
+    fireEvent.press(getByTestId('topup-refund-confirm'));
+    await flush();
+    expect(mockBeginRefund).toHaveBeenCalledTimes(1);
+    expect(getByTestId('topup-refunded')).toBeTruthy();
   });
 });

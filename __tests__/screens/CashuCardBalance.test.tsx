@@ -336,6 +336,23 @@ describe('CashuCardBalance', () => {
       });
     });
 
+    it('says a refund is in progress, and the button resumes it (ENG-855)', async () => {
+      const waiting = [{topupId: 'q-refund', amountSat: 7, state: 'refunding'}];
+      mockRefreshWaiting.mockResolvedValue(waiting);
+      const {getByTestId, getByText} = renderScreen(SUMMARY, {
+        cardMint: MINT,
+        waitingTopUps: waiting as never,
+      });
+      await flush();
+
+      expect(getByText('Refund in progress · 7 sats')).toBeTruthy();
+      fireEvent.press(getByTestId('balance-topup-waiting'));
+      expect(mockReplace).toHaveBeenCalledWith(
+        'CashuCardTopUp',
+        expect.objectContaining({resume: 'q-refund'}),
+      );
+    });
+
     it('promotes a payment that landed after Cancel, on arrival', async () => {
       mockRefreshWaiting.mockResolvedValue([
         {
