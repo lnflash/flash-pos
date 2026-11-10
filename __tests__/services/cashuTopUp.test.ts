@@ -13,7 +13,9 @@ import {
   listTopUps,
   loadTopUp,
   MAX_TOPUP_ENTRIES,
+  NULL_EXPIRY_HOLD_MS,
   pollTopUp,
+  PRECHECK_TIMEOUT_MS,
   refreshWaitingTopUps,
   reservedPiecesFor,
   roundTopUp,
@@ -256,6 +258,10 @@ describe('topUpErrorCopy', () => {
       "That amount can't go on a card",
     );
     expect(topUpErrorCopy('failed').title).toBe('The top-up failed');
+    expect(topUpErrorCopy('slots_held')).toEqual({
+      title: "An unpaid top-up holds this card's room",
+      body: "Open it from the card's balance screen, or make a new one after it expires.",
+    });
   });
 
   it('says a paid top-up is waiting, and how many PIN tries are left', () => {
@@ -317,6 +323,7 @@ describe('startTopUp', () => {
     mintMocks.checkTopUpQuote.mockResolvedValue('UNPAID');
     await startOn(card, 7);
     expect(await reservedPiecesFor(card.pubkey)).toBe(3);
+    // The card has the room; the unpaid quote holds it.
     await expect(
       startTopUp({
         summary: await summaryOf(card),
@@ -324,7 +331,7 @@ describe('startTopUp', () => {
         owedPieces: 0,
         sat: 7,
       }),
-    ).rejects.toMatchObject({kind: 'card_full'});
+    ).rejects.toMatchObject({kind: 'slots_held'});
     expect(mintMocks.createTopUpQuote).toHaveBeenCalledTimes(1);
     expect(storedEntries().map(e => e.state)).toEqual(['waiting']);
   });
@@ -358,7 +365,11 @@ describe('startTopUp', () => {
         sat: 7,
       }),
     ).resolves.toMatchObject({topupId: 'quote-second'});
-    expect(mintMocks.checkTopUpQuote).toHaveBeenCalledWith(MINT_URL, QUOTE);
+    expect(mintMocks.checkTopUpQuote).toHaveBeenCalledWith(
+      MINT_URL,
+      QUOTE,
+      PRECHECK_TIMEOUT_MS,
+    );
     expect(storedEntries().map(e => [e.topupId, e.state])).toEqual([
       [QUOTE, 'expired'],
       ['quote-second', 'waiting'],
@@ -389,8 +400,61 @@ describe('startTopUp', () => {
         owedPieces: 0,
         sat: 7,
       }),
-    ).rejects.toMatchObject({kind: 'card_full'});
+    ).rejects.toMatchObject({kind: 'slots_held'});
     expect(mintMocks.createTopUpQuote).toHaveBeenCalledTimes(1);
+    expect(storedEntries().map(e => e.state)).toEqual(['waiting']);
+  });
+
+  it('says slots_held for two unpaid quotes, card_full for a card full of its own pieces', async () => {
+    mintMocks.checkTopUpQuote.mockResolvedValue('UNPAID');
+    // An empty 5-slot card, a 3-piece quote left unpaid, then another 3.
+    const roomy = new FakeCard2({slotCount: 5});
+    await startOn(roomy, 7);
+    mintMocks.createTopUpQuote.mockClear();
+    await expect(
+      startTopUp({
+        summary: await summaryOf(roomy),
+        cardMint: MINT_URL,
+        owedPieces: 0,
+        sat: 7,
+      }),
+    ).rejects.toMatchObject({kind: 'slots_held'});
+    expect(mintMocks.createTopUpQuote).not.toHaveBeenCalled();
+
+    // A 2-slot card has no room for 3 pieces whatever is waiting.
+    const small = new FakeCard2({slotCount: 2});
+    await expect(
+      startTopUp({
+        summary: await summaryOf(small),
+        cardMint: MINT_URL,
+        owedPieces: 0,
+        sat: 7,
+      }),
+    ).rejects.toMatchObject({kind: 'card_full'});
+  });
+
+  it('holds the slots of a quote with no expiry for NULL_EXPIRY_HOLD_MS only, and keeps it waiting', async () => {
+    const card = new FakeCard2({slotCount: 5});
+    mintMocks.createTopUpQuote.mockResolvedValueOnce({
+      quoteId: QUOTE,
+      request: BOLT11,
+      expiry: null,
+      amount: 7,
+    });
+    const entry = await startTopUp({
+      summary: await summaryOf(card),
+      cardMint: MINT_URL,
+      owedPieces: 0,
+      sat: 7,
+    });
+    const hour = 60 * 60 * 1000;
+    expect(NULL_EXPIRY_HOLD_MS).toBe(24 * hour);
+    expect(await reservedPiecesFor(card.pubkey, entry.createdAt + hour)).toBe(
+      3,
+    );
+    expect(
+      await reservedPiecesFor(card.pubkey, entry.createdAt + 25 * hour),
+    ).toBe(0);
     expect(storedEntries().map(e => e.state)).toEqual(['waiting']);
   });
 
@@ -526,6 +590,51 @@ describe('pollTopUp', () => {
     await startOn(new FakeCard2());
     mintMocks.checkTopUpQuote.mockResolvedValue('ISSUED');
     expect((await pollTopUp(QUOTE))?.state).toBe('paid');
+  });
+
+  it('checks the waiting quotes at the same time, not one after another', async () => {
+    jest.useFakeTimers();
+    try {
+      const card = new FakeCard2({slotCount: 8});
+      mintMocks.checkTopUpQuote.mockResolvedValue('UNPAID');
+      for (const id of ['quote-a', 'quote-b']) {
+        mintMocks.createTopUpQuote.mockResolvedValueOnce({
+          quoteId: id,
+          request: BOLT11,
+          expiry: 2_000_000_000,
+          amount: 1,
+        });
+        await startTopUp({
+          summary: await summaryOf(card),
+          cardMint: MINT_URL,
+          owedPieces: 0,
+          sat: 1,
+        });
+      }
+      const DELAY = 1000;
+      mintMocks.checkTopUpQuote.mockImplementation(
+        () => new Promise(resolve => setTimeout(() => resolve('PAID'), DELAY)),
+      );
+      let done = false;
+      const refresh = refreshWaitingTopUps(card.pubkey).then(r => {
+        done = true;
+        return r;
+      });
+      // Let both checks start, then advance one delay only.
+      for (let i = 0; i < 20 && !done; i++) {
+        await Promise.resolve();
+      }
+      await jest.advanceTimersByTimeAsync(DELAY);
+      for (let i = 0; i < 50 && !done; i++) {
+        await Promise.resolve();
+      }
+      expect(done).toBe(true);
+      expect((await refresh).map(e => e.state)).toEqual(['paid', 'paid']);
+      // One check of quote-a before quote-b was made, then one each.
+      expect(mintMocks.checkTopUpQuote).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('promotes late payments for the balance screen', async () => {
