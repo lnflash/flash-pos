@@ -129,6 +129,7 @@ export function roundTopUp(sat: number): RoundedTopUp {
 export type TopUpErrorKind =
   | 'bad_amount'
   | 'card_full'
+  | 'slots_held'
   | 'card_locked'
   | 'pin_blocked'
   | 'not_sats'
@@ -193,6 +194,11 @@ export function topUpErrorCopy(
             title: 'This card is full',
             body: 'Spend from it first, then top up.',
           };
+    case 'slots_held':
+      return {
+        title: "An unpaid top-up holds this card's room",
+        body: "Open it from the card's balance screen, or make a new one after it expires.",
+      };
     case 'card_moved':
       return {
         title: 'The card moved away',
@@ -635,21 +641,58 @@ export async function owedPiecesFor(cardPubkey: string): Promise<number> {
 const mayBeOnCard = (m: TopUpMintedPiece): boolean => m.loaded || !!m.sent;
 
 /**
- * The pieces this card's paid and loading top-ups still need slots for: the
- * minted pieces not yet (possibly) on the card, or every piece when none is
- * minted yet. Never throws.
+ * How long an unpaid quote the mint gave no expiry for (NUT-04 allows none)
+ * holds its slots after it was made. The entry itself stays `waiting`, so a
+ * payment made later is still honoured; it only stops blocking new top-ups.
  */
-export async function reservedPiecesFor(cardPubkey: string): Promise<number> {
-  return (await waitingTopUpsForCard(cardPubkey))
-    .filter(e => e.state === 'paid' || e.state === 'loading')
-    .reduce(
-      (n, e) =>
-        n +
-        (e.minted
-          ? e.minted.filter(m => !mayBeOnCard(m)).length
-          : e.pieces.length),
-      0,
-    );
+export const NULL_EXPIRY_HOLD_MS = 24 * 60 * 60 * 1000;
+
+/** Does this top-up still hold slots on its card at `now`? */
+const holdsSlots = (e: TopUpEntry, now: number): boolean => {
+  if (e.state === 'paid' || e.state === 'loading') {
+    return true;
+  }
+  if (e.state !== 'waiting') {
+    return false;
+  }
+  return e.expiry !== null || now < e.createdAt + NULL_EXPIRY_HOLD_MS;
+};
+
+/** The slots `entries` still need: unloaded minted pieces, else every piece. */
+const piecesHeld = (entries: TopUpEntry[]): number =>
+  entries.reduce(
+    (n, e) =>
+      n +
+      (e.minted
+        ? e.minted.filter(m => !mayBeOnCard(m)).length
+        : e.pieces.length),
+    0,
+  );
+
+/**
+ * The pieces this card's waiting, paid and loading top-ups still need slots
+ * for: the minted pieces not yet (possibly) on the card, or every piece when
+ * none is minted yet. An unpaid quote holds its slots until the mint reports
+ * it paid or expired (ENG-856), so two quotes that cannot both land are never
+ * both offered; one with no expiry holds them for `NULL_EXPIRY_HOLD_MS` after
+ * it was made. Never throws.
+ */
+export async function reservedPiecesFor(
+  cardPubkey: string,
+  now: number = Date.now(),
+): Promise<number> {
+  return piecesHeld(
+    (await waitingTopUpsForCard(cardPubkey)).filter(e => holdsSlots(e, now)),
+  );
+}
+
+/** As `reservedPiecesFor`, leaving out unpaid (`waiting`) quotes. */
+async function reservedByPaidFor(cardPubkey: string): Promise<number> {
+  return piecesHeld(
+    (await waitingTopUpsForCard(cardPubkey)).filter(
+      e => e.state === 'paid' || e.state === 'loading',
+    ),
+  );
 }
 
 export interface StartTopUpArgs {
@@ -684,13 +727,35 @@ export async function startTopUp({
     throw new TopUpError('no_mint');
   }
   const owed = owedPieces ?? (await owedPiecesFor(summary.pubkey));
-  // Slots already promised to this card's other paid top-ups, so nobody pays
-  // for a load that cannot land beside them (TOPUP.md § Room on the card).
+  // Ask the mint about this card's unpaid quotes first, so one it reports
+  // expired frees its slots now rather than after the next balance read. Best
+  // effort: a refresh that fails leaves the stored states to count.
+  try {
+    await refreshWaitingTopUps(summary.pubkey, {
+      timeoutMs: PRECHECK_TIMEOUT_MS,
+    });
+  } catch {
+    // The stored states stand.
+  }
+  // Slots already promised to this card's other top-ups, paid or still
+  // waiting, so nobody pays for a load that cannot land beside them
+  // (TOPUP.md § Room on the card).
   const reserved = await reservedPiecesFor(summary.pubkey);
   const refused = canTopUp(summary, owed + reserved, {
     unit,
     pieces: pieces.length,
   });
+  if (refused === 'card_full') {
+    // Room the card has but an unpaid quote holds: say so, rather than send
+    // the merchant to spend from a card that may hold nothing.
+    const paidOnly = await reservedByPaidFor(summary.pubkey);
+    if (
+      paidOnly < reserved &&
+      !canTopUp(summary, owed + paidOnly, {unit, pieces: pieces.length})
+    ) {
+      throw new TopUpError('slots_held');
+    }
+  }
   if (refused) {
     throw new TopUpError(refused);
   }
@@ -737,6 +802,7 @@ export async function startTopUp({
 export async function pollTopUp(
   topupId: string,
   now: number = Date.now(),
+  {timeoutMs}: {timeoutMs?: number} = {},
 ): Promise<TopUpEntry | null> {
   const entry = await getTopUp(topupId);
   if (!entry || entry.state !== 'waiting') {
@@ -744,7 +810,9 @@ export async function pollTopUp(
   }
   let state: TopUpQuoteState;
   try {
-    state = await checkTopUpQuote(entry.mintUrl, entry.topupId);
+    state = await (timeoutMs === undefined
+      ? checkTopUpQuote(entry.mintUrl, entry.topupId)
+      : checkTopUpQuote(entry.mintUrl, entry.topupId, timeoutMs));
   } catch {
     return entry;
   }
@@ -801,20 +869,28 @@ export const toWaitingTopUp = (e: TopUpEntry): WaitingTopUp => ({
 });
 
 /**
+ * The quote-check deadline of `startTopUp`'s best-effort refresh: a slow mint
+ * should not hold the Create tap for the full `TOPUP_MINT_TIMEOUT_MS`.
+ */
+export const PRECHECK_TIMEOUT_MS = 5000;
+
+/**
  * One quote check for each `waiting` top-up of this card (a payment that
- * landed after Cancel), then what is still waiting. Never throws.
+ * landed after Cancel), all at once, then what is still waiting. Never throws.
  */
 export async function refreshWaitingTopUps(
   cardPubkey: string,
+  {timeoutMs}: {timeoutMs?: number} = {},
 ): Promise<TopUpEntry[]> {
   const waiting = await waitingTopUpsForCard(cardPubkey);
-  for (const e of waiting.filter(w => w.state === 'waiting')) {
-    try {
-      await pollTopUp(e.topupId);
-    } catch {
+  await Promise.all(
+    waiting
+      .filter(w => w.state === 'waiting')
       // A poll that will not run leaves the entry as it was.
-    }
-  }
+      .map(e =>
+        pollTopUp(e.topupId, Date.now(), {timeoutMs}).catch(() => null),
+      ),
+  );
   return waitingTopUpsForCard(cardPubkey);
 }
 
@@ -1116,6 +1192,21 @@ export async function loadTopUp({
       );
     } catch (error) {
       if (!isAlreadyOnCard(error)) {
+        if (error instanceof CardError) {
+          // A definite refusal: the piece is not on the card, so it needs a
+          // slot again. A lost link keeps `sent` (the card may have it).
+          const at = i;
+          try {
+            await patchTopUp(topupId, e => ({
+              ...e,
+              minted: e.minted?.map((m, j) =>
+                j === at ? {...m, sent: false} : m,
+              ),
+            }));
+          } catch {
+            // Bookkeeping only; the card's answer is what the caller acts on.
+          }
+        }
         await noteError(topupId, error);
         if (error instanceof CardError && error.sw === 0x6a84) {
           throw new TopUpError('card_full');

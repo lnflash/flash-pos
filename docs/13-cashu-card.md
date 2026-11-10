@@ -444,9 +444,21 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
 3. `canTopUp` refuses before any quote: a locked card (its `LOAD_PROOF`
    answers `6986`), a blocked PIN, a card not in sats, and fewer free slots
    than pieces once the card's owed change (above) and the pieces of its
-   other `paid` or `loading` top-ups not yet on it have their slots, so
-   nobody pays for a load that cannot land beside one already paid. A full
-   card is "This card is full", never rounded to fewer pieces.
+   other `waiting`, `paid` or `loading` top-ups not yet on it have their
+   slots (`reservedPiecesFor`), so nobody pays for a load that cannot land
+   beside another. An unpaid quote holds its slots until the mint reports it
+   paid or expired: `startTopUp` first checks this card's `waiting` quotes
+   with the mint (best effort; a check that fails leaves the stored states),
+   so an abandoned quote past its expiry frees its slots at once; the checks
+   run at the same time with a 5 s deadline each. A quote the mint gave no
+   expiry holds its slots for 24 hours after it was made
+   (`NULL_EXPIRY_HOLD_MS`), then stops counting but stays `waiting`, so a
+   later payment is still honoured. When only an unpaid quote stands in the
+   way, the refusal is "An unpaid top-up holds this card's room", not "This
+   card is full". A piece the card definitely refused (any card status word
+   but `6A94`) is counted free again; only a lost link keeps it as possibly
+   on the card (ENG-856). A full card is "This card is full", never rounded
+   to fewer pieces.
 4. `startTopUp` asks for a bolt11 mint quote at `CardRecord.mint`, with no
    fallback to the merchant's mint, and records it `waiting` in
    `@cashu_topups` before the screen draws the QR (`LIGHTNING:` and the
@@ -480,6 +492,7 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
 8. Each piece goes on with `LOAD_PROOF` and the mint's DLEQ, its attempt
    counted and the piece marked `sent` before the APDU goes out. `6A94` (already on the card) counts as
    loaded; `6A84` is "This card is full"; a lost link is "Not loaded yet".
+   A refusal clears the piece's `sent` mark; a lost link keeps it.
    Either way the entry keeps the remainder and the next tap loads only that.
    When every piece is on, the entry is `loaded` and the screen shows
    "Loaded N sats" and a load id (the quote id's first 8 characters). A
