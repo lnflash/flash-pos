@@ -423,6 +423,93 @@ terminal. Only `written` entries are ever evicted, and unknown fields from a
 newer build ride through a write untouched. P2PK change for a card that never
 returns stays in the store; nothing else can spend it.
 
+## Top-up (ENG-853)
+
+`CashuCardBalance` offers **Top up card** beside **Charge this card**. The POS
+phone does what the Fedimint POS's till does: it takes a Lightning payment
+for the card at the card's own mint and puts the minted pieces on the card.
+The merchant's money, the settlement queue and `pendingExposure` are never
+touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
+`src/screens/CashuCardTopUp.tsx`, the quote and mint calls in
+`src/services/cashuMint.ts`).
+
+**Flow.**
+
+1. The keypad's balance read adds a fail-soft `GET_CARD` (the card's mint and
+   unit) and the top-ups this phone holds for the card. Neither failure
+   vetoes the read; a card whose record did not read is offered no top-up.
+2. The merchant types sats. `roundTopUp` rounds to the nearest amount of at
+   most three power-of-two pieces in [1, 100,000], a tie going to the lower
+   one (100,000 becomes 99,328 = 65,536 + 32,768 + 1,024).
+3. `canTopUp` refuses before any quote: a locked card (its `LOAD_PROOF`
+   answers `6986`), a blocked PIN, a card not in sats, and fewer free slots
+   than pieces once the card's owed change (above) and the pieces of its
+   other `paid` or `loading` top-ups not yet on it have their slots, so
+   nobody pays for a load that cannot land beside one already paid. A full
+   card is "This card is full", never rounded to fewer pieces.
+4. `startTopUp` asks for a bolt11 mint quote at `CardRecord.mint`, with no
+   fallback to the merchant's mint, and records it `waiting` in
+   `@cashu_topups` before the screen draws the QR (`LIGHTNING:` and the
+   invoice, upper case). A record that will not write shows no QR.
+5. The screen polls the quote every 1.5 s while the app is in front, and at
+   once on return. The mint's state is the truth: PAID or ISSUED is `paid`;
+   only an UNPAID quote past its expiry is `expired`. Cancel never expires
+   an entry, so a payment made after Cancel is honoured, and the card's next
+   balance read promotes it (one quote check on arrival).
+6. The card's tap (`loadTopUp`, one card session): the card must be the one
+   the top-up was made for, at the same mint (case and trailing slash
+   aside), or nothing is written ("Not a card for this till"). A PIN card
+   verifies its PIN before any `LOAD_PROOF`, even when the change grant would
+   let one through; a wrong PIN leaves the top-up `paid` and says how many
+   tries are left. As on the charge, an exact four-digit PIN commits after
+   700 ms; a longer one waits for "Load", so a pause mid-entry never sends a
+   short PIN. The room is checked again against what is still to load,
+   leaving out a piece whose `LOAD_PROOF` was already sent (it may be on the
+   card with its answer lost; its resend answers `6A94`, and `6A84` still
+   catches a real shortfall).
+7. The outputs are made and **kept before the mint is asked to sign them**:
+   per piece, a random 32-byte nonce, the format-4 secret
+   (`buildCardSigAllSecret`, undated), blinded in the active sat keyset with
+   keys for every piece. The entry goes `loading` with the outputs and the
+   keyset, then the mint signs (NUT-04) and the signatures are kept as soon
+   as they arrive, each checked as the charge's are (amount, keyset, DLEQ
+   required) and unblinded. An answer lost after the mint accepted is found
+   again with NUT-09 restore of the same outputs, and an ISSUED quote with
+   nothing kept is restored, never minted onto new outputs: the same top-up
+   is never minted twice.
+8. Each piece goes on with `LOAD_PROOF` and the mint's DLEQ, its attempt
+   counted and the piece marked `sent` before the APDU goes out. `6A94` (already on the card) counts as
+   loaded; `6A84` is "This card is full"; a lost link is "Not loaded yet".
+   Either way the entry keeps the remainder and the next tap loads only that.
+   When every piece is on, the entry is `loaded` and the screen shows
+   "Loaded N sats" and a load id (the quote id's first 8 characters). A
+   `loaded` entry answers without touching the card.
+
+**States.** `waiting` (quoted, not paid) → `paid` → `loading` (outputs kept,
+pieces going on) → `loaded`; or `waiting` → `expired`. The store copies the
+owed-change store's rules: its own key, an unreadable store throws (never
+reads as empty), corrupt bytes are quarantined under
+`@cashu_topups_corrupt:<hash>` before anything overwrites them, a `{v,
+entries}` envelope, a serialising write, and a soft cap that evicts only
+`loaded` and `expired` entries.
+
+**Decisions** (ENG-853, owner-approved):
+
+- (a) The rounded amount stays at or under 100,000 sats, and a card with
+  fewer free slots than pieces is refused, not given fewer pieces.
+- (b) The room check subtracts the card's owed-change pieces, so a top-up
+  never takes change's slots.
+- (c) A paid top-up that can never load has no refund path here (Known gaps).
+- (d) No merchant reporting in v1: no history, settlement record or print.
+- (e) Three power-of-two pieces break the covering ladder (`targetPieces`,
+  ENG-700/701), so the card has fewer exact offline amounts until the
+  holder's app reshapes it. The pieces are not picked from the ladder.
+- (f) The mint quote's state is the truth, never the local clock.
+
+**A paid top-up must be loaded on the phone that created it.** The quote and
+the kept outputs live only in that phone's secure storage; the card's next
+balance read on that phone shows "Load waiting top-up · N sats".
+
 ## Known gaps
 
 - **Protocol 2.0 on silicon.** The 2.0 card layer (ENG-674) is proven
@@ -434,6 +521,13 @@ returns stays in the store; nothing else can spend it.
   fails as not paid, as a lost burn did on 0.x. The burn is the last thing
   the card's commit does, so this needs the card to leave in the few
   milliseconds between the commit and the answer.
+- **A paid top-up that can never load (ENG-853).** A card lost, PIN-blocked
+  or locked after the holder paid strands the top-up: there is no refund or
+  melt-back path on the phone, and the minted pieces are locked to that
+  card. The quote and its outputs also live only on the phone that made
+  them, so an uninstall, a data clear or another POS phone strands it too.
+  Whoever holds the quote id could mint it (NUT-20 is not used); it never
+  leaves the phone. Follow-up ticket filed at merge.
 - **No till-held owner key.** The till never holds an owner key: owner
   commands (`SET_OWNER`, `ALLOW_LOAD`, `SET_LIMIT`, `REFRESH`) are the
   holder's phone's (flash-mobile).

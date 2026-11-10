@@ -1,0 +1,58 @@
+# ENG-853: a paid top-up left at the card's tap ("Later") waits on the
+# phone. The card's next balance read offers it ("Load waiting top-up"),
+# and it loads from there: 4 + 1 beside the 8, each piece once.
+appId: com.flash.pos
+name: 'eCash card: a paid top-up waits for the next tap'
+tags:
+  - flashcard
+---
+- runFlow: common/login.yaml
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '8'
+- tapOn:
+    id: 'balance-topup'
+- tapOn:
+    id: 'pin-key-5'
+- tapOn:
+    id: 'topup-create'
+- extendedWaitUntil:
+    visible:
+      id: 'topup-paid'
+      text: 'Hold the card to load 5 sats'
+    timeout: 60000
+- tapOn:
+    id: 'topup-later'
+# Nothing went on the card.
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8],"unspentLabels":["P8"]}'
+- runFlow:
+    file: common/balance.yaml
+    env:
+      SATS: '8'
+- extendedWaitUntil:
+    visible:
+      id: 'balance-topup-waiting'
+      text: 'Load waiting top-up · 5 sats'
+    timeout: 30000
+- tapOn:
+    id: 'balance-topup-waiting'
+- extendedWaitUntil:
+    visible:
+      id: 'topup-paid'
+    timeout: 30000
+- tapOn:
+    id: 'topup-load'
+- runFlow: common/enter-pin.yaml
+- extendedWaitUntil:
+    visible:
+      id: 'topup-loaded'
+      text: 'Loaded 5 sats'
+    timeout: 60000
+- runScript:
+    file: scripts/assert-state.js
+    env:
+      EXPECT: '{"unspent":[8,4,1],"unspentLabels":["P8"]}'

@@ -440,7 +440,7 @@ the `flashpos://` scheme is registered only in the Debug configuration
 ### What the flows prove
 
 Every flow logs in on SAT (a sub-cent SAT bill skips the BTCPay invoice and
-opens the card charge directly), charges a 3-sat bill against an 8-sat piece
+opens the card charge directly), every charge flow charges a 3-sat bill against an 8-sat piece
 (change 5 = 4 + 1, made by the card itself) and, after the UI step, reads the
 card's own state from cardsim (`scripts/assert-state.js`): copy on screen can
 lie about money, slots cannot. Every card is set up as a holder's phone sets
@@ -459,6 +459,8 @@ card's clock never moves under a flow.
 | `lost-load-answer` | 8, PIN, `dropLoad=1` | a LOAD whose answer is lost lands once, never twice; the balance tap after the charge (the card's change grant) adds the 1 sat still owed with no PIN: "5 sats", "Change added · 1 sat" |
 | `limit-refusal` | 8, PIN, a daily limit of 2 | refused before the PIN pad: "This card has reached today's spending limit."; the 8 stays unspent |
 | `back-during-change-write` | 8, PIN, `holdLoad=4000` | the edge swipe mid change-write is held: the charge screen stays, finishes on screen and hands off to Success; the card has one burn and 4 + 1 written once |
+| `top-up` | 8, PIN | Top up card → 5 sats → Create invoice (the local FakeWallet pays it) → the PIN → "Loaded 5 sats"; the card holds 8 + 4 + 1 (ENG-853) |
+| `top-up-waiting` | 8, PIN | the same, left at the card's tap ("Later"): nothing on the card; the next balance read shows "Load waiting top-up · 5 sats", which loads it: 8 + 4 + 1, each piece once |
 
 **A change write that fails after the swap ends the charge as paid
 (ENG-642).** The swap has settled the bill by then, so `owed-change-next-tap`

@@ -323,8 +323,11 @@ jobs:
             exit 1
           fi
 
+      # Ten flows at about 2.75 min each (run 42769053809: eight in 22 min),
+      # with room for a retried flow; the job's 75 min still covers the ~16
+      # min of set-up before this step (ENG-853 added the two top-up flows).
       - name: Run the eCash card flows
-        timeout-minutes: 40
+        timeout-minutes: 50
         env:
           FLASH_POS_E2E_USERNAME: ${{ vars.FLASH_POS_E2E_USERNAME }}
         run: |
