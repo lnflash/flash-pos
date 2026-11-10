@@ -37,26 +37,30 @@ export const COLOR = {
 } as const;
 
 /**
- * The eCash card: Flash Card v2 "Bearer" — matte near-black, one Bitcoin
- * orange accent, a satin-gold chip, and no green (Flash green is the app's).
- * The face itself is drawn by cardArtV2.tsx, which is shared byte-for-byte
- * with flash-mobile and owns these values (a test pins this copy to it);
- * the stage uses them for the card's container, overlays and finale dim.
+ * The eCash card: the Cashu Card face — a lime-to-green field, the brand's
+ * deep-green mark, lockup and caption, and a gold chip. The face itself is
+ * drawn by cardArtV2.tsx, which is shared byte-for-byte with flash-mobile
+ * and owns these values (a test pins this copy to it); the stage uses them
+ * for the card's container, overlays and finale dim.
  */
 export const CARD = {
-  base: '#080a0d',
-  orange: '#f97316',
-  goldShadow: '#805711',
-  goldLow: '#a88232',
-  goldLight: '#bc933a',
-  goldMid: '#b6862f',
-  goldDark: '#a5761c',
-  chipLine: '#8a6524',
-  lift: '#d8b8ff',
-  watermark: '#f5c96b',
-  nfcGrey: '#8b8f96',
-  /** The masked id: 60 % white, visibly quieter than the FLASH wordmark. */
-  id: 'rgba(255,255,255,0.6)',
+  base: '#9fc985',
+  lime: '#ddf5a4',
+  limeMid: '#c7e698',
+  green: '#85b879',
+  greenDeep: '#558d66',
+  markInk: '#10271e',
+  ink: '#1d3d29',
+  inkSoft: '#557a62',
+  goldLight: '#f3e8ae',
+  goldMid: '#d2bb6a',
+  goldDark: '#a98b3d',
+  /**
+   * The masked id: the mark's ink at full opacity. It sits on the greenDeep
+   * corner, where the caption's ink at 60 % measured 1.94:1; markInk is
+   * 4.05:1 there, the most a card ink reaches.
+   */
+  id: '#10271e',
   /** The finale dim recedes to black, never to teal. */
   dim: '#000000',
   shadow: '#000000',
@@ -223,7 +227,7 @@ function elevation(
 }
 
 export const ELEVATION = {
-  /** A neutral shadow under the near-black card (ink's is teal-tinted). */
+  /** A neutral shadow under the card (ink's is teal-tinted). */
   card: elevation(12, {opacity: 0.22, radius: 18, y: 12}, CARD.shadow),
   sheet: elevation(16, {opacity: 0.12, radius: 16, y: -4}),
   badge: elevation(6, {opacity: 0.16, radius: 8, y: 3}),
