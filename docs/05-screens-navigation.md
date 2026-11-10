@@ -227,6 +227,60 @@ type RewardsSuccessParams = {
 };
 ```
 
+### 10. CashuCardBalance Screen
+
+**File**: `src/screens/CashuCardBalance.tsx`  
+**Route**: `CashuCardBalance` (header "Card Balance")  
+**Reached from**: the keypad's card read (`useKeypadCardReader`)
+
+**Purpose**: what an eCash card (protocol 2.0) itself reports: balance,
+slots, PIN state, and change from an earlier charge still owed to it.
+
+**Key Features**:
+- "Charge this card" (back to the keypad) and "Top up card" (ENG-853),
+  disabled with a caption when the card's mint was not read, the card is
+  locked, its PIN is blocked, it is not in sats, or it has no free slot
+  beside its owed change
+- One gold "Load waiting top-up · N sats" per paid top-up this phone holds
+  for the card ("Top-up invoice open" for one not yet paid); a quote check
+  on arrival promotes a payment made after Cancel
+
+**Navigation Parameters**:
+```typescript
+type CashuCardBalanceParams = {
+  summary: CardSummary;
+  owedChangeSat?: number;
+  changeAddedSat?: number;
+  cardMint?: string; // GET_CARD; absent: no top-up
+  cardUnit?: number;
+  waitingTopUps?: WaitingTopUp[];
+};
+```
+
+### 11. CashuCardTopUp Screen
+
+**File**: `src/screens/CashuCardTopUp.tsx`  
+**Route**: `CashuCardTopUp` (header "Top up"), replacing CashuCardBalance
+
+**Purpose**: top up the card at its own mint (docs/13-cashu-card.md, Top-up).
+
+**Phases**: amount (a sats pad, the rounded amount and its fiat) → invoice
+(its own QR, "Expires in m:ss", polled every 1.5 s) → paid ("Hold the card to
+load N sats"; a PIN card enters its PIN first) → loading (navigation held)
+→ done ("Loaded N sats", the load id). Every stop shows the Fedimint POS's
+copy; "Tap card again" returns to the paid step, "New invoice" makes a new
+quote after one expired.
+
+**Navigation Parameters**:
+```typescript
+type CashuCardTopUpParams = {
+  summary: CardSummary;
+  cardMint: string;
+  cardUnit?: number;
+  resume?: string; // a top-up this phone holds (its quote id)
+};
+```
+
 ## Navigation Configuration
 
 ### Tab Bar Configuration
