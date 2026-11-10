@@ -20,6 +20,7 @@ import {
   CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
+  CashuCardTopUp,
   ChargeAnimationPreview,
   RefusalLog,
 } from '../screens';
@@ -115,6 +116,16 @@ const Root = () => {
         options={{
           headerShown: true,
           headerTitle: 'Card Balance',
+          animation: 'fade_from_bottom',
+        }}
+      />
+      {/* ENG-853: top up the card the balance read, at its own mint. */}
+      <Stack.Screen
+        name="CashuCardTopUp"
+        component={CashuCardTopUp}
+        options={{
+          headerShown: true,
+          headerTitle: 'Top up',
           animation: 'fade_from_bottom',
         }}
       />

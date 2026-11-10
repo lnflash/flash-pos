@@ -16,6 +16,7 @@ import CashuCardBalance from './CashuCardBalance';
 import CashuCardCharge from './CashuCardCharge';
 import CashuCardDebug from './CashuCardDebug';
 import CashuCardSpend from './CashuCardSpend';
+import CashuCardTopUp from './CashuCardTopUp';
 import ChargeAnimationPreview from './ChargeAnimationPreview';
 import RefusalLog from './RefusalLog';
 
@@ -38,6 +39,7 @@ export {
   CashuCardCharge,
   CashuCardDebug,
   CashuCardSpend,
+  CashuCardTopUp,
   ChargeAnimationPreview,
   RefusalLog,
 };

@@ -1,6 +1,6 @@
 import React from 'react';
 import {StyleSheet} from 'react-native';
-import {fireEvent, render} from '@testing-library/react-native';
+import {act, fireEvent, render} from '@testing-library/react-native';
 
 import CashuCardBalance from '../../src/screens/CashuCardBalance';
 import type {CardSummary} from '../../src/services/cashuCard';
@@ -8,6 +8,15 @@ import type {CardSummary} from '../../src/services/cashuCard';
 jest.mock('react-native-svg', () => require('../../__mocks__/svgStub'));
 
 const mockGoBack = jest.fn();
+const mockReplace = jest.fn();
+const mockRefreshWaiting = jest.fn();
+const mockOwedPieces = jest.fn();
+
+jest.mock('../../src/services/cashuTopUp', () => ({
+  ...jest.requireActual('../../src/services/cashuTopUp'),
+  refreshWaitingTopUps: (...args: unknown[]) => mockRefreshWaiting(...args),
+  owedPiecesFor: (...args: unknown[]) => mockOwedPieces(...args),
+}));
 const mockSatsToCurrency = jest.fn();
 const mockPrice = {loading: false};
 
@@ -50,11 +59,11 @@ const SUMMARY: CardSummary = {
 
 const renderScreen = (
   summary: CardSummary = SUMMARY,
-  extra: {owedChangeSat?: number; changeAddedSat?: number} = {},
+  extra: Partial<RootStackType['CashuCardBalance']> = {},
 ) =>
   render(
     <CashuCardBalance
-      navigation={{goBack: mockGoBack} as never}
+      navigation={{goBack: mockGoBack, replace: mockReplace} as never}
       route={{
         key: 'k',
         name: 'CashuCardBalance',
@@ -66,6 +75,8 @@ const renderScreen = (
 beforeEach(() => {
   jest.clearAllMocks();
   mockPrice.loading = false;
+  mockRefreshWaiting.mockResolvedValue([]);
+  mockOwedPieces.mockResolvedValue(0);
   mockSatsToCurrency.mockImplementation((sats: number) => ({
     convertedCurrencyAmount: sats / 1000,
     formattedCurrency: `$${(sats / 1000).toFixed(2)}`,
@@ -225,5 +236,125 @@ describe('CashuCardBalance', () => {
     fireEvent.press(getByText('Charge this card'));
 
     expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  describe('top up (ENG-853)', () => {
+    const MINT = 'https://card.mint';
+    const flush = () => act(async () => {});
+
+    it('offers both: Charge this card goes back, Top up card opens the top-up at the card mint', async () => {
+      const {getByTestId, getByText} = renderScreen(SUMMARY, {
+        cardMint: MINT,
+        cardUnit: 0,
+      });
+      await flush();
+
+      expect(getByText('Charge this card')).toBeTruthy();
+      fireEvent.press(getByTestId('balance-charge'));
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+
+      fireEvent.press(getByTestId('balance-topup'));
+      expect(mockReplace).toHaveBeenCalledWith('CashuCardTopUp', {
+        summary: SUMMARY,
+        cardMint: MINT,
+        cardUnit: 0,
+      });
+      expect(mockRefreshWaiting).toHaveBeenCalledWith(SUMMARY.pubkey);
+    });
+
+    it("is disabled, with a caption, when the card's mint was not read", async () => {
+      const {getByTestId} = renderScreen(SUMMARY);
+      await flush();
+
+      expect(getByTestId('balance-topup').props.accessibilityState).toEqual({
+        disabled: true,
+      });
+      expect(getByTestId('balance-topup-refusal').props.children).toBe(
+        "Can't read the card's mint",
+      );
+      fireEvent.press(getByTestId('balance-topup'));
+      expect(mockReplace).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a locked card', {locked: true}, 'This card is locked'],
+      ['a blocked PIN', {pinState: 'blocked'}, "This card's PIN is blocked"],
+      ['a full card', {empty: 0}, 'This card is full'],
+    ] as const)('is disabled for %s', async (_, info, caption) => {
+      const {getByTestId} = renderScreen(
+        {...SUMMARY, info: {...SUMMARY.info, ...info}},
+        {cardMint: MINT},
+      );
+      await flush();
+
+      expect(getByTestId('balance-topup').props.accessibilityState).toEqual({
+        disabled: true,
+      });
+      expect(getByTestId('balance-topup-refusal').props.children).toBe(caption);
+    });
+
+    it('is disabled for a card not in sats', async () => {
+      const {getByTestId} = renderScreen(SUMMARY, {
+        cardMint: MINT,
+        cardUnit: 1,
+      });
+      await flush();
+      expect(getByTestId('balance-topup-refusal').props.children).toBe(
+        "This card isn't in sats",
+      );
+    });
+
+    it("keeps the owed change's slots: the last free slot owed is a full card", async () => {
+      mockOwedPieces.mockResolvedValue(1);
+      const {getByTestId} = renderScreen(
+        {...SUMMARY, info: {...SUMMARY.info, empty: 1}},
+        {cardMint: MINT},
+      );
+      await flush();
+      expect(mockOwedPieces).toHaveBeenCalledWith(SUMMARY.pubkey);
+      expect(getByTestId('balance-topup-refusal').props.children).toBe(
+        'This card is full',
+      );
+    });
+
+    it('shows one gold button per waiting top-up, which resumes it', async () => {
+      const waiting = [{topupId: 'q-paid', amountSat: 5, state: 'paid'}];
+      mockRefreshWaiting.mockResolvedValue(waiting);
+      const {getByTestId, getByText} = renderScreen(SUMMARY, {
+        cardMint: MINT,
+        waitingTopUps: waiting as never,
+      });
+      await flush();
+
+      expect(getByText('Load waiting top-up · 5 sats')).toBeTruthy();
+      fireEvent.press(getByTestId('balance-topup-waiting'));
+      expect(mockReplace).toHaveBeenCalledWith('CashuCardTopUp', {
+        summary: SUMMARY,
+        cardMint: MINT,
+        cardUnit: undefined,
+        resume: 'q-paid',
+      });
+    });
+
+    it('promotes a payment that landed after Cancel, on arrival', async () => {
+      mockRefreshWaiting.mockResolvedValue([
+        {
+          topupId: 'q-late',
+          amountSat: 8,
+          state: 'paid',
+          cardPubkey: SUMMARY.pubkey,
+        },
+      ]);
+      const {getByText, queryByText} = renderScreen(SUMMARY, {
+        cardMint: MINT,
+        waitingTopUps: [
+          {topupId: 'q-late', amountSat: 8, state: 'waiting'},
+        ] as never,
+      });
+      expect(getByText('Top-up invoice open · 8 sats')).toBeTruthy();
+      await flush();
+      expect(getByText('Load waiting top-up · 8 sats')).toBeTruthy();
+      expect(queryByText(/invoice open/)).toBeNull();
+    });
   });
 });

@@ -1,4 +1,4 @@
-import React, {useCallback} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {Dimensions} from 'react-native';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
@@ -7,6 +7,7 @@ import {StackScreenProps} from '@react-navigation/stack';
 // Leaf import, like CashuCardDebug: the `../components` barrel pulls in the
 // printer and currency-picker modules, which this screen has no need of.
 import PrimaryButton from '../components/buttons/PrimaryButton';
+import SecondaryButton from '../components/buttons/SecondaryButton';
 import {
   CARD_ART,
   CARD_PALETTE,
@@ -18,6 +19,14 @@ import {useRealtimePrice} from '../hooks';
 
 // services
 import type {CardInfo} from '../services/cashuCard';
+import {
+  canTopUp,
+  owedPiecesFor,
+  refreshWaitingTopUps,
+  toWaitingTopUp,
+  topUpErrorCopy,
+  type WaitingTopUp,
+} from '../services/cashuTopUp';
 
 // utils
 import {formatSatAmount} from '../utils/satCurrency';
@@ -30,7 +39,14 @@ const CARD_W = Math.min(CARD_ART.width, screenWidth - 40);
 const CARD_H = (CARD_W * CARD_ART.height) / CARD_ART.width;
 const CARD_RADIUS = (CARD_ART.radius * CARD_W) / CARD_ART.width;
 
-const buttonStyle = {marginTop: 'auto' as const};
+const rowButtonStyle = {flex: 1, width: undefined, marginBottom: 0};
+const rowGap = {width: 12};
+
+/** A waiting top-up's line: paid ones load on the card's tap, open ones show the invoice. */
+const waitingLabel = (t: WaitingTopUp): string =>
+  t.state === 'waiting'
+    ? `Top-up invoice open · ${formatSatAmount(t.amountSat)}`
+    : `Load waiting top-up · ${formatSatAmount(t.amountSat)}`;
 
 const PIN_LABEL: Record<CardInfo['pinState'], string> = {
   unset: 'Not set',
@@ -46,7 +62,8 @@ const PIN_LABEL: Record<CardInfo['pinState'], string> = {
  * what the card itself reported — its count of unspent slot amounts.
  */
 const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
-  const {summary, owedChangeSat, changeAddedSat} = route.params;
+  const {summary, owedChangeSat, changeAddedSat, cardMint, cardUnit} =
+    route.params;
   const {satsToCurrency, loading} = useRealtimePrice();
   const {info} = summary;
 
@@ -72,6 +89,48 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
   ].filter((note): note is {testID: string; text: string} => note !== null);
 
   const onCharge = useCallback(() => navigation.goBack(), [navigation]);
+
+  // ENG-853: top-ups this phone holds for the card, and the owed change
+  // whose slots a top-up may not take. One quote check on arrival promotes
+  // a payment that landed after the invoice was cancelled; non-blocking.
+  const [waiting, setWaiting] = useState<WaitingTopUp[]>(
+    route.params.waitingTopUps ?? [],
+  );
+  const [owedPieces, setOwedPieces] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    refreshWaitingTopUps(summary.pubkey)
+      .then(list => live && setWaiting(list.map(toWaitingTopUp)))
+      .catch(() => {});
+    owedPiecesFor(summary.pubkey)
+      .then(n => live && setOwedPieces(n))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [summary.pubkey]);
+
+  const refusal = !cardMint
+    ? 'no_mint'
+    : canTopUp(summary, owedPieces ?? 0, {unit: cardUnit ?? 0});
+
+  const onTopUp = useCallback(() => {
+    if (!cardMint) {
+      return;
+    }
+    navigation.replace('CashuCardTopUp', {summary, cardMint, cardUnit});
+  }, [navigation, summary, cardMint, cardUnit]);
+
+  const onWaiting = useCallback(
+    (t: WaitingTopUp) =>
+      navigation.replace('CashuCardTopUp', {
+        summary,
+        cardMint: cardMint ?? '',
+        cardUnit,
+        resume: t.topupId,
+      }),
+    [navigation, summary, cardMint, cardUnit],
+  );
 
   return (
     <Wrapper>
@@ -115,11 +174,38 @@ const CashuCardBalance: React.FC<Props> = ({navigation, route}) => {
         </ChangeNote>
       ))}
 
-      <PrimaryButton
-        btnText="Charge this card"
-        btnStyle={buttonStyle}
-        onPress={onCharge}
-      />
+      <Bottom>
+        {waiting.map(t => (
+          <WaitingButton
+            key={t.topupId}
+            testID="balance-topup-waiting"
+            accessibilityRole="button"
+            onPress={() => onWaiting(t)}>
+            <WaitingText>{waitingLabel(t)}</WaitingText>
+          </WaitingButton>
+        ))}
+        {refusal && (
+          <TopUpCaption testID="balance-topup-refusal">
+            {topUpErrorCopy(refusal).title}
+          </TopUpCaption>
+        )}
+        <ButtonRow>
+          <SecondaryButton
+            testID="balance-charge"
+            btnText="Charge this card"
+            btnStyle={rowButtonStyle}
+            onPress={onCharge}
+          />
+          <RowGap style={rowGap} />
+          <PrimaryButton
+            testID="balance-topup"
+            btnText="Top up card"
+            btnStyle={rowButtonStyle}
+            disabled={refusal !== null}
+            onPress={onTopUp}
+          />
+        </ButtonRow>
+      </Bottom>
     </Wrapper>
   );
 };
@@ -206,4 +292,42 @@ const Caption = styled.Text`
   font-family: 'Outfit-Regular';
   color: #747474;
   padding: 0 0 6px 0;
+`;
+
+const Bottom = styled.View`
+  width: 100%;
+  margin-top: auto;
+`;
+
+const ButtonRow = styled.View`
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 12px;
+`;
+
+const RowGap = styled.View``;
+
+/** A paid top-up waiting for this card: gold, so the merchant sees it first. */
+const WaitingButton = styled.TouchableOpacity`
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 16px;
+  border-radius: 100px;
+  background-color: #f5c242;
+  align-items: center;
+`;
+
+const WaitingText = styled.Text`
+  font-size: 16px;
+  font-family: 'Outfit-SemiBold';
+  color: #212121;
+`;
+
+const TopUpCaption = styled.Text`
+  font-size: 13px;
+  font-family: 'Outfit-Regular';
+  color: #747474;
+  text-align: center;
+  margin-top: 8px;
 `;

@@ -9,6 +9,7 @@ type Props = {
   iconColor?: string;
   textStyle?: TextStyle;
   btnStyle?: ViewStyle;
+  testID?: string;
   onPress: () => void;
 };
 
@@ -20,10 +21,15 @@ const SecondaryButton: React.FC<Props> = ({
   iconColor,
   textStyle,
   btnStyle,
+  testID,
   onPress,
 }) => {
   return (
-    <Wrapper style={btnStyle} onPress={onPress} activeOpacity={0.5}>
+    <Wrapper
+      testID={testID}
+      style={btnStyle}
+      onPress={onPress}
+      activeOpacity={0.5}>
       {icon && (
         <Icon
           name={icon}

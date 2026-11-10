@@ -9,6 +9,7 @@ type Props = {
   iconColor?: string;
   textStyle?: TextStyle;
   btnStyle?: ViewStyle;
+  testID?: string;
   disabled?: boolean;
   onPress: () => void;
 };
@@ -22,10 +23,12 @@ const PrimaryButton: React.FC<Props> = ({
   iconColor = '#fff',
   textStyle,
   btnStyle,
+  testID,
   disabled = false,
   onPress,
 }) => (
   <Wrapper
+    testID={testID}
     style={disabled ? [btnStyle, disabledStyle] : btnStyle}
     onPress={onPress}
     disabled={disabled}
