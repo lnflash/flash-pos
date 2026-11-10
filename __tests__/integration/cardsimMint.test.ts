@@ -24,7 +24,10 @@ import {
   pointFromHex,
   unblindSignature,
 } from '@cashu/cashu-ts';
+import {secp256k1} from '@noble/curves/secp256k1.js';
+import {sha256} from '@noble/hashes/sha256';
 import {bytesToHex, randomBytes, utf8ToBytes} from '@noble/hashes/utils';
+import {bech32} from 'bech32';
 
 import {
   APPLET_AID,
@@ -54,6 +57,7 @@ import {
   listTopUps,
   loadTopUp,
   pollTopUp,
+  refundTopUp,
   startTopUp,
   waitingTopUpsForCard,
   __resetTopUpStore,
@@ -154,6 +158,44 @@ async function mintToCard(cardKey: string, amounts: number[]) {
       };
     }),
   };
+}
+
+/**
+ * A signed bolt11 for `sat` that no mint issued: what an outside wallet hands
+ * the holder. FakeWallet (FAKEWALLET_BRR) pays any invoice, and one of the
+ * mint's own would be paid by FakeWallet itself before the melt could.
+ */
+function outsideInvoice(sat: number): string {
+  const hrp = `lnbc${sat * 10}n`;
+  const num = (value: number, words: number) =>
+    Array.from(
+      {length: words},
+      (_, i) => Math.floor(value / 32 ** (words - 1 - i)) % 32,
+    );
+  const tag = (type: number, data: number[]) => [
+    type,
+    ...num(data.length, 2),
+    ...data,
+  ];
+  const words = [
+    ...num(Math.floor(Date.now() / 1000), 7),
+    ...tag(1, bech32.toWords(randomBytes(32))), // p: payment hash
+    ...tag(16, bech32.toWords(randomBytes(32))), // s: payment secret
+    ...tag(13, bech32.toWords(utf8ToBytes('ENG-855 refund'))), // d
+    ...tag(6, num(3600, 2)), // x: expiry
+  ];
+  // The signed message: the hrp, then the words as bytes, zero-padded.
+  const bits = words.map(w => w.toString(2).padStart(5, '0')).join('');
+  const padded = bits.padEnd(Math.ceil(bits.length / 8) * 8, '0');
+  const data = Uint8Array.from(padded.match(/.{8}/g)!, b => parseInt(b, 2));
+  const msg = sha256(Uint8Array.from([...utf8ToBytes(hrp), ...data]));
+  const sig = secp256k1.sign(msg, randomBytes(32), {
+    prehash: false,
+    format: 'recovered',
+  });
+  // noble puts the recovery byte first; bolt11 wants r || s || recovery.
+  const rsv = Uint8Array.from([...sig.slice(1), sig[0]]);
+  return bech32.encode(hrp, [...words, ...bech32.toWords(rsv)], 2048);
 }
 
 run('the 2.1 card layer against cardsim and a Nutshell 0.20.3 mint', () => {
@@ -714,5 +756,87 @@ run('the card top-up (ENG-853) against cardsim and a Nutshell mint', () => {
     expect(settled.status).toBe('settled');
     const till = await listSettledProofs();
     expect(till.reduce((t, p) => t + p.amount, 0)).toBe(13);
+  });
+
+  it("a paid top-up is refunded to the holder's invoice at the card's mint, behind the PIN, never touching the card (ENG-855)", async () => {
+    const cardKey = ((await bridge('/reset', {})) as {pubkey: string}).pubkey;
+    const {pieces} = await mintToCard(cardKey, [8]);
+    await bridge('/fixture', {
+      pin: '1234',
+      mint: MINT_URL,
+      owner: true,
+      proofs: pieces,
+    });
+    const summary = await readCard(transceive);
+    const record = await getCard(transceive);
+    const entry = await startTopUp({
+      summary,
+      cardMint: record.mint,
+      unit: record.unit,
+      owedPieces: 0,
+      sat: 64,
+    });
+    let state = entry.state;
+    for (let i = 0; i < 50 && state === 'waiting'; i++) {
+      state = (await pollTopUp(entry.topupId))!.state;
+      if (state === 'waiting') {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    expect(state).toBe('paid');
+
+    // The holder's invoice, from an outside wallet.
+    const invoice = outsideInvoice(32);
+
+    // A wrong PIN stops it before the mint is asked anything.
+    await expect(
+      refundTopUp({
+        topupId: entry.topupId,
+        destination: invoice,
+        shownNetSat: 32,
+        transceive,
+        pin: '9999',
+      }),
+    ).rejects.toMatchObject({kind: 'wrong_pin'});
+    expect((await listTopUps())[0].state).toBe('paid');
+
+    const done = await refundTopUp({
+      topupId: entry.topupId,
+      destination: `lightning:${invoice.toUpperCase()}`,
+      shownNetSat: 32,
+      transceive,
+      pin: '1234',
+    });
+    expect(done.amountSat).toBe(32);
+
+    const after = (await listTopUps()).find(e => e.topupId === entry.topupId)!;
+    expect(after.state).toBe('refunded');
+    expect(after.minted).toBeUndefined();
+    expect(after.refund!.meltSent).toBe(true);
+    expect(after.refund).toHaveProperty('preimage', done.preimage);
+    expect(after.refund!.proofs!.reduce((t, p) => t + p.amount, 0)).toBe(64);
+    // What the reserve did not use came back to the entry, never the till.
+    expect(after.refund!.changeSat).toBeGreaterThan(0);
+    expect(after.refund!.changeSat).toBe(
+      (after.refund!.change ?? []).reduce((t, p) => t + p.amount, 0),
+    );
+    expect(await listSettledProofs()).toEqual([]);
+    expect(await waitingTopUpsForCard(cardKey)).toEqual([]);
+
+    // The melt is PAID at the mint, and the card holds only what it had.
+    const melt = await new Mint(MINT_URL!).checkMeltQuoteBolt11(
+      after.refund!.meltQuoteId,
+    );
+    expect(melt.state).toBe('PAID');
+    expect(melt.request).toBe(invoice);
+    // What the mint reports of the payment is what the entry keeps
+    // (FakeWallet 0.20.3 reports no preimage for an outside invoice).
+    expect(done.preimage).toBe(melt.payment_preimage ?? null);
+    expect((await readCard(transceive)).balance).toBe(8);
+
+    // The quote is spent: a load of it is refused without the card.
+    await expect(
+      loadTopUp({topupId: entry.topupId, transceive, pin: '1234'}),
+    ).rejects.toMatchObject({kind: 'refunded'});
   });
 });
