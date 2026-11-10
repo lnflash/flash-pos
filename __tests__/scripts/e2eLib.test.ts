@@ -969,6 +969,112 @@ describe('retryTransient', () => {
   });
 });
 
+describe('runChild (ENG-850)', () => {
+  const {EventEmitter} = require('node:events');
+
+  // A fake child: the test emits 'error' / 'close' itself.
+  function fakeSpawn() {
+    const child = new EventEmitter();
+    const spawnFn = jest.fn(() => child);
+    return {child, spawnFn};
+  }
+
+  it('passes the command, args and options through to spawn', async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const options = {stdio: 'inherit', cwd: '/repo'};
+    const done = lib.runChild(spawnFn, 'maestro', ['test', 'f.yaml'], options);
+    child.emit('close', 0, null);
+    await done;
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+    expect(spawnFn).toHaveBeenCalledWith(
+      'maestro',
+      ['test', 'f.yaml'],
+      options,
+    );
+  });
+
+  it('resolves true on a clean zero exit', async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const done = lib.runChild(spawnFn, 'maestro', [], {});
+    child.emit('close', 0, null);
+    await expect(done).resolves.toBe(true);
+  });
+
+  it('resolves false on a non-zero exit', async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const done = lib.runChild(spawnFn, 'maestro', [], {});
+    child.emit('close', 1, null);
+    await expect(done).resolves.toBe(false);
+  });
+
+  it("resolves false on a signal death, as spawnSync's status null did", async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const done = lib.runChild(spawnFn, 'maestro', [], {});
+    child.emit('close', null, 'SIGTERM');
+    await expect(done).resolves.toBe(false);
+  });
+
+  it('rejects on a spawn error (ENOENT) and ignores a later close', async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const done = lib.runChild(spawnFn, 'maestro', [], {});
+    const enoent = Object.assign(new Error('spawn maestro ENOENT'), {
+      code: 'ENOENT',
+    });
+    child.emit('error', enoent);
+    child.emit('close', 0, null);
+    await expect(done).rejects.toBe(enoent);
+  });
+
+  it('keeps the first settle when an error follows the close', async () => {
+    const {child, spawnFn} = fakeSpawn();
+    const done = lib.runChild(spawnFn, 'maestro', [], {});
+    child.emit('close', 0, null);
+    // 'error' keeps its own once() listener; it must not reject a promise
+    // that the close already resolved.
+    child.emit('error', new Error('late'));
+    await expect(done).resolves.toBe(true);
+  });
+
+  it('rejects when spawn itself throws', async () => {
+    const boom = new Error('spawn EINVAL');
+    const spawnFn = jest.fn(() => {
+      throw boom;
+    });
+    await expect(lib.runChild(spawnFn, 'maestro', [], {})).rejects.toBe(boom);
+  });
+
+  it('inside runAttempts, an ENOENT attempt is a failed attempt and the next passes', async () => {
+    const children: any[] = [];
+    const spawnFn = jest.fn(() => {
+      const child = new EventEmitter();
+      children.push(child);
+      return child;
+    });
+    const onFail = jest.fn();
+    const outcome = lib.runAttempts(
+      2,
+      () => {
+        const done = lib.runChild(spawnFn, 'maestro', [], {});
+        const child = children[children.length - 1];
+        if (children.length === 1) {
+          child.emit(
+            'error',
+            Object.assign(new Error('spawn maestro ENOENT'), {code: 'ENOENT'}),
+          );
+        } else {
+          child.emit('close', 0, null);
+        }
+        return done;
+      },
+      onFail,
+    );
+    await expect(outcome).resolves.toEqual({ok: true, attempts: 2});
+    expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail.mock.calls[0][0]).toBe(1);
+    expect(onFail.mock.calls[0][1].code).toBe('ENOENT');
+  });
+});
+
 describe('login.yaml checks the username before every Start (ENG-849)', () => {
   const fs = require('fs');
   const path = require('path');
