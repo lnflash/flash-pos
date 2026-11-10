@@ -2241,7 +2241,11 @@ describe("card top-up at the card's mint", () => {
     walletMocks.mintBolt11.mockImplementationOnce(
       async (req: {outputs: {B_: string; amount: number}[]}) => ({
         signatures: req.outputs.map(o => {
-          const {dleq: _dleq, ...sig} = mint.sign(o.B_, o.amount);
+          const sig: Partial<ReturnType<TestMint['sign']>> = mint.sign(
+            o.B_,
+            o.amount,
+          );
+          delete sig.dleq;
           return sig;
         }),
       }),
