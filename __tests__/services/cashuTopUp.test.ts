@@ -332,7 +332,7 @@ describe('the @cashu_topups store', () => {
     await expect(waitingTopUpsForCard('02ab')).resolves.toEqual([]);
   });
 
-  it('quarantines unparseable bytes by content before writing over them', async () => {
+  it('quarantines unparsable bytes by content before writing over them', async () => {
     mockStore[TOPUP_KEY] = '{not json';
     expect(await listTopUps()).toEqual([]);
     expect(mockStore[topUpQuarantineKeyFor('{not json')]).toBe('{not json');

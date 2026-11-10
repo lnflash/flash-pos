@@ -303,7 +303,7 @@ export const TOPUP_SCHEMA_VERSION = 1;
 /** Soft cap: only `loaded` and `expired` entries are ever evicted. */
 export const MAX_TOPUP_ENTRIES = 200;
 
-/** Content-keyed quarantine slot for an unparseable top-up store. */
+/** Content-keyed quarantine slot for an unparsable top-up store. */
 export const topUpQuarantineKeyFor = (raw: string): string =>
   `${CORRUPT_TOPUP_KEY}:${bytesToHex(sha256(utf8ToBytes(raw))).slice(0, 16)}`;
 
@@ -428,7 +428,7 @@ interface TopUpRead {
 
 const quarantineWritten = new Set<string>();
 
-/** Keep unparseable bytes under a content key; true once that copy landed. */
+/** Keep unparsable bytes under a content key; true once that copy landed. */
 async function quarantine(raw: string): Promise<boolean> {
   const key = topUpQuarantineKeyFor(raw);
   if (quarantineWritten.has(key)) {
