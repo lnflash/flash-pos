@@ -474,6 +474,33 @@ async function runAttempts(attempts, attempt, onFail = () => {}) {
   return {ok: false, attempts: max};
 }
 
+/**
+ * Run `command` as a child process through `spawnFn` (node's `spawn`, or a
+ * fake in tests) and resolve true only on a clean zero exit. Unlike
+ * spawnSync this leaves the event loop free while the child runs, so the
+ * runner's own servers (the block-header stub) can answer and idle sockets
+ * are reaped (ENG-850). Listens for 'close', not 'exit', so the child's stdio
+ * is flushed first. A signal death resolves false, as spawnSync's
+ * `status === null` did. A spawn 'error' (ENOENT: Maestro missing) rejects,
+ * as the old `if (run.error) throw run.error` did; the promise settles once.
+ */
+async function runChild(spawnFn, command, args, options) {
+  const child = spawnFn(command, args, options);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (!settled) {
+        settled = true;
+        fn(value);
+      }
+    };
+    child.once('error', error => settle(reject, error));
+    child.once('close', (code, signal) =>
+      settle(resolve, code === 0 && signal === null),
+    );
+  });
+}
+
 const TRANSIENT_CODES = new Set([
   'EPIPE',
   'ECONNRESET',
@@ -487,11 +514,14 @@ const MAX_CAUSE_LINKS = 5;
 /**
  * True when `error` (or a link of its `.cause` chain, at most 5 deep) is a
  * request that got no HTTP response: cashu-ts' NetworkError, a socket code
- * such as EPIPE, or undici's "fetch failed". A keep-alive socket to the
- * mint dies while spawnSync blocks the event loop for a Maestro run, and
- * the next mint call throws `fetch failed (write EPIPE, EPIPE)` (run
- * 42657054714, ENG-849). An HTTP or mint protocol error ("already issued",
- * HttpResponseError) is an answer, not a dropped socket: false.
+ * such as EPIPE, or undici's "fetch failed". Until ENG-850, a keep-alive
+ * socket to the mint died while spawnSync blocked the event loop for a
+ * Maestro run, and the next mint call threw `fetch failed (write EPIPE,
+ * EPIPE)` (run 42657054714, ENG-849). Flows now run through an async spawn,
+ * so the loop stays free; the check stays as belt and braces, since a mint
+ * close can still race the first call. An HTTP or mint protocol error
+ * ("already issued", HttpResponseError) is an answer, not a dropped socket:
+ * false.
  */
 function isTransientNetworkError(error) {
   let link = error;
@@ -572,6 +602,7 @@ module.exports = {
   requireCardSimClient,
   resolveCardSimClient,
   retryTransient,
+  runChild,
   runAttempts,
   tipFromVectors,
   toHex,

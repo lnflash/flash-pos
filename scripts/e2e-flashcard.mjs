@@ -27,7 +27,7 @@
  *
  * Exit 0 only when every selected flow passed. Run book: docs/10-testing.md.
  */
-import {spawnSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import {existsSync, readFileSync} from 'node:fs';
 import {createServer} from 'node:http';
@@ -291,12 +291,19 @@ function loadTip(clientPath) {
 
 /**
  * A local Esplora stand-in on 127.0.0.1 (an ephemeral port) that serves
- * `tip` and nothing else. Resolves to its base URL and a close function.
+ * `tip` and nothing else. Resolves to its base URL, `hits()` (the number of
+ * 200 answers so far) and a close function. Every request is logged with a
+ * `header stub:` prefix, so the step log shows the app reaching it (ENG-850).
  */
 function startHeaderStub(tip) {
   return new Promise((resolveStub, reject) => {
+    let hits = 0;
     const server = createServer((req, res) => {
       const answer = lib.headerStubAnswer(req.url || '', tip);
+      if (answer.status === 200) {
+        hits++;
+      }
+      console.log(`header stub: GET ${req.url} -> ${answer.status}`);
       res.writeHead(answer.status, {'content-type': 'text/plain'});
       res.end(answer.body);
     });
@@ -305,7 +312,14 @@ function startHeaderStub(tip) {
       const {port} = server.address();
       resolveStub({
         base: `http://127.0.0.1:${port}/api`,
-        close: () => new Promise(done => server.close(() => done())),
+        hits: () => hits,
+        // The app's keep-alive connection would hold server.close() open
+        // until the step cap; drop it first (Node 18.2+, ENG-850).
+        close: () =>
+          new Promise(done => {
+            server.closeAllConnections();
+            server.close(() => done());
+          }),
       });
     });
   });
@@ -435,18 +449,20 @@ async function main() {
   const results = [];
   for (const flow of opts.flows) {
     let setupRetries = 0;
+    let stubHits = 0;
     const outcome = await lib.runAttempts(
       attempts,
       async n => {
         console.log(
           `\n=== ${flow}${n > 1 ? ` (attempt ${n} of ${attempts})` : ''}`,
         );
-        // The mint's keep-alive socket can die while spawnSync blocks the
-        // event loop for the previous Maestro run, and the next mint call
-        // throws `write EPIPE` (run 42657054714, ENG-849). Retry the whole
-        // setup, never one call: each try mints a fresh quote and resets the
-        // card again, so nothing resumes on torn state, and the attempt is
-        // spent only on a real Maestro run.
+        // Before ENG-850 the mint's keep-alive socket died while spawnSync
+        // blocked the event loop for the previous Maestro run, and the next
+        // mint call threw `write EPIPE` (run 42657054714, ENG-849). A free
+        // loop now reaps it; the retry stays because a mint close can still
+        // race the first call. Retry the whole setup, never one call: each try
+        // mints a fresh quote and resets the card again, so nothing resumes on
+        // torn state, and the attempt is spent only on a real Maestro run.
         const {minted, fixtures} = await lib.retryTransient(
           async () => {
             const proofs = await mintCardProofs(
@@ -477,18 +493,21 @@ async function main() {
             },
           },
         );
-        const run = spawnSync(
+        // Async, so the header stub can answer the app while Maestro runs
+        // (ENG-850). Counted per attempt: a retry does not inherit hits.
+        const hitsBefore = stub.hits();
+        const passed = await lib.runChild(
+          spawn,
           maestro,
           maestroArgs(opts, flow, fixtures, minted),
-          {
-            stdio: 'inherit',
-            cwd: ROOT,
-          },
+          {stdio: 'inherit', cwd: ROOT},
         );
-        if (run.error) {
-          throw run.error;
-        }
-        return run.status === 0;
+        const served = stub.hits() - hitsBefore;
+        stubHits += served;
+        console.log(
+          `${flow}: header stub answered ${served} request(s) this attempt`,
+        );
+        return passed;
       },
       (n, error) =>
         console.error(
@@ -504,16 +523,26 @@ async function main() {
         `::warning::e2e flow ${flow} passed on attempt ${outcome.attempts} of ${attempts}`,
       );
     }
-    results.push({flow, ...outcome, setupRetries});
+    results.push({flow, ...outcome, setupRetries, stubHits});
   }
 
   await stub.close();
   console.log('\n=== results');
-  for (const {flow, ok, attempts: used, setupRetries: retried} of results) {
+  // Stub hits are reported, never judged: balance-read never fetches a tip
+  // (ENG-850), so 0 is expected there.
+  for (const {
+    flow,
+    ok,
+    attempts: used,
+    setupRetries: retried,
+    stubHits: hits,
+  } of results) {
     console.log(
       `${ok ? 'PASS' : 'FAIL'}  ${flow}${
         used > 1 ? `  (${used} attempts)` : ''
-      }${retried > 0 ? `  (${retried} setup retries)` : ''}`,
+      }${
+        retried > 0 ? `  (${retried} setup retries)` : ''
+      }  (${hits} stub hits)`,
     );
   }
   return results.every(r => r.ok) ? 0 : 1;
