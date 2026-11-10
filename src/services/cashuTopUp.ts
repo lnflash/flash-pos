@@ -337,6 +337,11 @@ export interface TopUpMintedPiece {
   r: string;
   /** LOAD_PROOF answered a slot, or 6A94 (already on the card). */
   loaded: boolean;
+  /**
+   * A LOAD_PROOF for this piece was sent (written before the send). A sent
+   * piece not yet `loaded` may already be on the card, its reply lost.
+   */
+  sent?: boolean;
 }
 
 export interface TopUpEntry {
@@ -397,7 +402,8 @@ function isTopUpEntry(value: unknown): value is TopUpEntry {
           isText(m?.dleqE) &&
           isText(m?.dleqS) &&
           isText(m?.r) &&
-          typeof m?.loaded === 'boolean',
+          typeof m?.loaded === 'boolean' &&
+          (m?.sent === undefined || typeof m?.sent === 'boolean'),
       ));
   return (
     isText(e.topupId) &&
@@ -625,6 +631,27 @@ export async function owedPiecesFor(cardPubkey: string): Promise<number> {
   }
 }
 
+/** A piece of a top-up that may already be on the card (see `sent`). */
+const mayBeOnCard = (m: TopUpMintedPiece): boolean => m.loaded || !!m.sent;
+
+/**
+ * The pieces this card's paid and loading top-ups still need slots for: the
+ * minted pieces not yet (possibly) on the card, or every piece when none is
+ * minted yet. Never throws.
+ */
+export async function reservedPiecesFor(cardPubkey: string): Promise<number> {
+  return (await waitingTopUpsForCard(cardPubkey))
+    .filter(e => e.state === 'paid' || e.state === 'loading')
+    .reduce(
+      (n, e) =>
+        n +
+        (e.minted
+          ? e.minted.filter(m => !mayBeOnCard(m)).length
+          : e.pieces.length),
+      0,
+    );
+}
+
 export interface StartTopUpArgs {
   summary: CardSummary;
   /** `CardRecord.mint`: the mint the card's pieces belong to. */
@@ -657,7 +684,13 @@ export async function startTopUp({
     throw new TopUpError('no_mint');
   }
   const owed = owedPieces ?? (await owedPiecesFor(summary.pubkey));
-  const refused = canTopUp(summary, owed, {unit, pieces: pieces.length});
+  // Slots already promised to this card's other paid top-ups, so nobody pays
+  // for a load that cannot land beside them (TOPUP.md § Room on the card).
+  const reserved = await reservedPiecesFor(summary.pubkey);
+  const refused = canTopUp(summary, owed + reserved, {
+    unit,
+    pieces: pieces.length,
+  });
   if (refused) {
     throw new TopUpError(refused);
   }
@@ -978,9 +1011,12 @@ export async function loadTopUp({
     }
   }
 
-  // 3. Room for what is still to load, beside this card's owed change.
+  // 3. Room for what is still to load, beside this card's owed change. A
+  // piece already sent may be on the card with its reply lost: it is not
+  // charged a slot here (its resend answers 6A94, or takes the slot it needs
+  // and 6A84 in the loop catches a real shortfall).
   const remaining = entry.minted
-    ? entry.minted.filter(m => !m.loaded).length
+    ? entry.minted.filter(m => !mayBeOnCard(m)).length
     : entry.pieces.length;
   const owedPieces = await owedPiecesFor(summary.pubkey);
   if (summary.info.empty - owedPieces < remaining) {
@@ -1056,9 +1092,11 @@ export async function loadTopUp({
       continue;
     }
     try {
+      const at = i;
       entry = await patchTopUp(topupId, e => ({
         ...e,
         attempts: e.attempts + 1,
+        minted: e.minted?.map((m, j) => (j === at ? {...m, sent: true} : m)),
       }));
     } catch (error) {
       // The attempt is not recorded, so nothing is sent.

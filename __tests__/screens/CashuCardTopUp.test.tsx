@@ -376,6 +376,34 @@ describe('CashuCardTopUp', () => {
     expect(getByTestId('topup-loaded')).toBeTruthy();
   });
 
+  it('never sends a longer PIN cut short: past four digits only "Load" commits', async () => {
+    jest.useFakeTimers(FAKE_TIMERS);
+    mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
+    mockLoadTopUp.mockResolvedValue({amountSat: 5, loadId: 'quote-01'});
+    const {getByTestId} = renderScreen({
+      summary: PIN_CARD,
+      resume: 'quote-0123456789',
+    });
+    await flush();
+
+    fireEvent.press(getByTestId('topup-load'));
+    type(getByTestId, '1234');
+    await tick(PIN_COMMIT_MS - 100);
+    type(getByTestId, '5');
+    await tick(PIN_COMMIT_MS + 100);
+    type(getByTestId, '6');
+    await tick(PIN_COMMIT_MS + 100);
+    expect(mockLoadTopUp).not.toHaveBeenCalled();
+    expect(getByTestId('pin-sheet')).toBeTruthy();
+
+    fireEvent.press(getByTestId('pin-confirm'));
+    await flush();
+    expect(mockLoadTopUp).toHaveBeenCalledTimes(1);
+    expect(mockLoadTopUp).toHaveBeenCalledWith(
+      expect.objectContaining({pin: '123456'}),
+    );
+  });
+
   it('an iOS sheet cancel is "Not loaded yet", and Tap card again goes back to the paid step', async () => {
     mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
     mockWithCardSession.mockRejectedValueOnce(new MockUserCancel());

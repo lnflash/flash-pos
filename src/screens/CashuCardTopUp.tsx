@@ -356,7 +356,10 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
         clearTimeout(pinTimer.current);
         pinTimer.current = null;
       }
-      if (next.length >= PIN_MIN) {
+      // Like CashuCardCharge: only an exact 4-digit entry commits on its own.
+      // A longer PIN waits for "Load", so a pause mid-entry never sends a
+      // short PIN that burns one of the card's tries.
+      if (next.length === PIN_MIN) {
         pinTimer.current = setTimeout(() => commitPin(next), PIN_COMMIT_MS);
       }
     },
@@ -534,9 +537,23 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
                 onClear={() => typePin('')}
               />
             </PadBox>
+            <PrimaryButton
+              testID="pin-confirm"
+              btnText="Load"
+              btnStyle={fullWidth}
+              disabled={pin.length < PIN_MIN}
+              onPress={() => {
+                if (pinTimer.current) {
+                  clearTimeout(pinTimer.current);
+                  pinTimer.current = null;
+                }
+                commitPin(pinRef.current);
+              }}
+            />
             <SecondaryButton
               testID="pin-cancel"
               btnText="Cancel"
+              btnStyle={gapTop}
               onPress={closePin}
             />
           </Sheet>

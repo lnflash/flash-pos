@@ -292,6 +292,44 @@ describe('startTopUp', () => {
     expect(storedEntries()).toEqual([]);
   });
 
+  it("keeps the slots of this card's paid top-ups: a second one that cannot land is refused before any quote", async () => {
+    const card = new FakeCard2({slotCount: 3});
+    await startOn(card, 7);
+    await pollTopUp(QUOTE);
+    expect(storedEntries()[0].state).toBe('paid');
+    mintMocks.createTopUpQuote.mockClear();
+
+    await expect(
+      startTopUp({
+        summary: await summaryOf(card),
+        cardMint: MINT_URL,
+        owedPieces: 0,
+        sat: 7,
+      }),
+    ).rejects.toMatchObject({kind: 'card_full'});
+    expect(mintMocks.createTopUpQuote).not.toHaveBeenCalled();
+    expect(storedEntries()).toHaveLength(1);
+  });
+
+  it('does not hold slots for a quote that is not paid yet', async () => {
+    const card = new FakeCard2({slotCount: 3});
+    await startOn(card, 7);
+    mintMocks.createTopUpQuote.mockResolvedValueOnce({
+      quoteId: 'quote-second',
+      request: BOLT11,
+      expiry: 2_000_000_000,
+      amount: 7,
+    });
+    await expect(
+      startTopUp({
+        summary: await summaryOf(card),
+        cardMint: MINT_URL,
+        owedPieces: 0,
+        sat: 7,
+      }),
+    ).resolves.toMatchObject({topupId: 'quote-second'});
+  });
+
   it('maps a mint that cannot be reached, and keeps no entry', async () => {
     const card = new FakeCard2();
     mintMocks.createTopUpQuote.mockRejectedValueOnce(
@@ -636,6 +674,32 @@ describe('loadTopUp', () => {
     expect(storedEntries()[0].attempts).toBe(1);
     await loadTopUp({topupId: QUOTE, transceive: card.transceive});
     expect(card.loads.map(l => l.amount)).toEqual([4, 1]);
+  });
+
+  it('a piece whose LOAD landed with its answer lost takes no slot in the re-check', async () => {
+    const card = new FakeCard2({
+      slotCount: 3,
+      loseLoadAnswer: n => n === 0,
+    });
+    await startOn(card, 7);
+    await expect(
+      loadTopUp({topupId: QUOTE, transceive: card.transceive}),
+    ).rejects.toMatchObject({kind: 'not_loaded'});
+    const after = storedEntries()[0];
+    expect(after.state).toBe('loading');
+    expect(after.minted!.map(m => [m.loaded, !!m.sent])).toEqual([
+      [false, true],
+      [false, false],
+      [false, false],
+    ]);
+    expect((await summaryOf(card)).info.empty).toBe(2);
+
+    await loadTopUp({topupId: QUOTE, transceive: card.transceive});
+    // Piece 1's resend answers 6A94 and counts as landed; 2 and 3 fit.
+    expect(card.loads.map(l => l.amount)).toEqual([4, 2, 1]);
+    expect(storedEntries()[0].state).toBe('loaded');
+    expect(storedEntries()[0].minted!.every(m => m.loaded)).toBe(true);
+    expect(mintMocks.mintTopUp).toHaveBeenCalledTimes(1);
   });
 
   it('a loaded top-up answers without touching the card', async () => {

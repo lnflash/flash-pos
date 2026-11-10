@@ -443,7 +443,9 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
    one (100,000 becomes 99,328 = 65,536 + 32,768 + 1,024).
 3. `canTopUp` refuses before any quote: a locked card (its `LOAD_PROOF`
    answers `6986`), a blocked PIN, a card not in sats, and fewer free slots
-   than pieces once the card's owed change (above) has its slots. A full
+   than pieces once the card's owed change (above) and the pieces of its
+   other `paid` or `loading` top-ups not yet on it have their slots, so
+   nobody pays for a load that cannot land beside one already paid. A full
    card is "This card is full", never rounded to fewer pieces.
 4. `startTopUp` asks for a bolt11 mint quote at `CardRecord.mint`, with no
    fallback to the merchant's mint, and records it `waiting` in
@@ -459,7 +461,12 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
    aside), or nothing is written ("Not a card for this till"). A PIN card
    verifies its PIN before any `LOAD_PROOF`, even when the change grant would
    let one through; a wrong PIN leaves the top-up `paid` and says how many
-   tries are left. The room is checked again against what is still to load.
+   tries are left. As on the charge, an exact four-digit PIN commits after
+   700 ms; a longer one waits for "Load", so a pause mid-entry never sends a
+   short PIN. The room is checked again against what is still to load,
+   leaving out a piece whose `LOAD_PROOF` was already sent (it may be on the
+   card with its answer lost; its resend answers `6A94`, and `6A84` still
+   catches a real shortfall).
 7. The outputs are made and **kept before the mint is asked to sign them**:
    per piece, a random 32-byte nonce, the format-4 secret
    (`buildCardSigAllSecret`, undated), blinded in the active sat keyset with
@@ -471,7 +478,7 @@ touched; the top-up is the holder's money (`src/services/cashuTopUp.ts`,
    nothing kept is restored, never minted onto new outputs: the same top-up
    is never minted twice.
 8. Each piece goes on with `LOAD_PROOF` and the mint's DLEQ, its attempt
-   counted before the APDU goes out. `6A94` (already on the card) counts as
+   counted and the piece marked `sent` before the APDU goes out. `6A94` (already on the card) counts as
    loaded; `6A84` is "This card is full"; a lost link is "Not loaded yet".
    Either way the entry keeps the remainder and the next tap loads only that.
    When every piece is on, the entry is `loaded` and the screen shows
