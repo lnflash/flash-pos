@@ -16,7 +16,11 @@ import {useRealtimePrice} from '../hooks';
 import {useCardSessionRelease} from '../hooks/useCardSessionRelease';
 
 // services
-import {isUserCancel, withCardSession} from '../services/cashuCardNfc';
+import {
+  cancelCardSession,
+  isUserCancel,
+  withCardSession,
+} from '../services/cashuCardNfc';
 import {
   getTopUp,
   loadTopUp,
@@ -97,8 +101,12 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
   const [pinOpen, setPinOpen] = useState(false);
   const [pin, setPin] = useState('');
   const [now, setNow] = useState(() => Date.now());
+  const [connected, setConnected] = useState(false);
 
   const creatingRef = useRef(false);
+  // A load is running (from the arm to its end) …
+  const loadingRef = useRef(false);
+  // … and the card is on the phone: leaving is held.
   const holdingRef = useRef(false);
   const leavingRef = useRef(false);
   const unmountedRef = useRef(false);
@@ -269,15 +277,28 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
 
   const runLoad = useCallback(
     async (withPin?: string) => {
-      if (!entry || holdingRef.current) {
+      if (!entry || loadingRef.current) {
         return;
       }
-      holdingRef.current = true;
+      loadingRef.current = true;
+      setConnected(false);
       setPhase('loading');
       try {
         const done = await withCardSession(
           transceive =>
-            loadTopUp({topupId: entry.topupId, transceive, pin: withPin}),
+            loadTopUp({
+              topupId: entry.topupId,
+              transceive,
+              pin: withPin,
+              // The card is on the phone: from here nothing leaves until
+              // the load ends where the merchant can see it.
+              onPhase: () => {
+                holdingRef.current = true;
+                if (!unmountedRef.current) {
+                  setConnected(true);
+                }
+              },
+            }),
           {
             alertMessage: `Hold the card to load ${formatSatAmount(
               entry.amountSat,
@@ -294,6 +315,7 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
         }
       } finally {
         holdingRef.current = false;
+        loadingRef.current = false;
         pinRef.current = '';
         if (!unmountedRef.current) {
           setPin('');
@@ -524,14 +546,38 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
   }
 
   if (phase === 'loading') {
+    if (resume && !entry) {
+      return (
+        <Wrapper>
+          <Spacer />
+          <ActivityIndicator size="large" color="#002118" />
+          <Spacer />
+        </Wrapper>
+      );
+    }
     return (
       <Wrapper>
         <Spacer />
         <ActivityIndicator size="large" color="#002118" />
-        <Title testID="topup-loading">
-          {entry ? 'Loading… keep the card on the phone' : 'Loading…'}
-        </Title>
+        {connected ? (
+          <Title testID="topup-loading">
+            Loading… keep the card on the phone
+          </Title>
+        ) : (
+          <Title testID="topup-tap">
+            {`Hold the card to the phone to load ${formatSatAmount(amountSat)}`}
+          </Title>
+        )}
         <Spacer />
+        {!connected && (
+          // Until the card answers, the wait can be called off (Android has
+          // no system sheet with its own Cancel).
+          <SecondaryButton
+            testID="topup-tap-cancel"
+            btnText="Cancel"
+            onPress={() => cancelCardSession()}
+          />
+        )}
       </Wrapper>
     );
   }

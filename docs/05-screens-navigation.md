@@ -266,7 +266,8 @@ type CashuCardBalanceParams = {
 
 **Phases**: amount (a sats pad, the rounded amount and its fiat) → invoice
 (its own QR, "Expires in m:ss", polled every 1.5 s) → paid ("Hold the card to
-load N sats"; a PIN card enters its PIN first) → loading (navigation held)
+load N sats"; a PIN card enters its PIN first) → the tap (Cancel until the
+card answers) → loading (navigation held while the card is on the phone)
 → done ("Loaded N sats", the load id). Every stop shows the Fedimint POS's
 copy; "Tap card again" returns to the paid step, "New invoice" makes a new
 quote after one expired.

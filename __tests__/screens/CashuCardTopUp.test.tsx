@@ -341,6 +341,7 @@ describe('CashuCardTopUp', () => {
       topupId: 'quote-0123456789',
       transceive: mockTransceive,
       pin: undefined,
+      onPhase: expect.any(Function),
     });
     expect(getByTestId('topup-loaded').props.children).toBe('Loaded 5 sats');
     expect(getByTestId('topup-load-id').props.children).toBe(
@@ -416,7 +417,10 @@ describe('CashuCardTopUp', () => {
     mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
     let finish!: (v: unknown) => void;
     mockLoadTopUp.mockImplementation(
-      () => new Promise(resolve => (finish = resolve)),
+      ({onPhase}: {onPhase: (p: string) => void}) => {
+        onPhase('reading');
+        return new Promise(resolve => (finish = resolve));
+      },
     );
     const {getByTestId} = renderScreen({resume: 'quote-0123456789'});
     await flush();
@@ -436,5 +440,35 @@ describe('CashuCardTopUp', () => {
     listeners.beforeRemove.forEach(l => l(free));
     expect(free.preventDefault).not.toHaveBeenCalled();
     expect(mockCancelCardSession).toHaveBeenCalled();
+  });
+
+  it('waits for the card with a Cancel, and holds nothing until it answers', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
+    let cancel!: (e: unknown) => void;
+    mockWithCardSession.mockImplementationOnce(
+      () => new Promise((_, reject) => (cancel = reject)),
+    );
+    mockCancelCardSession.mockImplementation(() =>
+      cancel(new MockUserCancel()),
+    );
+    const {getByTestId} = renderScreen({resume: 'quote-0123456789'});
+    await flush();
+    fireEvent.press(getByTestId('topup-load'));
+    await flush();
+    expect(getByTestId('topup-tap').props.children).toBe(
+      'Hold the card to the phone to load 5 sats',
+    );
+
+    const free = {preventDefault: jest.fn()};
+    listeners.beforeRemove.forEach(l => l(free));
+    expect(free.preventDefault).not.toHaveBeenCalled();
+
+    mockCancelCardSession.mockClear();
+    fireEvent.press(getByTestId('topup-tap-cancel'));
+    await flush();
+    expect(mockCancelCardSession).toHaveBeenCalled();
+    expect(getByTestId('topup-error-title').props.children).toBe(
+      'Not loaded yet',
+    );
   });
 });
