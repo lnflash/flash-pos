@@ -2438,6 +2438,26 @@ describe("top-up refund at the card's mint (ENG-855)", () => {
     expect(quote).toMatchObject({amountSat: 61, feeReserveSat: 2});
   });
 
+  it('refuses a lightning address when the budget is at or under the reserve, never asking for 0 sat (ENG-862)', async () => {
+    global.fetch = lnurl();
+    walletMocks.createMeltQuoteBolt11.mockResolvedValue({
+      ...meltQuote,
+      amount: 2,
+      fee_reserve: 2,
+    });
+    const error = await createRefundQuote(
+      REFUND_MINT,
+      {lightningAddress: 'holder@wallet.example'},
+      2,
+    ).catch(e => e);
+    expect(error).toBeInstanceOf(MeltBudgetError);
+    expect(error).toMatchObject({neededSat: 3, feeReserveSat: 2, budgetSat: 2});
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenCalledTimes(1);
+    expect(walletMocks.createMeltQuoteBolt11).toHaveBeenCalledWith(
+      'lnbc-2000-invoice',
+    );
+  });
+
   it('needs exactly one destination', async () => {
     await expect(createRefundQuote(REFUND_MINT, {}, 63)).rejects.toThrow(
       /exactly one/,

@@ -1537,9 +1537,23 @@ async function quoteMelt(
       // The reserve alone overruns: ask the address for
       // `budget − reserve` next round, so amount + reserve fits exactly.
       attemptSat = budgetSat - Number(quote.fee_reserve);
-      continue;
+    } else {
+      attemptSat = Math.floor(attemptSat / 2);
     }
-    attemptSat = Math.floor(attemptSat / 2);
+    if (attemptSat < 1) {
+      // Nothing is left for the invoice once the reserve is held back: a
+      // budget at or under the reserve can never go out over Lightning
+      // (ENG-862). Never ask an address for 0 sat.
+      const reserve = Number(quote.fee_reserve);
+      throw new MeltBudgetError(
+        `payout needs ${
+          reserve + 1
+        } sat but the settled balance is ${budgetSat} sat`,
+        reserve + 1,
+        reserve,
+        budgetSat,
+      );
+    }
   }
   if (!quote) {
     throw new Error('payout: no melt quote');

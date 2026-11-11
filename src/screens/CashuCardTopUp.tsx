@@ -1,5 +1,14 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, AppState, Modal, TextInput} from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  TextInput,
+} from 'react-native';
 import styled from 'styled-components/native';
 import {StackScreenProps} from '@react-navigation/stack';
 import QRCode from 'react-native-qrcode-svg';
@@ -809,52 +818,67 @@ const CashuCardTopUp: React.FC<Props> = ({navigation, route}) => {
   }
 
   if (phase === 'refundTo' && entry) {
+    // The keyboard must never hide Continue, and Return must close it: a
+    // destination has no newline, so the field is multiline only to wrap a
+    // long invoice (ENG-861).
     return (
-      <Wrapper>
-        <Title testID="topup-refund-title">
-          {`Refund ${formatSatAmount(entry.amountSat)}`}
-        </Title>
-        <Caption>
-          The holder's Lightning invoice or address. The mint's fee comes out of
-          the refund.
-        </Caption>
-        <RefundInput
-          testID="topup-refund-destination"
-          value={refundInput}
-          onChangeText={setRefundInput}
-          placeholder="lnbc… or name@domain"
-          autoCapitalize="none"
-          autoCorrect={false}
-          multiline
-        />
-        {refundNote && (
-          <>
-            <Caption testID="topup-refund-note-title">
-              {refundNote.title}
-            </Caption>
-            <Caption testID="topup-refund-note-body">{refundNote.body}</Caption>
-          </>
-        )}
-        <Spacer />
-        <PrimaryButton
-          testID="topup-refund-continue"
-          btnText={previewing ? 'Checking…' : 'Continue'}
-          btnStyle={fullWidth}
-          disabled={!refundInput.trim() || previewing}
-          onPress={onRefundContinue}
-        />
-        <SecondaryButton
-          testID="topup-refund-back"
-          btnText="Back"
-          btnStyle={gapTop}
-          onPress={() =>
-            // A refund already under way cannot load: back to its own step.
-            entry.state === 'refunding'
-              ? finishRefund(entry.topupId)
-              : setPhase('paid')
-          }
-        />
-      </Wrapper>
+      <KeyboardWrapper behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <Wrapper>
+          <Title testID="topup-refund-title">
+            {`Refund ${formatSatAmount(entry.amountSat)}`}
+          </Title>
+          <Caption>
+            The holder's Lightning invoice or address. The mint's fee comes out
+            of the refund.
+          </Caption>
+          <RefundInput
+            testID="topup-refund-destination"
+            value={refundInput}
+            onChangeText={v => setRefundInput(v.replace(/[\r\n]+/g, ''))}
+            placeholder="lnbc… or name@domain"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            returnKeyType="done"
+            submitBehavior="blurAndSubmit"
+            onSubmitEditing={() => Keyboard.dismiss()}
+            multiline
+          />
+          {refundNote && (
+            <>
+              <Caption testID="topup-refund-note-title">
+                {refundNote.title}
+              </Caption>
+              <Caption testID="topup-refund-note-body">
+                {refundNote.body}
+              </Caption>
+            </>
+          )}
+          <DismissArea
+            testID="topup-refund-dismiss"
+            accessible={false}
+            onPress={() => Keyboard.dismiss()}
+          />
+          <PrimaryButton
+            testID="topup-refund-continue"
+            btnText={previewing ? 'Checking…' : 'Continue'}
+            btnStyle={fullWidth}
+            disabled={!refundInput.trim() || previewing}
+            onPress={onRefundContinue}
+          />
+          <SecondaryButton
+            testID="topup-refund-back"
+            btnText="Back"
+            btnStyle={gapTop}
+            onPress={() =>
+              // A refund already under way cannot load: back to its own step.
+              entry.state === 'refunding'
+                ? finishRefund(entry.topupId)
+                : setPhase('paid')
+            }
+          />
+        </Wrapper>
+      </KeyboardWrapper>
     );
   }
 
@@ -1102,6 +1126,16 @@ const RefundInput = styled(TextInput)`
 
 const Spacer = styled.View`
   flex: 1;
+`;
+
+const KeyboardWrapper = styled(KeyboardAvoidingView)`
+  flex: 1;
+`;
+
+/** The blank space under the field: a tap there closes the keyboard. */
+const DismissArea = styled(Pressable)`
+  flex: 1;
+  align-self: stretch;
 `;
 
 const Sheet = styled.View`
