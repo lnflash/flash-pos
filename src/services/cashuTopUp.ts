@@ -1480,7 +1480,10 @@ const meltDestination = (d: TopUpRefundDestination) =>
   d.kind === 'bolt11' ? {bolt11: d.value} : {lightningAddress: d.value};
 
 /** A refund's mint step that did not go: the mint's own words, or its silence. */
-function refundFailure(error: unknown): TopUpError {
+function refundFailure(
+  error: unknown,
+  kind: TopUpRefundDestination['kind'] = 'bolt11',
+): TopUpError {
   if (error instanceof TopUpError) {
     return error;
   }
@@ -1489,13 +1492,15 @@ function refundFailure(error: unknown): TopUpError {
   }
   if (error instanceof MeltBudgetError) {
     const fits = error.budgetSat - error.feeReserveSat;
+    const reserve = error.feeReserveSat.toLocaleString('en-US');
+    const least = (error.feeReserveSat + 1).toLocaleString('en-US');
     return new TopUpError(
       'refund_failed',
-      fits > 0
+      fits > 0 && kind === 'bolt11'
         ? `The invoice is too large. Ask for one of at most ${fits.toLocaleString(
             'en-US',
           )} sats.`
-        : 'The mint fee is larger than the top-up.',
+        : `This top-up is too small to refund over Lightning. The mint holds back ${reserve} sats for the Lightning fee, so a refund needs at least ${least} sats.`,
     );
   }
   return new TopUpError(
@@ -1607,7 +1612,7 @@ async function priceRefund(
       budgetSat,
     );
   } catch (error) {
-    throw refundFailure(error);
+    throw refundFailure(error, destination.kind);
   }
   // The mint gives back as change everything the invoice does not ask
   // for, and change stays on this phone: refuse an invoice that would leave
@@ -1989,7 +1994,7 @@ async function completeRefund(
           'The invoice expired. Ask the holder for a new one.',
         );
       }
-      throw refundFailure(error);
+      throw refundFailure(error, r.destination.kind);
     }
     // Never pay less than the net the holder confirmed with the card.
     if (quote.amountSat < r.amountSat) {

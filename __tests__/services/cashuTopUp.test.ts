@@ -1185,6 +1185,37 @@ describe('refund (ENG-855)', () => {
         'The invoice is too large. Ask for one of at most 5 sats.',
       );
     });
+    it.each([
+      ['an address', 'holder@wallet.example'],
+      ['an invoice', INVOICE],
+    ])(
+      'says a top-up at or under the mint fee reserve cannot go out over Lightning, to %s (ENG-862)',
+      async (_what, destination) => {
+        await paidOn(new FakeCard2(), 2);
+        mintMocks.createRefundQuote.mockRejectedValueOnce(
+          new MeltBudgetError('too small', 3, 2, 2),
+        );
+        const error = await previewTopUpRefund({
+          topupId: QUOTE,
+          destination,
+        }).catch(e => e);
+        expect(error).toMatchObject({kind: 'refund_failed'});
+        expect(error.detail).toBe(
+          'This top-up is too small to refund over Lightning. The mint holds back 2 sats for the Lightning fee, so a refund needs at least 3 sats.',
+        );
+      },
+    );
+    it('never calls an address invoice "too large": the phone chose its amount', async () => {
+      await paidOn(new FakeCard2(), 7);
+      mintMocks.createRefundQuote.mockRejectedValueOnce(
+        new MeltBudgetError('odd', 12, 2, 7),
+      );
+      const error = await previewTopUpRefund({
+        topupId: QUOTE,
+        destination: 'holder@wallet.example',
+      }).catch(e => e);
+      expect(error.detail).toMatch(/^This top-up is too small/);
+    });
     it('refuses an invoice well under the budget: its change would stay on this phone', async () => {
       const card = new FakeCard2();
       await paidOn(card, 7);
