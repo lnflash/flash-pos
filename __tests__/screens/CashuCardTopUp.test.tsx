@@ -1,5 +1,5 @@
 import React from 'react';
-import {AppState} from 'react-native';
+import {AppState, Keyboard} from 'react-native';
 import {act, fireEvent, render} from '@testing-library/react-native';
 
 import CashuCardTopUp, {
@@ -551,6 +551,27 @@ describe('CashuCardTopUp refund (ENG-855)', () => {
     await flush();
     return screen;
   }
+
+  it('strips newlines from the destination; Return and a tap outside close the keyboard (ENG-861)', async () => {
+    mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
+    const screen = renderScreen({summary: SUMMARY, resume: 'quote-0123456789'});
+    await flush();
+    fireEvent.press(screen.getByTestId('topup-refund'));
+    const input = screen.getByTestId('topup-refund-destination');
+    fireEvent.changeText(input, 'name@example.com\n');
+    expect(screen.getByTestId('topup-refund-destination').props.value).toBe(
+      'name@example.com',
+    );
+    expect(input.props.returnKeyType).toBe('done');
+    expect(input.props.submitBehavior).toBe('blurAndSubmit');
+    const dismiss = jest
+      .spyOn(Keyboard, 'dismiss')
+      .mockImplementation(() => undefined);
+    fireEvent(input, 'submitEditing');
+    fireEvent.press(screen.getByTestId('topup-refund-dismiss'));
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    dismiss.mockRestore();
+  });
 
   it('offers Refund on a paid top-up, and not once pieces are minted', async () => {
     mockGetTopUp.mockResolvedValue(entry({state: 'paid'}));
