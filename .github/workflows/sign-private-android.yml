@@ -1,0 +1,57 @@
+name: Sign private Android store bundle
+on: workflow_dispatch
+concurrency: flash-pos-android-production
+jobs:
+  release:
+    if: github.repository == 'lnflash/flash-pos' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Read our unpublished draft release. GitHub limits draft access to push-capable identities.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+      - name: Fetch the approved binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          gh api repos/lnflash/flash-pos/releases/460028245 --jq '.draft' | grep -x true
+          gh api -H 'Accept: application/octet-stream' repos/lnflash/flash-pos/releases/assets/798285363 > unsigned.aab
+          echo 'b4b8551e71cf71b6cf135b35640e749eec71292e9d5daa498fecc2c4f65b8322  unsigned.aab' | sha256sum -c -
+      - name: Verify the registered POS certificate and sign
+        working-directory: ${{ runner.temp }}
+        env:
+          STORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f upload.keystore' EXIT
+          printf '%s' "$STORE_B64" | base64 -d > upload.keystore
+          keytool -exportcert -keystore upload.keystore -alias "$KEY_ALIAS" -storepass:env STORE_PASS > upload.der
+          echo '10835541597ac8c3c808c6f8b6abbe5ef9452bcc3f4f4d7a9b32bf9bf74fb8fa  upload.der' | sha256sum -c -
+          jarsigner -keystore upload.keystore -storepass:env STORE_PASS -keypass:env KEY_PASS -signedjar signed.aab unsigned.aab "$KEY_ALIAS"
+          jarsigner -verify signed.aab
+      - name: Submit version 2.5.0 (30) to Google Play at 10 percent
+        env:
+          PLAY_JSON: ${{ secrets.GOOGLE_PLAY_JSON_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/play.json"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$PLAY_JSON" > "$key"
+          notes="$RUNNER_TEMP/notes"
+          mkdir -p "$notes/en-US/changelogs"
+          echo 'Enter the sale amount once and choose Lightning or Cashu Card. History shows the payment method and destination. Newer Cashu Card payments stay in your Cashu wallet until withdrawal.' > "$notes/en-US/changelogs/30.txt"
+          bundle exec fastlane supply --package_name com.flash_pos --json_key "$key" --aab "$RUNNER_TEMP/signed.aab" --track production --release_status inProgress --rollout 0.1 --version_code 30 --version_name '2.5.0' --metadata_path "$notes" --skip_upload_metadata --skip_upload_images --skip_upload_screenshots --rescue_changes_not_sent_for_review false
