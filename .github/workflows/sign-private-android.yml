@@ -54,4 +54,4 @@ jobs:
           notes="$RUNNER_TEMP/notes"
           mkdir -p "$notes/en-US/changelogs"
           echo 'Enter the sale amount once and choose Lightning or Cashu Card. History shows the payment method and destination. Newer Cashu Card payments stay in your Cashu wallet until withdrawal.' > "$notes/en-US/changelogs/30.txt"
-          bundle exec fastlane supply --package_name com.flash_pos --json_key "$key" --aab "$RUNNER_TEMP/signed.aab" --track production --release_status inProgress --rollout 0.1 --version_code 30 --release_name '2.5.0' --metadata_path "$notes" --skip_upload_metadata --skip_upload_images --skip_upload_screenshots --rescue_changes_not_sent_for_review false
+          bundle exec fastlane supply --package_name com.flash_pos --json_key "$key" --aab "$RUNNER_TEMP/signed.aab" --track production --release_status inProgress --rollout 0.1 --version_code 30 --version_name '2.5.0' --metadata_path "$notes" --skip_upload_metadata --skip_upload_images --skip_upload_screenshots --rescue_changes_not_sent_for_review false
