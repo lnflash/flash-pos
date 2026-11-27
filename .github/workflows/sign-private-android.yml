@@ -23,9 +23,9 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          gh api repos/lnflash/flash-pos/releases/460028245 --jq '.draft' | grep -x true
-          gh api -H 'Accept: application/octet-stream' repos/lnflash/flash-pos/releases/assets/798285363 > unsigned.aab
-          echo 'b4b8551e71cf71b6cf135b35640e749eec71292e9d5daa498fecc2c4f65b8322  unsigned.aab' | sha256sum -c -
+          gh api repos/lnflash/flash-pos/releases/460173394 --jq '.draft' | grep -x true
+          gh api -H 'Accept: application/octet-stream' repos/lnflash/flash-pos/releases/assets/798993065 > unsigned.aab
+          echo '3c5326402c19ebad80b1cba0ee9820d5773424bf425b4747ed54db72d15f1708  unsigned.aab' | sha256sum -c -
       - name: Verify the registered POS certificate and sign
         working-directory: ${{ runner.temp }}
         env:
@@ -42,7 +42,7 @@ jobs:
           echo '10835541597ac8c3c808c6f8b6abbe5ef9452bcc3f4f4d7a9b32bf9bf74fb8fa  upload.der' | sha256sum -c -
           jarsigner -keystore upload.keystore -storepass:env STORE_PASS -keypass:env KEY_PASS -signedjar signed.aab unsigned.aab "$KEY_ALIAS"
           jarsigner -verify signed.aab
-      - name: Submit version 2.5.0 (30) to Google Play at 10 percent
+      - name: Submit version 2.5.1 (31) to Google Play at 100 percent
         env:
           PLAY_JSON: ${{ secrets.GOOGLE_PLAY_JSON_KEY }}
         run: |
@@ -53,5 +53,26 @@ jobs:
           printf '%s' "$PLAY_JSON" > "$key"
           notes="$RUNNER_TEMP/notes"
           mkdir -p "$notes/en-US/changelogs"
-          echo 'Enter the sale amount once and choose Lightning or Cashu Card. History shows the payment method and destination. Newer Cashu Card payments stay in your Cashu wallet until withdrawal.' > "$notes/en-US/changelogs/30.txt"
-          bundle exec fastlane supply --package_name com.flash_pos --json_key "$key" --aab "$RUNNER_TEMP/signed.aab" --track production --release_status inProgress --rollout 0.1 --version_code 30 --version_name '2.5.0' --metadata_path "$notes" --skip_upload_metadata --skip_upload_images --skip_upload_screenshots --rescue_changes_not_sent_for_review false
+          echo 'Top up a Cashu Card 3.x from its balance screen. Pay the Lightning invoice, then tap the card to load it. If the tap is interrupted, tap the same card again to finish.' > "$notes/en-US/changelogs/31.txt"
+          bundle exec fastlane supply --package_name com.flash_pos --json_key "$key" --aab "$RUNNER_TEMP/signed.aab" --track production --release_status completed --version_code 31 --version_name '2.5.1' --metadata_path "$notes" --skip_upload_metadata --skip_upload_images --skip_upload_screenshots --rescue_changes_not_sent_for_review false
+          bundle exec ruby - "$key" <<'RUBY'
+          require 'google/apis/androidpublisher_v3'
+          require 'googleauth'
+          api = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
+          File.open(ARGV.fetch(0)) do |file|
+            api.authorization = Google::Auth::ServiceAccountCredentials.make_creds(
+              json_key_io: file, scope: 'https://www.googleapis.com/auth/androidpublisher'
+            )
+          end
+          package = 'com.flash_pos'
+          edit = api.insert_edit(package)
+          begin
+            track = api.get_edit_track(package, edit.id, 'production')
+            release = Array(track.releases).find { |r| Array(r.version_codes).map(&:to_s).include?('31') }
+            abort 'Version 31 missing from production track readback' unless release
+            abort "Unexpected rollout state #{release.status}" unless release.status == 'completed' && release.user_fraction.nil?
+            puts "Play production readback: version 31, status completed, rollout 100%"
+          ensure
+            api.delete_edit(package, edit.id)
+          end
+          RUBY
